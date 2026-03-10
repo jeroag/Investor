@@ -15,7 +15,7 @@ const serverState = {
   prices:        {},
 };
 
-// ── Rate Limiting ──────────────────────────────────────────────────────────
+// ── Rate Limiting ─────────────────────────────────────────────────────────
 const rateLimitMap = new Map();
 const RATE_LIMIT   = 20;
 const RATE_WINDOW  = 60_000;
@@ -43,7 +43,7 @@ setInterval(() => {
   }
 }, 5 * 60_000);
 
-// ── Binance WebSocket (servidor) ───────────────────────────────────────────
+// ── Binance WebSocket (servidor) ──────────────────────────────────────────
 const COINS  = ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt'];
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
   COINS.map(s => s + '@miniTicker').join('/');
@@ -67,7 +67,7 @@ function connectBinanceWS() {
   binanceWs.on('error', (err) => console.error('Binance WS error:', err.message));
 }
 
-// ── Lógica TP/SL en servidor ───────────────────────────────────────────────
+// ── Lógica TP/SL en servidor ──────────────────────────────────────────────
 function coinOf(par) { return (par || '').split('/')[0]; }
 function nowFull() {
   return new Date().toLocaleString('es-ES', {
@@ -96,7 +96,7 @@ function checkTPSL(coin, price) {
   });
 }
 
-// ── API Trades ─────────────────────────────────────────────────────────────
+// ── API Trades ────────────────────────────────────────────────────────────
 app.post('/api/trades/sync', (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
@@ -119,7 +119,7 @@ app.get('/api/prices', (req, res) => {
   res.json(serverState.prices);
 });
 
-// ── Proxy Claude API ───────────────────────────────────────────────────────
+// ── Proxy Claude API ──────────────────────────────────────────────────────
 app.post('/api/claude', rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada.' });
@@ -149,7 +149,7 @@ app.post('/api/claude', rateLimit, async (req, res) => {
   }
 });
 
-// ── Fallback ───────────────────────────────────────────────────────────────
+// ── Fallback ──────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

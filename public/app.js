@@ -5,7 +5,7 @@
 'use strict';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
   ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt']
     .map(s => s + '@miniTicker').join('/');
@@ -203,6 +203,53 @@ function showToast(msg, err = false) {
   toastTimer = setTimeout(() => { if (t) t.style.display = 'none'; }, 3500);
 }
 
+/* ── Sincronización con servidor (TP/SL en background) ───────────────────── */
+async function syncTradesToServer() {
+  try {
+    await fetch('/api/trades/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeTrades: state.activeTrades }),
+    });
+  } catch (e) {
+    console.warn('sync error:', e.message);
+  }
+}
+
+async function pollServerClosedTrades() {
+  try {
+    const res  = await fetch('/api/trades/closed-by-server');
+    const data = await res.json();
+    if (!data.closed || data.closed.length === 0) return;
+
+    let changed = false;
+    for (const closed of data.closed) {
+      // Verificar que aún está activa en el frontend
+      const idx = state.activeTrades.findIndex(t => t.id === closed.id);
+      if (idx === -1) continue;
+
+      state.activeTrades.splice(idx, 1);
+      state.closedTrades.unshift(closed);
+      changed = true;
+
+      showToast(
+        closed.result === 'WIN'
+          ? `✓ ${closed.par} cerrada en TP por servidor! +$${closed.pnl?.toFixed(2)}`
+          : `✕ ${closed.par} SL alcanzado (servidor). -$${Math.abs(closed.pnl || 0).toFixed(2)}`,
+        closed.result !== 'WIN'
+      );
+    }
+
+    if (changed) {
+      saveKey('activeTrades', state.activeTrades);
+      saveKey('closedTrades', state.closedTrades);
+      renderAll();
+    }
+  } catch (e) {
+    console.warn('poll error:', e.message);
+  }
+}
+
 /* ── Binance WebSocket ───────────────────────────────────────────────────── */
 let ws, wsRetryTimer;
 
@@ -371,6 +418,7 @@ function acceptProposal(proposal) {
 
   state.activeTrades.unshift(trade);
   saveKey('activeTrades', state.activeTrades);
+  syncTradesToServer();
   showToast(`✓ ${proposal.par} ejecutada al precio real: ${fmtP(realEntry, coin)}`);
   return trade;
 }
@@ -398,6 +446,7 @@ function closeTrade(tradeId, result, pnlOverride) {
   state.activeTrades.splice(idx, 1);
   saveKey('activeTrades', state.activeTrades);
   saveKey('closedTrades', state.closedTrades);
+  syncTradesToServer();
   return closed;
 }
 
@@ -1373,6 +1422,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Cargar datos de mercado reales (RSI, soporte, resistencia)
   fetchMarketMeta();
   setInterval(fetchMarketMeta, 15 * 60 * 1000); // refrescar cada 15 min
+
+  // Sincronizar trades con servidor y polling de cierres automáticos
+  syncTradesToServer();
+  setInterval(pollServerClosedTrades, 15000); // revisar cada 15 segundos
 });
 
 // Expose globals needed by inline onclick handlers
