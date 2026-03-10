@@ -1,5 +1,6 @@
-const express = require('express');
-const path    = require('path');
+const express  = require('express');
+const path     = require('path');
+const WebSocket = require('ws');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -7,32 +8,34 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Rate Limiting simple (sin dependencias extra) ─────────────────────────
+// ── Estado en memoria del servidor ────────────────────────────────────────
+const serverState = {
+  activeTrades:  [],
+  closedTrades:  [],
+  prices:        {},
+};
+
+// ── Rate Limiting ──────────────────────────────────────────────────────────
 const rateLimitMap = new Map();
-const RATE_LIMIT   = 20;   // máx peticiones
-const RATE_WINDOW  = 60_000; // por minuto (ms)
+const RATE_LIMIT   = 20;
+const RATE_WINDOW  = 60_000;
 
 function rateLimit(req, res, next) {
-  const ip  = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
-  const now = Date.now();
+  const ip    = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  const now   = Date.now();
   const entry = rateLimitMap.get(ip) || { count: 0, start: now };
-
   if (now - entry.start > RATE_WINDOW) {
-    // Ventana expirada → reiniciar
     rateLimitMap.set(ip, { count: 1, start: now });
     return next();
   }
-
   if (entry.count >= RATE_LIMIT) {
     return res.status(429).json({ error: 'Demasiadas peticiones. Espera un minuto.' });
   }
-
   entry.count++;
   rateLimitMap.set(ip, entry);
   next();
 }
 
-// Limpiar IPs antiguas cada 5 minutos
 setInterval(() => {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap) {
@@ -40,20 +43,88 @@ setInterval(() => {
   }
 }, 5 * 60_000);
 
-// ── Proxy seguro para Claude API ──────────────────────────────────────────
+// ── Binance WebSocket (servidor) ───────────────────────────────────────────
+const COINS  = ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt'];
+const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
+  COINS.map(s => s + '@miniTicker').join('/');
+
+let binanceWs;
+
+function connectBinanceWS() {
+  binanceWs = new WebSocket(WS_URL);
+  binanceWs.on('open',  () => console.log('Binance WS conectado en servidor'));
+  binanceWs.on('message', (raw) => {
+    try {
+      const { data: d } = JSON.parse(raw);
+      if (!d) return;
+      const coin  = d.s.replace('USDT', '');
+      const price = parseFloat(d.c);
+      serverState.prices[coin] = price;
+      checkTPSL(coin, price);
+    } catch {}
+  });
+  binanceWs.on('close', () => { setTimeout(connectBinanceWS, 5000); });
+  binanceWs.on('error', (err) => console.error('Binance WS error:', err.message));
+}
+
+// ── Lógica TP/SL en servidor ───────────────────────────────────────────────
+function coinOf(par) { return (par || '').split('/')[0]; }
+function nowFull() {
+  return new Date().toLocaleString('es-ES', {
+    day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
+  });
+}
+
+function checkTPSL(coin, price) {
+  serverState.activeTrades = serverState.activeTrades.filter(trade => {
+    if (coinOf(trade.par) !== coin) return true;
+    const hitSL = trade.tipo === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
+    const hitTP = trade.tipo === 'LONG'
+      ? price >= (trade.tp2 || trade.tp1)
+      : price <= (trade.tp2 || trade.tp1);
+    if (hitSL || hitTP) {
+      const result = hitTP ? 'WIN' : 'LOSS';
+      const pnl    = result === 'WIN'
+        ? Math.abs(trade.riskUSD) * parseFloat(trade.rr || 1)
+        : -Math.abs(trade.riskUSD);
+      const closed = { ...trade, result, pnl, closedAt: nowFull(), closedByServer: true };
+      serverState.closedTrades.unshift(closed);
+      console.log(`${trade.par} cerrada: ${result} PnL:${pnl.toFixed(2)}`);
+      return false;
+    }
+    return true;
+  });
+}
+
+// ── API Trades ─────────────────────────────────────────────────────────────
+app.post('/api/trades/sync', (req, res) => {
+  const { activeTrades } = req.body;
+  if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
+  const existingIds = new Set(serverState.activeTrades.map(t => t.id));
+  for (const trade of activeTrades) {
+    if (!existingIds.has(trade.id)) serverState.activeTrades.push(trade);
+  }
+  const frontendIds = new Set(activeTrades.map(t => t.id));
+  serverState.activeTrades = serverState.activeTrades.filter(t => frontendIds.has(t.id));
+  res.json({ ok: true, watching: serverState.activeTrades.length });
+});
+
+app.get('/api/trades/closed-by-server', (req, res) => {
+  const closed = [...serverState.closedTrades];
+  serverState.closedTrades = [];
+  res.json({ closed });
+});
+
+app.get('/api/prices', (req, res) => {
+  res.json(serverState.prices);
+});
+
+// ── Proxy Claude API ───────────────────────────────────────────────────────
 app.post('/api/claude', rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-
-  if (!apiKey) {
-    return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada en el servidor.' });
-  }
-
+  if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada.' });
   const { model, max_tokens, system, messages } = req.body;
-
-  if (!messages || !Array.isArray(messages)) {
-    return res.status(400).json({ error: 'Parámetro messages inválido.' });
-  }
-
+  if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'messages inválido.' });
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -63,21 +134,14 @@ app.post('/api/claude', rateLimit, async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model:      model      || 'claude-sonnet-4-20250514',
+        model:      model      || 'claude-sonnet-4-6',
         max_tokens: max_tokens || 1000,
         system,
         messages,
       }),
     });
-
     const data = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: data?.error?.message || 'Error de la API de Anthropic.'
-      });
-    }
-
+    if (!response.ok) return res.status(response.status).json({ error: data?.error?.message || 'Error Anthropic.' });
     res.json(data);
   } catch (err) {
     console.error('Error proxy Claude:', err.message);
@@ -85,11 +149,12 @@ app.post('/api/claude', rateLimit, async (req, res) => {
   }
 });
 
-// ── Fallback → index.html ─────────────────────────────────────────────────
+// ── Fallback ───────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
   console.log(`CryptoPlan IA corriendo en puerto ${PORT}`);
+  connectBinanceWS();
 });
