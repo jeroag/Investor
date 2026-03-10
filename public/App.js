@@ -28,14 +28,92 @@ const DEFAULT_PROFILE = {
   risk_pct: 2
 };
 
+// MARKET_META — se actualiza dinámicamente desde Binance
 const MARKET_META = {
-  BTC:  { tag:'ACUMULAR', cls:'tg', rsi:27, sup:'$63K',   res:'$75K'  },
-  ETH:  { tag:'CAUTELA',  cls:'ty', rsi:31, sup:'$1,800', res:'$2,200'},
-  SOL:  { tag:'ESPERAR',  cls:'tr', rsi:29, sup:'$68',    res:'$96'   },
-  XRP:  { tag:'NEUTRO',   cls:'tm', rsi:33, sup:'$1.20',  res:'$1.55' },
-  BNB:  { tag:'MODERADO', cls:'ty', rsi:35, sup:'$550',   res:'$620'  },
-  DOGE: { tag:'ESPERAR',  cls:'tr', rsi:28, sup:'$0.14',  res:'$0.22' },
+  BTC:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
+  ETH:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
+  SOL:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
+  XRP:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
+  BNB:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
+  DOGE: { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
 };
+
+/* ── RSI Calculator ──────────────────────────────────────────────────────── */
+function calcRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains  += diff;
+    else           losses -= diff;
+  }
+  let avgGain = gains  / period;
+  let avgLoss = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return Math.round(100 - 100 / (1 + rs));
+}
+
+function rsiTag(rsi) {
+  if (rsi === null || rsi === undefined) return { tag:'—', cls:'tm' };
+  if (rsi < 30)  return { tag:'SOBREVENDIDO', cls:'tg' };
+  if (rsi < 45)  return { tag:'ACUMULAR',     cls:'tg' };
+  if (rsi < 55)  return { tag:'NEUTRO',        cls:'tm' };
+  if (rsi < 70)  return { tag:'CAUTELA',       cls:'ty' };
+  return              { tag:'SOBRECOMPRADO',   cls:'tr' };
+}
+
+function fmtSup(price, coin) {
+  if (coin === 'XRP' || coin === 'DOGE') return '$' + price.toFixed(4);
+  if (price > 1000) return '$' + (price / 1000).toFixed(1) + 'K';
+  return '$' + price.toFixed(2);
+}
+
+async function fetchMarketMeta() {
+  const coins = Object.keys(MARKET_META);
+  await Promise.all(coins.map(async (coin) => {
+    try {
+      const symbol = coin + 'USDT';
+      // Fetch 100 candles de 4H para RSI y niveles
+      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=100`;
+      const res  = await fetch(url);
+      if (!res.ok) return;
+      const klines = await res.json();
+
+      const closes = klines.map(k => parseFloat(k[4]));
+      const highs  = klines.map(k => parseFloat(k[2]));
+      const lows   = klines.map(k => parseFloat(k[3]));
+
+      const rsi = calcRSI(closes);
+
+      // Soporte = mínimo de los últimos 20 periodos
+      const recentLows  = lows.slice(-20);
+      const recentHighs = highs.slice(-20);
+      const sup = Math.min(...recentLows);
+      const res2 = Math.max(...recentHighs);
+
+      const { tag, cls } = rsiTag(rsi);
+
+      MARKET_META[coin] = {
+        tag,
+        cls,
+        rsi: rsi !== null ? rsi : '—',
+        sup: fmtSup(sup, coin),
+        res: fmtSup(res2, coin),
+      };
+    } catch (e) {
+      console.warn(`fetchMarketMeta ${coin}:`, e.message);
+    }
+  }));
+
+  // Re-render si la pestaña mercado está activa
+  if (state.currentTab === 'mkt') renderMkt();
+}
 
 /* ── State ───────────────────────────────────────────────────────────────── */
 const state = {
@@ -1291,6 +1369,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Show/hide adapt button
   const adaptBtn = qs('#btn-adapt');
   if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
+
+  // Cargar datos de mercado reales (RSI, soporte, resistencia)
+  fetchMarketMeta();
+  setInterval(fetchMarketMeta, 15 * 60 * 1000); // refrescar cada 15 min
 });
 
 // Expose globals needed by inline onclick handlers

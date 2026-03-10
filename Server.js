@@ -7,10 +7,41 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── Rate Limiting simple (sin dependencias extra) ─────────────────────────
+const rateLimitMap = new Map();
+const RATE_LIMIT   = 20;   // máx peticiones
+const RATE_WINDOW  = 60_000; // por minuto (ms)
+
+function rateLimit(req, res, next) {
+  const ip  = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip) || { count: 0, start: now };
+
+  if (now - entry.start > RATE_WINDOW) {
+    // Ventana expirada → reiniciar
+    rateLimitMap.set(ip, { count: 1, start: now });
+    return next();
+  }
+
+  if (entry.count >= RATE_LIMIT) {
+    return res.status(429).json({ error: 'Demasiadas peticiones. Espera un minuto.' });
+  }
+
+  entry.count++;
+  rateLimitMap.set(ip, entry);
+  next();
+}
+
+// Limpiar IPs antiguas cada 5 minutos
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitMap) {
+    if (now - entry.start > RATE_WINDOW) rateLimitMap.delete(ip);
+  }
+}, 5 * 60_000);
+
 // ── Proxy seguro para Claude API ──────────────────────────────────────────
-// El frontend llama a /api/claude en lugar de a Anthropic directamente.
-// La ANTHROPIC_API_KEY nunca sale del servidor.
-app.post('/api/claude', async (req, res) => {
+app.post('/api/claude', rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
   if (!apiKey) {
