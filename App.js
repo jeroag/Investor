@@ -174,9 +174,9 @@ function onPriceUpdate(coin, price) {
   if (state.currentTab === 'mkt') updateMarketPrice(coin, price);
 }
 
-/* ── Claude API ──────────────────────────────────────────────────────────── */
+/* ── Claude API (proxy seguro vía servidor) ──────────────────────────────── */
 async function callClaude(prompt, system) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('/api/claude', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -186,8 +186,8 @@ async function callClaude(prompt, system) {
       messages: [{ role: 'user', content: prompt }]
     })
   });
-  if (!res.ok) throw new Error('API error ' + res.status);
   const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Error del servidor');
   return data.content[0]?.text || '';
 }
 
