@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CryptoPlan IA</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Loading screen -->
+  <div id="loading-screen">
+    <h1>CRYPTO<b>PLAN</b> <small>AI</small></h1>
+    <p><span class="spinner"></span> Cargando datos guardados...</p>
+  </div>
+
+  <!-- ── Header ── -->
+  <header class="hdr">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div class="logo">CRYPTO<b>PLAN</b> <small>AI</small></div>
+      <div id="ticker"></div>
+    </div>
+
+    <div class="hdr-right">
+      <!-- WebSocket status -->
+      <div class="ws-status">
+        <span class="ws-dot connecting" id="ws-dot-ref"></span>
+        <span id="ws-label" style="color:var(--yellow)">CONECTANDO...</span>
+      </div>
+
+      <!-- Scanner toggle -->
+      <button id="scanner-toggle-hdr" class="scanner-btn off">📡 ESCÁNER OFF</button>
+
+      <!-- Adapt strategy (hidden until 3 closed trades) -->
+      <button id="btn-adapt" class="btn btny" style="font-size:10px;padding:7px 12px;display:none">
+        🧠 ADAPTAR
+      </button>
+
+      <!-- Generate analysis -->
+      <button id="btn-gen" class="btn-main" disabled>
+        <span>⚡</span> ANALIZAR AHORA
+      </button>
+    </div>
+  </header>
+
+  <!-- ── Layout ── -->
+  <div class="layout">
+
+    <!-- ── Sidebar ── -->
+    <nav class="side">
+      <div class="ns">Trading</div>
+      <button class="nb on"  data-tab="ops">📋 Operaciones</button>
+      <button class="nb"     data-tab="alerts">
+        🔔 Alertas IA
+        <span class="nb-badge" id="alert-badge" style="display:none">0</span>
+      </button>
+      <button class="nb" data-tab="perf">📈 Rendimiento</button>
+      <button class="nb" data-tab="mkt">📡 Mercado</button>
+      <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
+
+      <div class="ns">Config</div>
+      <button class="nb" data-tab="profile">🎯 Mi Perfil</button>
+      <button class="nb" data-tab="capital">💰 Capital</button>
+
+      <!-- Scanner mini status -->
+      <div class="scanner-mini" id="scanner-mini" style="display:none">
+        <div class="scanner-mini-title">
+          <span class="scanner-mini-dot"></span>
+          ESCÁNER ACTIVO
+        </div>
+        <div style="color:var(--muted)" id="scanner-mini-time"></div>
+        <div style="color:var(--muted)" id="scanner-mini-freq"></div>
+      </div>
+
+      <!-- Storage panel -->
+      <div id="storage-info" class="storage-panel"></div>
+    </nav>
+
+    <!-- ── Content ── -->
+    <main class="cnt">
+
+      <!-- Operaciones -->
+      <div id="sec-ops" class="sec on"></div>
+
+      <!-- Alertas IA -->
+      <div id="sec-alerts" class="sec"></div>
+
+      <!-- Rendimiento -->
+      <div id="sec-perf" class="sec"></div>
+
+      <!-- Mercado -->
+      <div id="sec-mkt" class="sec"></div>
+
+      <!-- Estrategia IA -->
+      <div id="sec-strat" class="sec"></div>
+
+      <!-- Mi Perfil -->
+      <div id="sec-profile" class="sec"></div>
+
+      <!-- Capital -->
+      <div id="sec-capital" class="sec"></div>
+
+    </main>
+  </div>
+
+  <!-- ── Close Trade Modal ── -->
+  <div class="ov" id="close-modal" data-result="WIN">
+    <div class="modal">
+      <div class="mh">
+        <div class="mt" id="close-modal-title">Cerrar Operación</div>
+        <button class="btn btnr" id="btn-close-cancel" style="font-size:10px;padding:5px 10px">✕</button>
+      </div>
+      <div class="mb">
+        <div class="al al-b" style="margin-bottom:12px">Registra el resultado real de esta operación.</div>
+        <div class="grid-2" style="margin-bottom:12px">
+          <div>
+            <label class="lbl">Resultado</label>
+            <div style="display:flex;gap:8px">
+              <button id="close-result-win"  class="btn btng" style="flex:1">WIN</button>
+              <button id="close-result-loss" class="btn btnr" style="flex:1;opacity:.45">LOSS</button>
+            </div>
+          </div>
+          <div>
+            <label class="lbl">P&L en USD (absoluto)</label>
+            <input class="inp" type="number" id="close-pnl-input" placeholder="0.00">
+          </div>
+        </div>
+      </div>
+      <div class="mf">
+        <button class="btn btnr" id="btn-close-cancel2" onclick="qs('#close-modal').classList.remove('open')">Cancelar</button>
+        <button class="btn btng" id="btn-close-confirm">✓ Confirmar cierre</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Toast (created by JS) ── -->
+
+  <script src="app.js"></script>
+</body>
+</html>
