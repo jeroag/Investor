@@ -5,7 +5,7 @@
 'use strict';
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
-const CLAUDE_MODEL = 'claude-sonnet-4-5';
+const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
   ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt']
     .map(s => s + '@miniTicker').join('/');
