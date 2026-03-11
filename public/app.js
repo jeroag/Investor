@@ -36,6 +36,9 @@ const STORAGE_KEYS = {
   priceAlerts:   'cp:priceAlerts',
   scanLog:       'cp:scanLog',
   aiHistory:     'cp:aiHistory',
+  darkMode:      'cp:darkMode',
+  goals:         'cp:goals',
+  onboarded:     'cp:onboarded',
 };
 
 const DEFAULT_PROFILE = {
@@ -300,6 +303,9 @@ const state = {
   priceAlerts:  [],
   scanLog:      [],
   aiHistory:    [],
+  darkMode:     false,
+  goals:        [],
+  onboarded:    false,
 
   // session
   prices:       {},
@@ -340,6 +346,9 @@ function loadAll() {
   state.priceAlerts  = storage.get(STORAGE_KEYS.priceAlerts)   ?? [];
   state.scanLog      = storage.get(STORAGE_KEYS.scanLog)        ?? [];
   state.aiHistory    = storage.get(STORAGE_KEYS.aiHistory)      ?? [];
+  state.darkMode     = storage.get(STORAGE_KEYS.darkMode)       ?? false;
+  state.goals        = storage.get(STORAGE_KEYS.goals)          ?? [];
+  state.onboarded    = storage.get(STORAGE_KEYS.onboarded)      ?? false;
 }
 
 function saveKey(key, value) { storage.set(STORAGE_KEYS[key], value); }
@@ -635,6 +644,9 @@ Notas del trader: ${profile.notes||'ninguna'}
 ━━━ HISTORIAL ━━━
 ${tradeHistory}
 
+━━━ CALENDARIO ECONÓMICO (próx. 48h) ━━━
+${buildCalendarContext()}
+
 ━━━ DATOS TÉCNICOS REALES BINANCE ━━━
 ${techCtx}
 
@@ -690,6 +702,7 @@ ${techCtx}
 ━━━ CONTEXTO ━━━
 Perfil: ${profile.style}, riesgo ${profile.risk_tolerance}, capital $${profile.capital}, leverage ${profile.leverage||1}x
 Historial: ${tradeHistory}
+Calendario económico: ${buildCalendarContext()}
 Estrategia activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado||'swing'} ${strategy?.estrategiaAdaptada?.timeframe||'4H'}
 Alertas recientes (NO duplicar mismo par+dirección): ${recentAlerts||'ninguna'}
 Posiciones abiertas: ${activeTrades.length}
@@ -1589,6 +1602,17 @@ function renderAlerts() {
       </div>
     </div>`;
 
+  // ── Calendario económico ──
+  html += `
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div class="stl" style="margin:0">📅 Calendario Económico — próx. 48h</div>
+        <span style="font-size:9px;color:var(--muted)">Solo eventos USD / macro crypto relevantes</span>
+      </div>
+      <div id="calendar-section"></div>
+    </div>`;
+  // Render calendar after innerHTML is set (done below)
+
   // Alert list
   if (state.alerts.length === 0) {
     html += `<div class="empty"><div class="ei">🔔</div><div class="et">Sin alertas aún.<br>Activa el escáner para que la IA monitorice<br>el mercado y te avise de oportunidades.</div></div>`;
@@ -1649,6 +1673,9 @@ function renderAlerts() {
   }
 
   root.innerHTML = html;
+
+  // Renderizar calendario económico (requiere que el DOM esté listo)
+  renderCalendarSection();
 
   // Inyectar paneles dinámicos después del renderizado
   // Panel de alertas de precio
@@ -2283,15 +2310,16 @@ function setTab(id) {
   qsa('.nb').forEach(b => b.classList.toggle('on', b.dataset.tab === id));
   qsa('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + id));
 
-  // Render the selected section
   const renders = {
-    ops:     renderOps,
-    alerts:  renderAlerts,
-    perf:    renderPerf,
-    mkt:     renderMkt,
-    strat:   renderStrategy,
-    profile: renderProfile,
-    capital: renderCapital,
+    ops:      renderOps,
+    alerts:   renderAlerts,
+    perf:     renderPerf,
+    mkt:      renderMkt,
+    strat:    renderStrategy,
+    profile:  renderProfile,
+    capital:  renderCapital,
+    backtest: renderBacktest,
+    goals:    renderGoals,
   };
   if (renders[id]) renders[id]();
 }
@@ -2473,60 +2501,656 @@ function renderAll() {
   if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
 
   const id = state.currentTab;
-  if (id === 'ops')     renderOps();
-  if (id === 'alerts')  renderAlerts();
-  if (id === 'perf')    renderPerf();
-  if (id === 'mkt')     renderMkt();
-  if (id === 'strat')   renderStrategy();
-  if (id === 'profile') renderProfile();
-  if (id === 'capital') renderCapital();
+  if (id === 'ops')      renderOps();
+  if (id === 'alerts')   renderAlerts();
+  if (id === 'perf')     renderPerf();
+  if (id === 'mkt')      renderMkt();
+  if (id === 'strat')    renderStrategy();
+  if (id === 'profile')  renderProfile();
+  if (id === 'capital')  renderCapital();
+  if (id === 'backtest') renderBacktest();
+  if (id === 'goals')    renderGoals();
+}
+
+/* ══════════════════════════════════════════════════════════
+   MODO OSCURO
+   ══════════════════════════════════════════════════════════ */
+function applyDarkMode(on) {
+  document.body.classList.toggle('dark', on);
+  const btn = qs('#dark-toggle');
+  if (btn) btn.textContent = on ? '☀️' : '🌙';
+  // TradingView iframes necesitan recargarse
+  if (qs('#tv-modal')) qs('#tv-modal').remove();
+}
+
+function toggleDarkMode() {
+  state.darkMode = !state.darkMode;
+  saveKey('darkMode', state.darkMode);
+  applyDarkMode(state.darkMode);
+}
+
+/* ══════════════════════════════════════════════════════════
+   ZONAS S/R MEJORADAS (confluencia de toques)
+   ══════════════════════════════════════════════════════════ */
+function calcSRZones(highs, lows, closes, tolerance = 0.015) {
+  // Agrupa swings por proximidad para encontrar zonas con múltiples toques
+  const swingH = [], swingL = [];
+  const n = Math.min(closes.length - 2, 100);
+  for (let i = 1; i < n; i++) {
+    if (highs[i] > highs[i-1] && highs[i] > highs[i+1]) swingH.push(highs[i]);
+    if (lows[i]  < lows[i-1]  && lows[i]  < lows[i+1])  swingL.push(lows[i]);
+  }
+
+  function clusterLevels(levels) {
+    const clusters = [];
+    levels.forEach(l => {
+      const existing = clusters.find(c => Math.abs(c.level - l) / c.level < tolerance);
+      if (existing) { existing.touches++; existing.level = (existing.level + l) / 2; }
+      else clusters.push({ level: l, touches: 1 });
+    });
+    return clusters.filter(c => c.touches >= 1).sort((a,b) => b.touches - a.touches);
+  }
+
+  const price = closes[closes.length - 1];
+  const supZones = clusterLevels(swingL).filter(z => z.level < price).sort((a,b) => b.level - a.level);
+  const resZones = clusterLevels(swingH).filter(z => z.level > price).sort((a,b) => a.level - b.level);
+
+  return {
+    sup1: supZones[0] || null,
+    sup2: supZones[1] || null,
+    res1: resZones[0] || null,
+    res2: resZones[1] || null,
+  };
+}
+
+/* ══════════════════════════════════════════════════════════
+   CALENDARIO ECONÓMICO
+   ══════════════════════════════════════════════════════════ */
+let calendarData = [];
+let calendarLastFetch = 0;
+
+async function fetchEconomicCalendar() {
+  // Solo refrescar cada 30 min
+  if (Date.now() - calendarLastFetch < 30 * 60 * 1000 && calendarData.length > 0) return calendarData;
+  try {
+    // ForexFactory JSON público (semana actual)
+    const res = await fetch('https://nfs.faireconomy.media/ff_calendar_thisweek.json');
+    if (!res.ok) throw new Error('no disponible');
+    const data = await res.json();
+    // Filtrar solo impacto alto y medio, próximas 48h
+    const now  = Date.now();
+    const end  = now + 48 * 3600 * 1000;
+    calendarData = data
+      .filter(e => {
+        const ts = new Date(e.date).getTime();
+        return ts >= now - 3600000 && ts <= end && (e.impact === 'High' || e.impact === 'Medium');
+      })
+      .map(e => ({
+        time:     new Date(e.date).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
+        date:     new Date(e.date).toLocaleDateString('es-ES',{weekday:'short',day:'numeric',month:'short'}),
+        currency: e.currency,
+        title:    e.title,
+        impact:   e.impact,
+        forecast: e.forecast || '—',
+        previous: e.previous || '—',
+      }))
+      .slice(0, 20);
+    calendarLastFetch = Date.now();
+    return calendarData;
+  } catch {
+    // Fallback: placeholder si la API no responde
+    calendarData = [];
+    return [];
+  }
+}
+
+function buildCalendarContext() {
+  if (calendarData.length === 0) return 'Sin datos de calendario económico disponibles.';
+  const high = calendarData.filter(e => e.impact === 'High');
+  const med  = calendarData.filter(e => e.impact === 'Medium');
+  const lines = [
+    high.length > 0 ? `⚠️ ALTO IMPACTO próx. 48h: ${high.map(e=>`${e.currency} ${e.title} (${e.date} ${e.time})`).join(' | ')}` : '',
+    med.length  > 0 ? `📋 Medio impacto: ${med.slice(0,3).map(e=>`${e.currency} ${e.title}`).join(' | ')}` : '',
+  ].filter(Boolean);
+  return lines.join('\n') || 'Sin eventos relevantes próximas 48h.';
+}
+
+function renderCalendarSection() {
+  const root = qs('#calendar-section');
+  if (!root) return;
+
+  if (calendarData.length === 0) {
+    root.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:10px 0">
+      Cargando calendario... <button class="btn" style="padding:3px 8px;font-size:10px" onclick="refreshCalendar()">↻ Cargar</button>
+    </div>`;
+    return;
+  }
+
+  const highEvents = calendarData.filter(e => e.impact === 'High');
+  const rows = calendarData.map(e => `
+    <div class="cal-event">
+      <div class="cal-impact ${e.impact === 'High' ? 'high' : 'medium'}" title="${e.impact} Impact"></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:500;color:var(--text);font-size:11px">${e.title}</div>
+        <div style="font-size:9px;color:var(--muted)">${e.currency} · ${e.date} ${e.time}</div>
+      </div>
+      <div style="text-align:right;font-size:10px;color:var(--muted)">
+        <div>P: ${e.previous}</div>
+        <div>E: ${e.forecast}</div>
+      </div>
+    </div>`).join('');
+
+  root.innerHTML = `
+    ${highEvents.length > 0 ? `
+    <div style="padding:8px 12px;background:#F4EBEB;border:1px solid #D9BCBC;border-radius:8px;margin-bottom:10px;font-size:11px;color:#8A4A4A">
+      ⚠️ <b>${highEvents.length} evento${highEvents.length>1?'s':''} de ALTO impacto</b> en próximas 48h — considera reducir tamaño de posición
+    </div>` : `
+    <div style="padding:7px 12px;background:#E9F4EC;border:1px solid #BCD9C5;border-radius:8px;margin-bottom:10px;font-size:11px;color:#4A7A5A">
+      ✓ Sin eventos de alto impacto en próximas 48h
+    </div>`}
+    ${rows}
+    <div style="font-size:9px;color:var(--muted);margin-top:8px;text-align:right">
+      Fuente: ForexFactory · Solo USD/BTC relevantes · <button onclick="refreshCalendar()" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:9px">↻ Actualizar</button>
+    </div>`;
+}
+
+async function refreshCalendar() {
+  calendarLastFetch = 0; // forzar refresh
+  await fetchEconomicCalendar();
+  renderCalendarSection();
+  if (state.currentTab === 'alerts') renderAlerts();
+}
+
+/* ══════════════════════════════════════════════════════════
+   BACKTESTING VISUAL
+   ══════════════════════════════════════════════════════════ */
+const BT_FILTERS = {
+  minRR:   0,
+  minConf: 0,
+  tipo:    'ALL',
+  setup:   '',
+  par:     'ALL',
+};
+
+function runBacktest(trades, filters = BT_FILTERS) {
+  let filtered = trades.filter(t => {
+    if (filters.tipo !== 'ALL' && t.tipo !== filters.tipo) return false;
+    if (filters.par  !== 'ALL' && t.par  !== filters.par)  return false;
+    if (filters.minConf > 0 && (t.confianza || 0) < filters.minConf) return false;
+    if (filters.minRR  > 0 && parseFloat(t.rr || 0) < filters.minRR) return false;
+    if (filters.setup && !(t.setup || '').toLowerCase().includes(filters.setup.toLowerCase())) return false;
+    return true;
+  });
+
+  const wins   = filtered.filter(t => t.result === 'WIN').length;
+  const losses = filtered.filter(t => t.result === 'LOSS').length;
+  const totalPnl   = filtered.reduce((a,t) => a+(t.pnl||0), 0);
+  const grossWin   = filtered.filter(t=>t.result==='WIN').reduce((a,t)=>a+(t.pnl||0),0);
+  const grossLoss  = Math.abs(filtered.filter(t=>t.result==='LOSS').reduce((a,t)=>a+(t.pnl||0),0));
+  const winRate    = filtered.length > 0 ? (wins/filtered.length*100).toFixed(1) : 0;
+  const pf         = grossLoss > 0 ? (grossWin/grossLoss).toFixed(2) : grossWin > 0 ? '∞' : '0';
+  const avgPnl     = filtered.length > 0 ? (totalPnl/filtered.length).toFixed(2) : 0;
+
+  return { filtered, wins, losses, total: filtered.length, totalPnl, winRate, pf, avgPnl };
+}
+
+function renderBacktest() {
+  const root = qs('#sec-backtest');
+  if (!root) return;
+
+  const { closedTrades } = state;
+  const allPairs  = [...new Set(closedTrades.map(t => t.par))];
+  const result    = runBacktest(closedTrades, BT_FILTERS);
+
+  // Equity curve del backtest
+  let cap = state.profile.capital;
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
+  const maxP = Math.max(...pts), minP = Math.min(...pts);
+  const bars = pts.map((v,i) => {
+    const h = maxP===minP ? 50 : ((v-minP)/(maxP-minP))*85+15;
+    const prev = pts[i-1];
+    const col = !prev ? 'var(--accent)' : v>=prev ? 'var(--green)' : 'var(--red)';
+    return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
+  }).join('');
+
+  const tradeRows = result.filtered.slice(0, 30).map(t => `
+    <div class="hist-row" style="padding:7px 0">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
+        <span style="font-weight:600">${t.par}</span>
+        <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
+        <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
+        <span style="font-size:9px;color:var(--subtle)">${t.closedAt||''}</span>
+      </div>
+      <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+    </div>`).join('');
+
+  root.innerHTML = `
+    <div class="stl">◈ Backtesting Visual</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:16px">Filtra tu historial real para descubrir qué setups, pares y condiciones funcionan mejor.</div>
+
+    <!-- Filtros -->
+    <div class="card">
+      <div class="stl">Filtros</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
+        <div>
+          <div class="lbl">Dirección</div>
+          <select class="inp" id="bt-tipo" onchange="applyBtFilter()" style="font-size:12px">
+            <option value="ALL">Todas</option>
+            <option value="LONG">Solo LONG</option>
+            <option value="SHORT">Solo SHORT</option>
+          </select>
+        </div>
+        <div>
+          <div class="lbl">Par</div>
+          <select class="inp" id="bt-par" onchange="applyBtFilter()" style="font-size:12px">
+            <option value="ALL">Todos</option>
+            ${allPairs.map(p=>`<option value="${p}">${p}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <div class="lbl">Confianza IA mínima</div>
+          <input class="inp" type="number" id="bt-conf" value="0" min="0" max="100" onchange="applyBtFilter()" style="font-size:12px"/>
+        </div>
+        <div>
+          <div class="lbl">R:R mínimo</div>
+          <input class="inp" type="number" id="bt-rr" value="0" min="0" step="0.1" onchange="applyBtFilter()" style="font-size:12px"/>
+        </div>
+        <div>
+          <div class="lbl">Setup contiene</div>
+          <input class="inp" type="text" id="bt-setup" placeholder="Ej: RSI, EMA..." onchange="applyBtFilter()" style="font-size:12px"/>
+        </div>
+      </div>
+      <button class="btn" onclick="resetBtFilters()" style="font-size:10px">↺ Limpiar filtros</button>
+    </div>
+
+    <!-- Resultados -->
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px" id="bt-stats">
+      <div class="bt-stat"><div class="bt-stat-lbl">Ops filtradas</div><div class="bt-stat-val" id="bt-total">${result.total}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Win Rate</div><div class="bt-stat-val" style="color:${parseFloat(result.winRate)>=50?'var(--green)':'var(--red)'}" id="bt-wr">${result.winRate}%</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">P&L Total</div><div class="bt-stat-val" style="color:${result.totalPnl>=0?'var(--green)':'var(--red)'}" id="bt-pnl">${fmtUSD(result.totalPnl)}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Profit Factor</div><div class="bt-stat-val" style="color:${parseFloat(result.pf)>=1?'var(--green)':'var(--red)'}" id="bt-pf">${result.pf}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Media/op</div><div class="bt-stat-val" style="color:${parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)'}" id="bt-avg">${fmtUSD(parseFloat(result.avgPnl))}</div></div>
+    </div>
+
+    <!-- Curva -->
+    <div class="card">
+      <div class="stl">Curva de Capital Filtrada</div>
+      ${pts.length > 1 ? `<div class="equity-bars" id="bt-curve">${bars}</div>` : `<div class="empty" style="padding:20px"><div class="et">Sin datos para los filtros actuales.</div></div>`}
+    </div>
+
+    <!-- Trades -->
+    <div class="card">
+      <div class="stl">Operaciones (${result.total})</div>
+      <div id="bt-trades">${tradeRows || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>'}</div>
+    </div>`;
+}
+
+function applyBtFilter() {
+  BT_FILTERS.tipo    = qs('#bt-tipo')?.value  || 'ALL';
+  BT_FILTERS.par     = qs('#bt-par')?.value   || 'ALL';
+  BT_FILTERS.minConf = parseFloat(qs('#bt-conf')?.value) || 0;
+  BT_FILTERS.minRR   = parseFloat(qs('#bt-rr')?.value)   || 0;
+  BT_FILTERS.setup   = qs('#bt-setup')?.value || '';
+
+  const result = runBacktest(state.closedTrades, BT_FILTERS);
+
+  // Update stats
+  const set = (id, val, color) => {
+    const el = qs('#'+id);
+    if (el) { el.textContent = val; if (color) el.style.color = color; }
+  };
+  set('bt-total', result.total);
+  set('bt-wr',    result.winRate+'%', parseFloat(result.winRate)>=50?'var(--green)':'var(--red)');
+  set('bt-pnl',   fmtUSD(result.totalPnl), result.totalPnl>=0?'var(--green)':'var(--red)');
+  set('bt-pf',    result.pf, parseFloat(result.pf)>=1?'var(--green)':'var(--red)');
+  set('bt-avg',   fmtUSD(parseFloat(result.avgPnl)), parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)');
+
+  // Update curve
+  let cap = state.profile.capital;
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
+  const maxP = Math.max(...pts), minP = Math.min(...pts);
+  const curve = qs('#bt-curve');
+  if (curve) {
+    curve.innerHTML = pts.map((v,i) => {
+      const h = maxP===minP?50:((v-minP)/(maxP-minP))*85+15;
+      const prev=pts[i-1], col=!prev?'var(--accent)':v>=prev?'var(--green)':'var(--red)';
+      return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
+    }).join('');
+  }
+
+  // Update trades list
+  const trd = qs('#bt-trades');
+  if (trd) {
+    trd.innerHTML = result.filtered.slice(0,30).map(t => `
+      <div class="hist-row" style="padding:7px 0">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+          <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
+          <span style="font-weight:600">${t.par}</span>
+          <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
+          <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
+        </div>
+        <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+      </div>`).join('') || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>';
+  }
+}
+
+function resetBtFilters() {
+  Object.assign(BT_FILTERS, { minRR:0, minConf:0, tipo:'ALL', setup:'', par:'ALL' });
+  const s = (id, v) => { const el=qs('#'+id); if(el) el.value=v; };
+  s('bt-tipo','ALL'); s('bt-par','ALL'); s('bt-conf','0'); s('bt-rr','0'); s('bt-setup','');
+  applyBtFilter();
+}
+
+/* ══════════════════════════════════════════════════════════
+   SISTEMA DE OBJETIVOS
+   ══════════════════════════════════════════════════════════ */
+function addGoal(title, targetPnl, deadline) {
+  const goal = {
+    id:        uid(),
+    title,
+    targetPnl: parseFloat(targetPnl),
+    deadline,
+    createdAt: nowFull(),
+    startCapital: state.profile.capital,
+  };
+  state.goals.push(goal);
+  saveKey('goals', state.goals);
+  renderGoals();
+  showToast(`🎯 Objetivo "${title}" creado`);
+}
+
+function deleteGoal(id) {
+  state.goals = state.goals.filter(g => g.id !== id);
+  saveKey('goals', state.goals);
+  renderGoals();
+}
+
+function renderGoals() {
+  const root = qs('#goals-section');
+  if (!root) return;
+
+  const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
+  const activePnl = state.activeTrades.reduce((acc,t) => {
+    const p = state.prices[coinOf(t.par)] || t.entrada;
+    const lev = t.leverage||1;
+    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size*lev : (t.entrada-p)*t.size*lev);
+  }, 0);
+  const totalPnl = closedPnl + activePnl;
+  const capital  = state.profile.capital;
+
+  const goalCards = state.goals.map(g => {
+    const progress = g.targetPnl > 0 ? Math.min((totalPnl / g.targetPnl) * 100, 100) : 0;
+    const remaining = g.targetPnl - totalPnl;
+    const daysLeft  = g.deadline ? Math.ceil((new Date(g.deadline) - new Date()) / 86400000) : null;
+    const achieved  = totalPnl >= g.targetPnl;
+    const color     = achieved ? 'var(--green)' : progress > 50 ? 'var(--yellow)' : 'var(--accent)';
+
+    // Proyección: basada en ops/semana y avg pnl
+    let projection = '';
+    if (state.closedTrades.length >= 3) {
+      const oldest = state.closedTrades[state.closedTrades.length - 1];
+      const days   = oldest?.closedAt ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.closedAt?.split(',')[0].split('/').reverse().join('-'))) / 86400000)) : 30;
+      const dailyRate = (closedPnl / days);
+      if (dailyRate > 0 && remaining > 0) {
+        const daysNeeded = Math.ceil(remaining / dailyRate);
+        projection = `A tu ritmo actual: ~${daysNeeded} días para alcanzarlo`;
+      }
+    }
+
+    return `
+      <div class="goal-card">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+          <div>
+            <div style="font-weight:600;font-family:var(--serif);font-size:14px">${g.title}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">
+              Objetivo: <b style="color:var(--text)">+${fmtUSD(g.targetPnl)}</b>
+              ${g.deadline ? ` · Fecha límite: ${new Date(g.deadline).toLocaleDateString('es-ES')}` : ''}
+              ${daysLeft !== null ? ` · <span style="color:${daysLeft<7?'var(--red)':'var(--muted)'}">${daysLeft}d restantes</span>` : ''}
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            ${achieved ? '<span class="tag tg">✓ LOGRADO</span>' : ''}
+            <button onclick="deleteGoal('${g.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px">×</button>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px">
+          <span style="color:var(--muted)">Progreso</span>
+          <span style="font-weight:600;color:${color}">${progress.toFixed(1)}%</span>
+        </div>
+        <div class="goal-progress-track">
+          <div class="goal-progress-fill" style="width:${progress}%;background:${color}"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:5px">
+          <span>P&L actual: <b style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(totalPnl)}</b></span>
+          <span>Faltan: <b style="color:var(--text)">${fmtUSD(Math.max(0, remaining))}</b></span>
+        </div>
+        ${projection ? `<div style="font-size:10px;color:var(--accent);margin-top:5px">📈 ${projection}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="stl">🎯 Mis Objetivos</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Define una meta de P&L y sigue tu progreso en tiempo real.</div>
+
+    <!-- Crear objetivo -->
+    <div class="card" style="margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
+        <div>
+          <div class="lbl">Nombre del objetivo</div>
+          <input class="inp" type="text" id="goal-title" placeholder="Ej: Meta del mes" style="font-size:12px"/>
+        </div>
+        <div>
+          <div class="lbl">P&L objetivo ($)</div>
+          <input class="inp" type="number" id="goal-pnl" placeholder="Ej: 500" step="any" style="font-size:12px"/>
+        </div>
+        <div>
+          <div class="lbl">Fecha límite (opcional)</div>
+          <input class="inp" type="date" id="goal-date" style="font-size:12px"/>
+        </div>
+        <button class="btn btng" style="padding:8px 14px;font-size:11px" onclick="submitGoal()">+ Añadir</button>
+      </div>
+    </div>
+
+    ${state.goals.length === 0
+      ? `<div class="empty" style="padding:30px"><div class="ei">🎯</div><div class="et">Sin objetivos aún. Crea uno para seguir tu progreso.</div></div>`
+      : goalCards
+    }`;
+}
+
+function submitGoal() {
+  const title  = qs('#goal-title')?.value?.trim();
+  const pnl    = parseFloat(qs('#goal-pnl')?.value);
+  const date   = qs('#goal-date')?.value || null;
+  if (!title || !pnl || pnl <= 0) { showToast('Rellena nombre y objetivo', true); return; }
+  addGoal(title, pnl, date);
+  if (qs('#goal-title')) qs('#goal-title').value = '';
+  if (qs('#goal-pnl'))   qs('#goal-pnl').value   = '';
+  if (qs('#goal-date'))  qs('#goal-date').value   = '';
+}
+
+/* ══════════════════════════════════════════════════════════
+   ONBOARDING WIZARD
+   ══════════════════════════════════════════════════════════ */
+let onboardStep = 0;
+const ONBOARD_STEPS = [
+  {
+    title: 'Bienvenido a CryptoPlan AI 🎉',
+    desc:  'Tu asistente de trading con análisis técnico real. En 3 pasos lo dejamos listo para ti.',
+    fields: null,
+    cta:   'Empezar →',
+  },
+  {
+    title: 'Tu perfil de riesgo',
+    desc:  'Esto ayuda a la IA a calibrar las propuestas según tu estilo.',
+    fields: 'profile',
+    cta:   'Siguiente →',
+  },
+  {
+    title: 'Tu capital de trading',
+    desc:  'Introduce cuánto capital tienes disponible para operar. Puedes cambiarlo en cualquier momento.',
+    fields: 'capital',
+    cta:   'Siguiente →',
+  },
+  {
+    title: '¡Todo listo! 🚀',
+    desc:  'La IA ya tiene tu perfil. Activa el escáner o pulsa "Analizar" para tu primera propuesta.',
+    fields: null,
+    cta:   'Empezar a operar',
+  },
+];
+
+function showOnboarding() {
+  if (state.onboarded) return;
+  onboardStep = 0;
+  renderOnboardStep();
+}
+
+function renderOnboardStep() {
+  const existing = qs('#onboard-overlay');
+  if (existing) existing.remove();
+
+  const step = ONBOARD_STEPS[onboardStep];
+  const total = ONBOARD_STEPS.length;
+  const pct   = ((onboardStep + 1) / total) * 100;
+
+  const overlay = el('div', '');
+  overlay.id = 'onboard-overlay';
+  overlay.className = 'onboard-overlay';
+  overlay.innerHTML = `
+    <div class="onboard-card">
+      <div class="onboard-progress">
+        <div class="onboard-bar" style="width:${pct}%"></div>
+      </div>
+      <div style="padding:28px 28px 20px">
+        <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px">PASO ${onboardStep+1} DE ${total}</div>
+        <div style="font-family:var(--serif);font-size:20px;font-weight:600;margin-bottom:8px">${step.title}</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:22px">${step.desc}</div>
+
+        ${step.fields === 'profile' ? `
+          <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:22px">
+            <div>
+              <div class="lbl">Estilo de trading</div>
+              <select class="inp" id="ob-style" style="font-size:12px">
+                <option value="scalping">Scalping (minutos)</option>
+                <option value="daytrading">Day Trading (horas)</option>
+                <option value="swing" selected>Swing (días)</option>
+                <option value="position">Position (semanas)</option>
+              </select>
+            </div>
+            <div>
+              <div class="lbl">Tolerancia al riesgo</div>
+              <select class="inp" id="ob-risk" style="font-size:12px">
+                <option value="conservador">Conservador — prefiero capital seguro</option>
+                <option value="moderado" selected>Moderado — equilibrio riesgo/beneficio</option>
+                <option value="agresivo">Agresivo — acepto mayor riesgo</option>
+              </select>
+            </div>
+          </div>` : ''}
+
+        ${step.fields === 'capital' ? `
+          <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:22px">
+            <div>
+              <div class="lbl">Capital disponible ($)</div>
+              <input class="inp" type="number" id="ob-capital" value="${state.profile.capital}" step="any" style="font-family:var(--serif);font-size:20px;font-weight:600;text-align:center"/>
+            </div>
+            <div>
+              <div class="lbl">Riesgo por operación (%)</div>
+              <div style="display:flex;gap:8px">
+                ${[1,2,3,5].map(v => `<button class="btn${state.profile.risk_pct===v?' btng':''}" id="ob-rp-${v}" onclick="setObRisk(${v})" style="flex:1;justify-content:center;font-size:12px">${v}%</button>`).join('')}
+              </div>
+              <div style="font-size:10px;color:var(--muted);margin-top:5px">Riesgo recomendado para principiantes: 1-2%</div>
+            </div>
+          </div>` : ''}
+
+        <div style="display:flex;gap:10px;align-items:center">
+          ${onboardStep > 0 ? `<button class="btn" style="font-size:12px;padding:9px 16px" onclick="onboardBack()">← Atrás</button>` : ''}
+          <button class="btn-main" style="flex:1;justify-content:center;font-size:13px;padding:12px" onclick="onboardNext()">${step.cta}</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+}
+
+function setObRisk(v) {
+  state.profile.risk_pct = v;
+  [1,2,3,5].forEach(n => {
+    const b = qs(`#ob-rp-${n}`);
+    if (b) b.className = 'btn' + (n===v?' btng':'');
+  });
+}
+
+function onboardNext() {
+  const step = ONBOARD_STEPS[onboardStep];
+  if (step.fields === 'profile') {
+    state.profile.style            = qs('#ob-style')?.value || 'swing';
+    state.profile.risk_tolerance   = qs('#ob-risk')?.value  || 'moderado';
+    saveKey('profile', state.profile);
+  }
+  if (step.fields === 'capital') {
+    state.profile.capital  = parseFloat(qs('#ob-capital')?.value) || 1000;
+    saveKey('profile', state.profile);
+  }
+  onboardStep++;
+  if (onboardStep >= ONBOARD_STEPS.length) {
+    state.onboarded = true;
+    saveKey('onboarded', true);
+    qs('#onboard-overlay')?.remove();
+    showToast('✓ Perfil configurado. ¡Listo para operar!');
+    renderAll();
+    return;
+  }
+  renderOnboardStep();
+}
+
+function onboardBack() {
+  if (onboardStep > 0) { onboardStep--; renderOnboardStep(); }
 }
 
 /* ── Init ────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
-  // Load persisted data
   loadAll();
 
-  // Hide loading screen
+  // Aplicar modo oscuro guardado ANTES de mostrar nada
+  applyDarkMode(state.darkMode);
+
   const loader = qs('#loading-screen');
   if (loader) loader.remove();
 
-  // Wire nav buttons
   qsa('.nb').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
 
-  // Wire header buttons
   qs('#btn-gen')            ?.addEventListener('click', onGenerate);
   qs('#btn-adapt')          ?.addEventListener('click', onAdaptStrategy);
   qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
 
-  // Inicializar MARKET_META con las monedas guardadas
   initMarketMeta(state.watchedCoins);
-
-  // Start WebSocket
   connectWS();
 
-  // Initial render
   setTab('ops');
   renderStoragePanel();
   renderBalanceWidget();
   updateAlertBadge();
 
-  // Show/hide adapt button
   const adaptBtn = qs('#btn-adapt');
   if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
 
-  // Cargar datos de mercado reales (RSI, soporte, resistencia)
+  // Datos de mercado + calendario
   fetchMarketMeta();
-  setInterval(fetchMarketMeta, 15 * 60 * 1000); // refrescar cada 15 min
+  fetchEconomicCalendar();
+  setInterval(fetchMarketMeta, 15 * 60 * 1000);
+  setInterval(fetchEconomicCalendar, 30 * 60 * 1000);
 
-  // Sincronizar trades con servidor y polling de cierres automáticos
   syncTradesToServer();
-  setInterval(pollServerClosedTrades, 15000); // revisar cada 15 segundos
+  setInterval(pollServerClosedTrades, 15000);
+
+  // Onboarding: mostrar solo si es la primera vez
+  if (!state.onboarded) {
+    setTimeout(() => showOnboarding(), 800);
+  }
 });
 
-// Expose globals needed by inline onclick handlers
 Object.assign(window, {
   qs, state, setTab, toggleScanner, runScan, requestNotifPermission,
   setScanIntervalVal, acceptAlertById, rejectAlert, clearAlerts,
@@ -2539,5 +3163,11 @@ Object.assign(window, {
   toggleWatchedCoin, openChart,
   submitPriceAlert, deletePriceAlert,
   toggleScanLog, toggleBalanceEdit, saveQuickCapital,
+  // Nuevas funciones
+  toggleDarkMode,
+  applyBtFilter, resetBtFilters,
+  submitGoal, deleteGoal,
+  onboardNext, onboardBack, setObRisk,
+  refreshCalendar,
   resetAll, renderAll,
 });
