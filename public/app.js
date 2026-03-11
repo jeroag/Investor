@@ -25,7 +25,8 @@ const DEFAULT_PROFILE = {
   preferred_coins: ['BTC','ETH'],
   notes: '',
   capital: 1000,
-  risk_pct: 2
+  risk_pct: 2,
+  leverage: 1,         // apalancamiento por defecto (1x = sin apalancamiento)
 };
 
 // MARKET_META — se actualiza dinámicamente desde Binance
@@ -410,17 +411,21 @@ Responde SOLO JSON:
 }
 
 /* ── Trade management ────────────────────────────────────────────────────── */
-function calcSize(riskUSD, entry, stopLoss) {
+function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
+  // Con apalancamiento: la posición efectiva se multiplica, pero el riesgo en USD no cambia.
+  // Unidades = riesgo / (distancia_precio * apalancamiento)
+  // Así, si el precio llega al SL, la pérdida sigue siendo exactamente riskUSD.
   const dist = Math.abs(entry - stopLoss);
-  return dist > 0 ? riskUSD / dist : 0.001;
+  return dist > 0 ? riskUSD / (dist * leverage) : 0.001;
 }
 
 function acceptProposal(proposal) {
   const { profile, prices } = state;
   const riskUSD   = profile.capital * profile.risk_pct / 100;
+  const leverage  = profile.leverage || 1;
   const coin      = coinOf(proposal.par);
   const realEntry = prices[coin] || proposal.entrada;
-  const size      = calcSize(riskUSD, realEntry, proposal.stopLoss);
+  const size      = calcSize(riskUSD, realEntry, proposal.stopLoss, leverage);
 
   const trade = {
     id: uid(),
@@ -435,6 +440,7 @@ function acceptProposal(proposal) {
     confianza: proposal.confianza,
     razon:     proposal.razon,
     size:      parseFloat(size.toFixed(6)),
+    leverage,
     riskUSD,
     currentPrice: realEntry,
     pnl: 0, pnlPct: 0,
@@ -498,9 +504,11 @@ function checkTPSL() {
     if (hitSL || hitTP) {
       state.autoClosedIds.add(trade.id);
       const result = hitTP ? 'WIN' : 'LOSS';
-      const pnl    = result === 'WIN'
-        ? Math.abs(trade.riskUSD) * parseFloat(trade.rr || 1)
-        : -Math.abs(trade.riskUSD);
+      const lev    = trade.leverage || 1;
+      const exitPrice = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
+      const pnl    = trade.tipo === 'LONG'
+        ? (exitPrice - trade.entrada) * trade.size * lev
+        : (trade.entrada - exitPrice) * trade.size * lev;
       const closed = { ...trade, result, pnl, closedAt: nowFull() };
       state.closedTrades.unshift(closed);
       showToast(
@@ -539,12 +547,13 @@ function updateTradesPnl() {
     const coin  = coinOf(trade.par);
     const price = state.prices[coin] || trade.entrada;
     trade.currentPrice = price;
+    const lev    = trade.leverage || 1;
     trade.pnl    = trade.tipo === 'LONG'
-      ? (price - trade.entrada) * trade.size
-      : (trade.entrada - price) * trade.size;
+      ? (price - trade.entrada) * trade.size * lev
+      : (trade.entrada - price) * trade.size * lev;
     trade.pnlPct = trade.tipo === 'LONG'
-      ? ((price - trade.entrada) / trade.entrada) * 100
-      : ((trade.entrada - price) / trade.entrada) * 100;
+      ? ((price - trade.entrada) / trade.entrada) * 100 * lev
+      : ((trade.entrada - price) / trade.entrada) * 100 * lev;
 
     // Update DOM directly for efficiency
     const card = qs(`[data-trade-id="${trade.id}"]`);
@@ -792,12 +801,20 @@ function renderOps() {
     const coin     = coinOf(o.par);
     const price    = state.prices[coin] || o.entrada;
     const prev     = state.prevPrices[coin];
-    const pnl      = o.tipo === 'LONG' ? (price - o.entrada) * o.size : (o.entrada - price) * o.size;
-    const pnlPct   = o.tipo === 'LONG' ? ((price - o.entrada)/o.entrada)*100 : ((o.entrada - price)/o.entrada)*100;
+    const lev      = o.leverage || 1;
+    const pnl      = o.tipo === 'LONG'
+      ? (price - o.entrada) * o.size * lev
+      : (o.entrada - price) * o.size * lev;
+    const pnlPct   = o.tipo === 'LONG'
+      ? ((price - o.entrada)/o.entrada)*100 * lev
+      : ((o.entrada - price)/o.entrada)*100 * lev;
     const lc       = o.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     const priceDir = price > prev ? 'up' : price < prev ? 'dn' : 'flat';
     const arrow    = price > prev ? '▲ ' : price < prev ? '▼ ' : '';
+    const levBadge = lev > 1
+      ? `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(251,191,36,.12);border:1px solid rgba(251,191,36,.4);color:var(--yellow)">${lev}x</span>`
+      : '';
 
     html += `
       <div class="op" data-trade-id="${o.id}">
@@ -807,11 +824,12 @@ function renderOps() {
             <div class="op-hdr">
               <span class="op-pair">${o.par}</span>
               <span style="font-size:10px;color:${lc};border:1px solid ${lc}40;padding:2px 7px;border-radius:3px">${o.tipo}</span>
+              ${levBadge}
               <span class="tag tc">${o.confianza}% IA</span>
               <span class="live-price ${priceDir}">${arrow}${fmtP(price, coin)}</span>
               <span class="op-pnl" style="color:${pnlColor}">${fmtUSD(pnl)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)</span>
             </div>
-            <div class="op-meta">${o.setup} · ${o.createdAt} · Riesgo $${(o.riskUSD || 0).toFixed(2)}</div>
+            <div class="op-meta">${o.setup} · ${o.createdAt} · Riesgo $${(o.riskUSD || 0).toFixed(2)}${lev > 1 ? ` · Apalancamiento ${lev}x` : ''}</div>
             <div class="op-levels">
               <span class="lv lv-e">E: ${fmtP(o.entrada, coin)}</span>
               <span class="lv lv-s">SL: ${fmtP(o.stopLoss, coin)}</span>
@@ -823,7 +841,7 @@ function renderOps() {
           </div>
         </div>
         <div class="op-actions">
-          <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="openCloseModal('${o.id}')">✓ Cerrar</button>
+          <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="closeTradeAtMarket('${o.id}')">✓ Cerrar a mercado</button>
           <button class="btn btnr" style="font-size:10px;padding:6px 10px" onclick="cancelTrade('${o.id}');renderOps()">✕ Cancelar</button>
         </div>
       </div>`;
@@ -980,8 +998,11 @@ function renderPerf() {
   const totalPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
   const activePnl = activeTrades.reduce((acc, t) => {
     const coin = coinOf(t.par);
-    const p = prices[coin] || t.entrada;
-    const pnl = t.tipo === 'LONG' ? (p - t.entrada) * t.size : (t.entrada - p) * t.size;
+    const p    = prices[coin] || t.entrada;
+    const lev  = t.leverage || 1;
+    const pnl  = t.tipo === 'LONG'
+      ? (p - t.entrada) * t.size * lev
+      : (t.entrada - p) * t.size * lev;
     return acc + pnl;
   }, 0);
   const winRate  = closedTrades.length > 0 ? (wins / closedTrades.length * 100).toFixed(0) : 0;
@@ -1205,11 +1226,14 @@ function renderCapital() {
   const root = qs('#sec-capital');
   if (!root) return;
   const p = state.profile;
+  const lev     = p.leverage || 1;
   const riskUSD = (p.capital * p.risk_pct / 100).toFixed(2);
   const cap3    = (p.capital * p.risk_pct / 100 * 3).toFixed(2);
   const capOps  = Math.floor(50 / p.risk_pct);
   const riskColor = p.risk_pct <= 1 ? 'var(--green)' : p.risk_pct <= 3 ? 'var(--yellow)' : 'var(--red)';
+  const levColor  = lev === 1 ? 'var(--green)' : lev <= 5 ? 'var(--yellow)' : 'var(--red)';
   const barW    = Math.min(p.risk_pct / 10 * 100, 100);
+  const levOptions = [1, 2, 3, 5, 10, 20];
 
   root.innerHTML = `
     <div class="stl">◈ Capital y Gestión de Riesgo</div>
@@ -1224,11 +1248,27 @@ function renderCapital() {
           <input class="inp" type="number" id="risk-input" value="${p.risk_pct}" min="0.1" max="10" step="0.1" oninput="updateCapCalc()">
         </div>
       </div>
+
+      <div class="lbl" style="margin-bottom:8px">Apalancamiento por defecto</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        ${levOptions.map(x => `
+          <button id="lev-btn-${x}" class="btn" style="padding:6px 12px;font-size:11px;font-weight:bold;
+            ${lev===x ? `background:rgba(251,191,36,.18);border-color:var(--yellow);color:var(--yellow)` : ''}"
+            onclick="setLeverage(${x})">${x}x</button>
+        `).join('')}
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-bottom:14px;padding:8px;background:rgba(0,0,0,.2);border-radius:6px;line-height:1.6">
+        ${lev === 1
+          ? '✓ Sin apalancamiento. Riesgo máximo = capital en riesgo por operación.'
+          : `⚡ ${lev}x — Las ganancias <b style="color:var(--green)">y pérdidas</b> se multiplican por ${lev}. Usa con precaución.`}
+      </div>
+
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px">
         <div class="cs"><div class="csl">Riesgo/Op</div><div class="csv" id="cap-rv" style="color:${riskColor}">${p.risk_pct}%</div></div>
         <div class="cs"><div class="csl">En USD</div><div class="csv" id="cap-rusd">$${riskUSD}</div></div>
         <div class="cs"><div class="csl">Max 3 ops</div><div class="csv" id="cap-r3" style="color:var(--muted)">$${cap3}</div></div>
         <div class="cs"><div class="csl">Capacidad</div><div class="csv" id="cap-ops" style="color:var(--accent)">~${capOps} ops</div></div>
+        <div class="cs"><div class="csl">Apalancamiento</div><div class="csv" style="color:${levColor}">${lev}x</div></div>
       </div>
       <div class="lbl">Nivel de riesgo</div>
       <div class="bar" style="margin-bottom:12px"><div class="bf" id="cap-bar" style="width:${barW}%;background:${riskColor}"></div></div>
@@ -1252,9 +1292,16 @@ function updateCapCalc() {
   if (bar) { bar.style.width = Math.min(risk/10*100,100) + '%'; bar.style.background = riskColor; }
 }
 
+function setLeverage(lev) {
+  state.profile.leverage = lev;
+  saveKey('profile', state.profile);
+  renderCapital();
+}
+
 function saveCapital() {
   state.profile.capital  = parseFloat(qs('#cap-input')?.value)  || 1000;
   state.profile.risk_pct = parseFloat(qs('#risk-input')?.value) || 2;
+  // leverage ya se guarda en setLeverage al hacer clic
   saveKey('profile', state.profile);
   showToast('✓ Capital guardado');
 }
@@ -1306,39 +1353,26 @@ function setTab(id) {
   if (renders[id]) renders[id]();
 }
 
-/* ── Close Modal ─────────────────────────────────────────────────────────── */
-let pendingCloseId = null;
-
-function openCloseModal(tradeId) {
-  pendingCloseId = tradeId;
+/* ── Cierre al precio de mercado (sin modal) ─────────────────────────────── */
+function closeTradeAtMarket(tradeId) {
   const trade = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
-  qs('#close-modal-title').textContent = 'Cerrar — ' + trade.par;
-  qs('#close-pnl-input').placeholder = Math.abs((trade.riskUSD || 0) * parseFloat(trade.rr || 1)).toFixed(2);
-  qs('#close-pnl-input').value = '';
-  setCloseResult('WIN');
-  qs('#close-modal').classList.add('open');
-}
 
-function setCloseResult(r) {
-  qs('#close-result-win').style.opacity  = r === 'WIN'  ? '1' : '.45';
-  qs('#close-result-loss').style.opacity = r === 'LOSS' ? '1' : '.45';
-  qs('#close-modal').dataset.result = r;
-}
+  const coin      = coinOf(trade.par);
+  const exitPrice = state.prices[coin] || trade.entrada;
+  const lev       = trade.leverage || 1;
 
-function confirmClose() {
-  if (!pendingCloseId) return;
-  const result   = qs('#close-modal').dataset.result || 'WIN';
-  const pnlInput = parseFloat(qs('#close-pnl-input').value);
-  const trade    = state.activeTrades.find(t => t.id === pendingCloseId);
-  if (!trade) return;
-  const pnl = isNaN(pnlInput)
-    ? (result === 'WIN' ? Math.abs(trade.riskUSD) * parseFloat(trade.rr || 1) : -Math.abs(trade.riskUSD))
-    : (result === 'WIN' ? pnlInput : -Math.abs(pnlInput));
-  closeTrade(pendingCloseId, result, pnl);
-  qs('#close-modal').classList.remove('open');
-  pendingCloseId = null;
-  showToast(`Operación ${trade.par} cerrada.`);
+  const rawPnl = trade.tipo === 'LONG'
+    ? (exitPrice - trade.entrada) * trade.size * lev
+    : (trade.entrada - exitPrice) * trade.size * lev;
+
+  const result = rawPnl >= 0 ? 'WIN' : 'LOSS';
+
+  closeTrade(tradeId, result, rawPnl);
+  showToast(
+    `${trade.par} cerrada a ${fmtP(exitPrice, coin)} — ${fmtUSD(rawPnl)}`,
+    result === 'LOSS'
+  );
   renderAll();
 }
 
@@ -1431,16 +1465,10 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
 
-  // Wire close modal buttons
-  qs('#close-result-win') ?.addEventListener('click', () => setCloseResult('WIN'));
-  qs('#close-result-loss')?.addEventListener('click', () => setCloseResult('LOSS'));
-  qs('#btn-close-confirm')?.addEventListener('click', confirmClose);
-  qs('#btn-close-cancel') ?.addEventListener('click', () => qs('#close-modal').classList.remove('open'));
-
   // Wire header buttons
-  qs('#btn-gen')         ?.addEventListener('click', onGenerate);
-  qs('#btn-adapt')       ?.addEventListener('click', onAdaptStrategy);
-  qs('#scanner-toggle-hdr')?.addEventListener('click', toggleScanner);
+  qs('#btn-gen')            ?.addEventListener('click', onGenerate);
+  qs('#btn-adapt')          ?.addEventListener('click', onAdaptStrategy);
+  qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
 
   // Start WebSocket
   connectWS();
@@ -1467,8 +1495,8 @@ document.addEventListener('DOMContentLoaded', () => {
 Object.assign(window, {
   qs, state, setTab, toggleScanner, runScan, requestNotifPermission,
   setScanIntervalVal, acceptAlertById, rejectAlert, clearAlerts,
-  openCloseModal, setCloseResult, confirmClose,
+  closeTradeAtMarket,
   cancelTrade, onAcceptProposal, onRejectProposal,
   setProfileField, toggleCoin, saveProfile,
-  saveCapital, updateCapCalc, resetAll, renderAll,
+  saveCapital, updateCapCalc, setLeverage, resetAll, renderAll,
 });

@@ -83,13 +83,15 @@ function checkTPSL(coin, price) {
       ? price >= (trade.tp2 || trade.tp1)
       : price <= (trade.tp2 || trade.tp1);
     if (hitSL || hitTP) {
-      const result = hitTP ? 'WIN' : 'LOSS';
-      const pnl    = result === 'WIN'
-        ? Math.abs(trade.riskUSD) * parseFloat(trade.rr || 1)
-        : -Math.abs(trade.riskUSD);
+      const result     = hitTP ? 'WIN' : 'LOSS';
+      const lev        = trade.leverage || 1;
+      const exitPrice  = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
+      const pnl        = trade.tipo === 'LONG'
+        ? (exitPrice - trade.entrada) * trade.size * lev
+        : (trade.entrada - exitPrice) * trade.size * lev;
       const closed = { ...trade, result, pnl, closedAt: nowFull(), closedByServer: true };
       serverState.closedTrades.unshift(closed);
-      console.log(`${trade.par} cerrada: ${result} PnL:${pnl.toFixed(2)}`);
+      console.log(`${trade.par} cerrada: ${result} Lev:${lev}x PnL:${pnl.toFixed(2)}`);
       return false;
     }
     return true;
