@@ -223,13 +223,27 @@ async function pollServerClosedTrades() {
     if (!data.closed || data.closed.length === 0) return;
 
     let changed = false;
+    const confirmedIds = []; // IDs que confirmamos al servidor
+
     for (const closed of data.closed) {
+      // ── FIX: dedup — si ya está en closedTrades, solo confirmamos y seguimos
+      const alreadyInClosed = state.closedTrades.some(t => t.id === closed.id);
+      if (alreadyInClosed) {
+        confirmedIds.push(closed.id);
+        continue;
+      }
+
       // Verificar que aún está activa en el frontend
       const idx = state.activeTrades.findIndex(t => t.id === closed.id);
-      if (idx === -1) continue;
+      if (idx === -1) {
+        // El cliente ya la cerró antes (checkTPSL local) — solo confirmamos
+        confirmedIds.push(closed.id);
+        continue;
+      }
 
       state.activeTrades.splice(idx, 1);
       state.closedTrades.unshift(closed);
+      confirmedIds.push(closed.id);
       changed = true;
 
       showToast(
@@ -238,6 +252,17 @@ async function pollServerClosedTrades() {
           : `✕ ${closed.par} SL alcanzado (servidor). -$${Math.abs(closed.pnl || 0).toFixed(2)}`,
         closed.result !== 'WIN'
       );
+    }
+
+    // ── FIX: confirmar recepción SOLO si tenemos IDs que reportar.
+    // El servidor borra estos trades de su lista solo tras recibir esta confirmación.
+    // Si la red falla antes de llegar aquí, el servidor los conserva y los reenvía en el próximo poll.
+    if (confirmedIds.length > 0) {
+      await fetch('/api/trades/confirm-closed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: confirmedIds }),
+      }).catch(e => console.warn('confirm-closed error:', e.message));
     }
 
     if (changed) {
@@ -490,9 +515,19 @@ function checkTPSL() {
     return true;
   });
 
+  // ── FIX: limpiar autoClosedIds de IDs que ya no están en activeTrades ──
+  // Evita que el Set crezca sin límite con trades antiguos
+  const activeIds = new Set(state.activeTrades.map(t => t.id));
+  for (const id of state.autoClosedIds) {
+    if (!activeIds.has(id)) state.autoClosedIds.delete(id);
+  }
+
   if (changed) {
     saveKey('activeTrades', state.activeTrades);
     saveKey('closedTrades', state.closedTrades);
+    // ── FIX: sincronizar inmediatamente con servidor para que deje de vigilar
+    // el trade que acaba de cerrar el cliente, evitando doble cierre
+    syncTradesToServer();
     if (state.currentTab === 'ops')  renderOps();
     if (state.currentTab === 'perf') renderPerf();
   }

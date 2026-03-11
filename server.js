@@ -97,22 +97,46 @@ function checkTPSL(coin, price) {
 }
 
 // ── API Trades ────────────────────────────────────────────────────────────
+function isValidTrade(t) {
+  return (
+    t && typeof t.id === 'string' &&
+    typeof t.par      === 'string' &&
+    (t.tipo === 'LONG' || t.tipo === 'SHORT') &&
+    typeof t.stopLoss === 'number' && isFinite(t.stopLoss) &&
+    typeof t.tp1      === 'number' && isFinite(t.tp1) &&
+    typeof t.riskUSD  === 'number' && isFinite(t.riskUSD)
+  );
+}
+
 app.post('/api/trades/sync', (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
+
+  // Rechazar trades con campos faltantes o inválidos
+  const validTrades = activeTrades.filter(isValidTrade);
+  const rejected    = activeTrades.length - validTrades.length;
+  if (rejected > 0) console.warn(`sync: ${rejected} trade(s) rechazados por validación`);
+
   const existingIds = new Set(serverState.activeTrades.map(t => t.id));
-  for (const trade of activeTrades) {
+  for (const trade of validTrades) {
     if (!existingIds.has(trade.id)) serverState.activeTrades.push(trade);
   }
-  const frontendIds = new Set(activeTrades.map(t => t.id));
+  const frontendIds = new Set(validTrades.map(t => t.id));
   serverState.activeTrades = serverState.activeTrades.filter(t => frontendIds.has(t.id));
-  res.json({ ok: true, watching: serverState.activeTrades.length });
+  res.json({ ok: true, watching: serverState.activeTrades.length, rejected });
 });
 
 app.get('/api/trades/closed-by-server', (req, res) => {
-  const closed = [...serverState.closedTrades];
-  serverState.closedTrades = [];
-  res.json({ closed });
+  // Solo lee — NO borra. El cliente confirma la recepción antes de que borremos.
+  res.json({ closed: [...serverState.closedTrades] });
+});
+
+app.post('/api/trades/confirm-closed', (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids inválido' });
+  // Solo borramos los trades cuya recepción confirmó el cliente
+  serverState.closedTrades = serverState.closedTrades.filter(t => !ids.includes(t.id));
+  res.json({ ok: true, remaining: serverState.closedTrades.length });
 });
 
 app.get('/api/prices', (req, res) => {
