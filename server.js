@@ -301,10 +301,22 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 app.get('/api/bitunix/account', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
-    // data.data: { available, balance, crossUnPnl, equity, marginRate, ... }
-    res.json({ ok: true, account: data.data });
+    // Log raw response para debug
+    console.log('[Bitunix account raw]', JSON.stringify(data.data));
+    res.json({ ok: true, account: data.data, raw: data });
   } catch (err) {
     console.error('Bitunix account error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Endpoint de diagnóstico — devuelve respuesta cruda de Bitunix para ver campos reales
+app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
+  try {
+    const account   = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
+    const positions = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
+    res.json({ ok: true, account: account.data, positions: positions.data });
+  } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });

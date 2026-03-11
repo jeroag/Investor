@@ -254,14 +254,16 @@ async function fetchMarketMeta() {
   const coins = state.watchedCoins;
   initMarketMeta(coins);
 
-  await Promise.all(coins.map(async (coin) => {
+  // Procesar monedas de una en una con micro-pausa entre ellas
+  // para no saturar la red ni bloquear el hilo principal
+  for (const coin of coins) {
     try {
-      const symbol = coin+'USDT';
+      const symbol = coin + 'USDT';
       const [r4h, r1d] = await Promise.all([
         fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=200`),
         fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
       ]);
-      if (!r4h.ok) return;
+      if (!r4h.ok) continue;
       const k4h = await r4h.json();
       const k1d = r1d.ok ? await r1d.json() : [];
 
@@ -315,12 +317,16 @@ async function fetchMarketMeta() {
       };
       MARKET_META[coin].confluence = calcConfluence(MARKET_META[coin]);
 
+      // Actualizar la pestaña Mercado con cada moneda que llega (progresivo)
+      if (state.currentTab === 'mkt') renderMkt();
+
+      // Ceder el hilo al navegador entre monedas para evitar bloqueo
+      await new Promise(r => setTimeout(r, 0));
+
     } catch (e) {
       console.warn(`fetchMarketMeta ${coin}:`, e.message);
     }
-  }));
-
-  if (state.currentTab === 'mkt') renderMkt();
+  }
 }
 
 /* ── State ───────────────────────────────────────────────────────────────── */
@@ -851,21 +857,32 @@ async function fetchBitunixAccount() {
   try {
     const res  = await authFetch('/api/bitunix/account');
     const data = await res.json();
-    if (data.ok) {
+    if (data.ok && data.account) {
       bitunix.account  = data.account;
       bitunix.lastSync = Date.now();
-      // Sincronizar capital real en el perfil
-      if (data.account?.available) {
-        const available = parseFloat(data.account.available);
-        if (available > 0) {
-          state.profile.capital = parseFloat((available).toFixed(2));
-          saveKey('profile', state.profile);
-        }
+      console.log('[Bitunix account campos]', Object.keys(data.account));
+      console.log('[Bitunix account valores]', data.account);
+
+      // Intentar todos los posibles nombres de campo para el capital disponible
+      const available = parseFloat(
+        data.account.available     ??
+        data.account.availableBalance ??
+        data.account.availAmt      ??
+        data.account.freeBalance   ??
+        data.account.free          ?? 0
+      );
+      if (available > 0) {
+        state.profile.capital = parseFloat(available.toFixed(2));
+        saveKey('profile', state.profile);
       }
+    } else {
+      console.warn('[Bitunix account] respuesta sin datos:', data);
+      bitunix.accountError = data.error || 'Sin datos';
     }
     return bitunix.account;
   } catch (e) {
     console.warn('fetchBitunixAccount:', e.message);
+    bitunix.accountError = e.message;
     return null;
   }
 }
@@ -1014,61 +1031,86 @@ function renderBalanceWidget() {
   const totalColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
   const totalSign  = totalPnl >= 0 ? '+' : '';
 
-  // Datos reales de Bitunix si están disponibles
   const acc = bitunix.account;
-  const realEquity    = acc ? parseFloat(acc.equity    || 0) : null;
-  const realAvailable = acc ? parseFloat(acc.available || 0) : null;
-  const realUnPnl     = acc ? parseFloat(acc.crossUnPnl || acc.unrealizedPnl || 0) : null;
-  const bitunixBadge  = bitunix.configured
-    ? `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:rgba(130,173,143,.15);border:1px solid rgba(130,173,143,.3);color:var(--green);margin-left:8px">🔗 Bitunix Live</span>`
-    : `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:var(--s2);border:1px solid var(--border);color:var(--muted);margin-left:8px;cursor:pointer" onclick="showBitunixSetup()">🔌 Conectar Bitunix</span>`;
+
+  // Leer equity/balance/disponible con todos los posibles nombres de campo
+  function readField(obj, ...keys) {
+    if (!obj) return null;
+    for (const k of keys) {
+      if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') {
+        const v = parseFloat(obj[k]);
+        if (!isNaN(v)) return v;
+      }
+    }
+    return null;
+  }
+
+  const realEquity    = readField(acc, 'equity', 'totalEquity', 'walletBalance', 'balance', 'totalBalance');
+  const realAvailable = readField(acc, 'available', 'availableBalance', 'availAmt', 'freeBalance', 'free', 'availableMargin');
+  const realUnPnl     = readField(acc, 'crossUnPnl', 'unrealizedPnl', 'unPnl', 'unrealisedPnl', 'totalUnrealizedProfit');
+  const realBalance   = readField(acc, 'balance', 'walletBalance', 'totalBalance', 'totalWalletBalance');
+
+  const hasRealData = acc && (realEquity !== null || realAvailable !== null);
+
+  const badgeColor = bitunix.configured ? (hasRealData ? 'var(--green)' : 'var(--yellow)') : 'var(--muted)';
+  const badgeBg    = bitunix.configured ? (hasRealData ? 'rgba(130,173,143,.15)' : 'rgba(200,170,80,.15)') : 'var(--s2)';
+  const badgeBorder= bitunix.configured ? (hasRealData ? 'rgba(130,173,143,.3)' : 'rgba(200,170,80,.3)') : 'var(--border)';
+  const badgeLabel = bitunix.configured ? (hasRealData ? '🔗 Bitunix Live' : '⚠️ Sin datos') : '🔌 Conectar Bitunix';
+  const badgeClick = bitunix.configured && !hasRealData
+    ? `onclick="showBitunixDebug()"`
+    : (!bitunix.configured ? `onclick="showBitunixSetup()"` : '');
+
+  const bitunixBadge = `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:${badgeBg};border:1px solid ${badgeBorder};color:${badgeColor};margin-left:8px;cursor:${badgeClick ? 'pointer' : 'default'}" ${badgeClick}>${badgeLabel}</span>`;
+
+  const mainValue = hasRealData ? (realEquity ?? realAvailable ?? 0) : total;
+  const mainLabel = hasRealData ? 'Equity Real Bitunix' : 'Saldo estimado';
 
   w.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-
-        <!-- Saldo principal -->
         <div style="display:flex;flex-direction:column;gap:1px">
           <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center">
-            ${acc ? 'Equity Real' : 'Saldo estimado'}${bitunixBadge}
+            ${mainLabel}${bitunixBadge}
           </span>
           <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">
-            $${(acc ? realEquity : total).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}
+            $${mainValue.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}
           </span>
         </div>
-
         <div style="width:1px;height:28px;background:var(--border)"></div>
-
         <div style="display:flex;gap:12px;flex-wrap:wrap">
-          ${acc ? `
-          <!-- Datos reales Bitunix -->
+          ${hasRealData ? `
+            ${realAvailable !== null ? `<div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Disponible</span>
+              <span style="font-size:12px;font-weight:600;color:var(--text)">$${realAvailable.toFixed(2)}</span>
+            </div>` : ''}
+            ${realBalance !== null ? `<div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Balance</span>
+              <span style="font-size:12px;font-weight:600;color:var(--text)">$${realBalance.toFixed(2)}</span>
+            </div>` : ''}
+            ${realUnPnl !== null ? `<div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L no realizado</span>
+              <span style="font-size:12px;font-weight:600;color:${realUnPnl>=0?'var(--green)':'var(--red)'}">${realUnPnl>=0?'+':''}$${realUnPnl.toFixed(2)}</span>
+            </div>` : ''}
+          ` : `
+            <div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
+              <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
+              <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
+            </div>
+          `}
           <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Disponible</span>
-            <span style="font-size:12px;font-weight:600;color:var(--text)">$${realAvailable?.toFixed(2)}</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L no realizado</span>
-            <span style="font-size:12px;font-weight:600;color:${realUnPnl>=0?'var(--green)':'var(--red)'}">${realUnPnl>=0?'+':''}$${realUnPnl?.toFixed(2)}</span>
-          </div>` : `
-          <!-- Datos estimados locales -->
-          <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
-            <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
-          </div>
-          <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
-            <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
-          </div>`}
-          <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L app</span>
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L total app</span>
             <span style="font-size:12px;font-weight:600;color:${totalColor}">${totalSign}$${totalPnl.toFixed(2)}</span>
           </div>
         </div>
       </div>
-
-      <div style="display:flex;align-items:center;gap:8px" id="balance-edit-area">
-        ${acc ? `<button onclick="refreshBitunixData()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">↻ Actualizar</button>` : ''}
-        <span style="font-size:9px;color:var(--muted)">Capital base: $${capital.toLocaleString('en')}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        ${bitunix.configured ? `<button onclick="refreshBitunixData()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">↻ Sync</button>
+        <button onclick="showBitunixDebug()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">🔍 Debug</button>` : ''}
+        <span style="font-size:9px;color:var(--muted)">Capital: $${capital.toLocaleString('en')}</span>
         <button onclick="toggleBalanceEdit()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">✏ Editar</button>
       </div>
     </div>
@@ -3356,6 +3398,51 @@ function onboardBack() {
   if (onboardStep > 0) { onboardStep--; renderOnboardStep(); }
 }
 
+async function showBitunixDebug() {
+  // Fetch raw data del endpoint de debug
+  let debugData = {};
+  try {
+    const res  = await authFetch('/api/bitunix/debug');
+    debugData  = await res.json();
+  } catch (e) {
+    debugData = { error: e.message };
+  }
+
+  const existing = qs('#bitunix-debug-modal');
+  if (existing) { existing.remove(); return; }
+
+  const modal = el('div', '');
+  modal.id = 'bitunix-debug-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease';
+
+  const accountFields = debugData.account ? Object.entries(debugData.account).map(([k,v]) =>
+    `<tr><td style="padding:4px 10px 4px 0;color:var(--muted);font-size:11px;font-family:monospace">${k}</td><td style="padding:4px 0;font-size:11px;font-weight:600;font-family:monospace">${v}</td></tr>`
+  ).join('') : `<tr><td colspan="2" style="color:var(--red);padding:8px 0">${debugData.error || 'Sin datos'}</td></tr>`;
+
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface)">
+        <div style="font-family:var(--serif);font-size:15px;font-weight:600">🔍 Bitunix Debug — Campos reales de la API</div>
+        <button onclick="qs('#bitunix-debug-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--muted);line-height:1">×</button>
+      </div>
+      <div style="padding:16px 20px">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Respuesta cruda del endpoint <code>/api/v1/futures/account/singleAccount</code>:</div>
+        ${debugData.ok === false ? `
+          <div style="background:#F4EBEB;border:1px solid #D9BCBC;border-radius:8px;padding:12px;color:#8A4A4A;font-size:12px;font-family:monospace">${debugData.error}</div>
+        ` : `
+          <table style="width:100%;border-collapse:collapse">${accountFields}</table>
+        `}
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Datos en memoria (bitunix.account):</div>
+          <pre style="font-size:10px;background:var(--s2);border-radius:8px;padding:10px;overflow-x:auto;color:var(--text)">${JSON.stringify(bitunix.account, null, 2)}</pre>
+        </div>
+        ${bitunix.accountError ? `<div style="margin-top:12px;color:var(--red);font-size:11px">⚠️ Error: ${bitunix.accountError}</div>` : ''}
+      </div>
+    </div>`;
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
 function showBitunixSetup() {
   const existing = qs('#bitunix-setup-modal');
   if (existing) { existing.remove(); return; }
@@ -3425,9 +3512,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const adaptBtn = qs('#btn-adapt');
   if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
 
-  // Datos de mercado + calendario
-  fetchMarketMeta();
-  fetchEconomicCalendar();
+  // Datos de mercado + calendario — diferidos para que el UI cargue primero
+  setTimeout(() => {
+    fetchMarketMeta();
+    fetchEconomicCalendar();
+  }, 300);
   setInterval(fetchMarketMeta, 15 * 60 * 1000);
   setInterval(fetchEconomicCalendar, 30 * 60 * 1000);
 
@@ -3473,7 +3562,7 @@ Object.assign(window, {
   submitGoal, deleteGoal,
   onboardNext, onboardBack, setObRisk,
   refreshCalendar,
-  showBitunixSetup, refreshBitunixData,
+  showBitunixSetup, showBitunixDebug, refreshBitunixData,
   doLogout,
   resetAll, renderAll,
 });
