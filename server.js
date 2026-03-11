@@ -325,35 +325,58 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
   const results = {};
 
-  // Probar distintas variantes del endpoint de cuenta
-  const accountAttempts = [
-    { label: 'singleAccount_empty',      path: '/api/v1/futures/account/singleAccount', params: {} },
-    { label: 'singleAccount_marginCoin', path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
-    { label: 'singleAccount_coin',       path: '/api/v1/futures/account/singleAccount', params: { coin: 'USDT' } },
-    { label: 'getAccount',               path: '/api/v1/futures/account/getAccount',    params: {} },
-    { label: 'assets',                   path: '/api/v1/futures/account/assets',        params: {} },
-    { label: 'accounts',                 path: '/api/v1/futures/account/accounts',      params: {} },
-    { label: 'wallet',                   path: '/api/v1/futures/account/wallet',        params: {} },
-    { label: 'balance',                  path: '/api/v1/futures/account/balance',       params: {} },
-    { label: 'balance_USDT',             path: '/api/v1/futures/account/balance',       params: { coin: 'USDT' } },
-  ];
-
-  for (const attempt of accountAttempts) {
+  // Helper que prueba con una key específica y distintas variantes de firma
+  async function tryWithKey(label, apiKey, secretKey, path, params = {}) {
+    // Variante 1: timestamp en milisegundos (actual)
     try {
-      const data = await bitunixRequest('GET', attempt.path, attempt.params);
-      results[attempt.label] = { code: data.code, msg: data.msg, data: data.data };
-    } catch (err) {
-      results[attempt.label] = { error: err.message };
-    }
+      const nonce     = generateNonce();
+      const timestamp = Date.now().toString();
+      const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, params, '');
+      const qs = Object.keys(params).length
+        ? '?' + Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&')
+        : '';
+      const r = await fetch(BITUNIX_BASE + path + qs, {
+        headers: { 'Content-Type':'application/json','api-key':apiKey,'nonce':nonce,'timestamp':timestamp,'sign':sign }
+      });
+      const d = await r.json();
+      results[label + '_ms'] = { code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
+    } catch(e) { results[label + '_ms'] = { error: e.message }; }
+
+    // Variante 2: timestamp en segundos
+    try {
+      const nonce     = generateNonce();
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, params, '');
+      const qs = Object.keys(params).length
+        ? '?' + Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&')
+        : '';
+      const r = await fetch(BITUNIX_BASE + path + qs, {
+        headers: { 'Content-Type':'application/json','api-key':apiKey,'nonce':nonce,'timestamp':timestamp,'sign':sign }
+      });
+      const d = await r.json();
+      results[label + '_sec'] = { code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
+    } catch(e) { results[label + '_sec'] = { error: e.message }; }
   }
 
-  // Probar posiciones
-  try {
-    const pos = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
-    results['positions'] = { code: pos.code, data: pos.data };
-  } catch (err) {
-    results['positions'] = { error: err.message };
-  }
+  const tradeKey = process.env.BITUNIX_API_KEY;
+  const tradeSec = process.env.BITUNIX_SECRET;
+  const readKey  = process.env.BITUNIX_READ_KEY   || tradeKey;
+  const readSec  = process.env.BITUNIX_READ_SECRET || tradeSec;
+
+  // Test con READ key
+  await tryWithKey('read_account',   readKey,  readSec,  '/api/v1/futures/account/singleAccount');
+  await tryWithKey('read_positions', readKey,  readSec,  '/api/v1/futures/position/getPendingPositions');
+
+  // Test con TRADE key
+  await tryWithKey('trade_account',   tradeKey, tradeSec, '/api/v1/futures/account/singleAccount');
+  await tryWithKey('trade_positions', tradeKey, tradeSec, '/api/v1/futures/position/getPendingPositions');
+
+  // Verificar que las keys no sean iguales (solo informativo)
+  results['_info'] = {
+    readKeySameAsTradeKey: readKey === tradeKey,
+    readKeyPrefix: readKey?.slice(0, 6) + '...',
+    tradeKeyPrefix: tradeKey?.slice(0, 6) + '...',
+  };
 
   res.json({ ok: true, results });
 });
