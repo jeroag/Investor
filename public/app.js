@@ -33,6 +33,9 @@ const STORAGE_KEYS = {
   profile:       'cp:profile',
   scanInterval:  'cp:scanInterval',
   watchedCoins:  'cp:watchedCoins',
+  priceAlerts:   'cp:priceAlerts',
+  scanLog:       'cp:scanLog',
+  aiHistory:     'cp:aiHistory',
 };
 
 const DEFAULT_PROFILE = {
@@ -144,6 +147,11 @@ const state = {
   scanInterval: 5,
   watchedCoins: [...DEFAULT_WATCHED_COINS],
 
+  // persisted new
+  priceAlerts:  [],
+  scanLog:      [],
+  aiHistory:    [],
+
   // session
   prices:       {},
   prevPrices:   {},
@@ -180,6 +188,9 @@ function loadAll() {
   state.profile      = { ...DEFAULT_PROFILE, ...( storage.get(STORAGE_KEYS.profile) ?? {} ) };
   state.scanInterval = storage.get(STORAGE_KEYS.scanInterval)  ?? 5;
   state.watchedCoins = storage.get(STORAGE_KEYS.watchedCoins)  ?? [...DEFAULT_WATCHED_COINS];
+  state.priceAlerts  = storage.get(STORAGE_KEYS.priceAlerts)   ?? [];
+  state.scanLog      = storage.get(STORAGE_KEYS.scanLog)        ?? [];
+  state.aiHistory    = storage.get(STORAGE_KEYS.aiHistory)      ?? [];
 }
 
 function saveKey(key, value) { storage.set(STORAGE_KEYS[key], value); }
@@ -339,13 +350,23 @@ function setWsStatus(s) {
 function onPriceUpdate(coin, price) {
   renderTicker();
   checkTPSL();
+  checkPriceAlerts();
   updateTradesPnl();
   renderBalanceWidget();
   if (state.currentTab === 'mkt') updateMarketPrice(coin, price);
 }
 
 /* ── Claude API (proxy seguro vía servidor) ──────────────────────────────── */
-async function callClaude(prompt, system) {
+async function callClaude(prompt, system, useHistory = false) {
+  // Construir mensajes con historial si se pide
+  let messages;
+  if (useHistory && state.aiHistory.length > 0) {
+    // Últimos 6 intercambios (12 mensajes) para no exceder tokens
+    messages = [...state.aiHistory.slice(-12), { role: 'user', content: prompt }];
+  } else {
+    messages = [{ role: 'user', content: prompt }];
+  }
+
   const res = await fetch('/api/claude', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -353,12 +374,22 @@ async function callClaude(prompt, system) {
       model: CLAUDE_MODEL,
       max_tokens: 1000,
       system,
-      messages: [{ role: 'user', content: prompt }]
+      messages,
     })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || 'Error del servidor');
-  return data.content[0]?.text || '';
+  const reply = data.content[0]?.text || '';
+
+  // Guardar en historial si se usa
+  if (useHistory) {
+    state.aiHistory.push({ role: 'user', content: prompt });
+    state.aiHistory.push({ role: 'assistant', content: reply });
+    if (state.aiHistory.length > 20) state.aiHistory = state.aiHistory.slice(-20);
+    saveKey('aiHistory', state.aiHistory);
+  }
+
+  return reply;
 }
 
 function parseJSON(raw) {
@@ -430,10 +461,12 @@ INSTRUCCIONES:
 - El TP1 debe ser el siguiente nivel de resistencia/soporte real
 - Solo propone monedas donde el setup técnico es claro y el R:R mínimo es 1.5
 - La "razon" debe mencionar explícitamente el RSI actual y los niveles de precio
+- Si tienes historial de conversación previo, ten en cuenta las propuestas anteriores y no repitas las mismas
 
 Responde SOLO JSON sin markdown:
 {"proposals":[{"par":"BTC/USDT","tipo":"LONG","setup":"RSI sobrevendido + soporte","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":74,"razon":"RSI(4H)=28 sobrevendido en soporte $68.9K, entrada con momentum. TP1 en resistencia $73K."}],"analisis_mercado":"Resumen técnico del mercado ahora.","recomendacion_ia":"Consejo personalizado para este trader."}`,
-    'Eres analista técnico de cripto experto. Usas RSI, soportes y resistencias reales para generar setups precisos. Responde SOLO con JSON válido sin markdown.'
+    'Eres analista técnico de cripto experto. Usas RSI, soportes y resistencias reales para generar setups precisos. Responde SOLO con JSON válido sin markdown.',
+    true // usar historial de conversación
   );
   return parseJSON(raw);
 }
@@ -538,26 +571,38 @@ function renderBalanceWidget() {
   const totalSign  = totalPnl >= 0 ? '+' : '';
 
   w.innerHTML = `
-    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-      <div style="display:flex;flex-direction:column;gap:1px">
-        <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase">Saldo total</span>
-        <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">$${total.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase">Saldo total</span>
+          <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">$${total.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+        </div>
+        <div style="width:1px;height:28px;background:var(--border)"></div>
+        <div style="display:flex;gap:12px">
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
+            <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
+            <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L</span>
+            <span style="font-size:12px;font-weight:600;color:${totalColor}">${totalSign}$${totalPnl.toFixed(2)}</span>
+          </div>
+        </div>
       </div>
-      <div style="width:1px;height:28px;background:var(--border)"></div>
-      <div style="display:flex;gap:12px">
-        <div style="display:flex;flex-direction:column;gap:1px">
-          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
-          <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:1px">
-          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
-          <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:1px">
-          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L</span>
-          <span style="font-size:12px;font-weight:600;color:${totalColor}">${totalSign}$${totalPnl.toFixed(2)}</span>
-        </div>
+      <div style="display:flex;align-items:center;gap:8px" id="balance-edit-area">
+        <span style="font-size:9px;color:var(--muted)">Capital base: $${capital.toLocaleString('en')}</span>
+        <button onclick="toggleBalanceEdit()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">✏ Actualizar</button>
       </div>
+    </div>
+    <div id="balance-quick-edit" style="display:none;margin-top:8px;display:none;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--muted)">Capital real en exchange:</span>
+      <input class="inp" type="number" id="balance-input" value="${capital}" step="any" style="width:120px;padding:5px 8px;font-size:12px"/>
+      <button class="btn btng" style="padding:5px 12px;font-size:11px" onclick="saveQuickCapital()">✓ Guardar</button>
+      <button onclick="toggleBalanceEdit()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1">×</button>
     </div>`;
 }
 function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
@@ -723,6 +768,172 @@ function updateTradesPnl() {
   });
 }
 
+/* ── Price Alerts ────────────────────────────────────────────────────────── */
+function addPriceAlert(coin, targetPrice, direction) {
+  // direction: 'above' | 'below'
+  const pa = {
+    id:          uid(),
+    coin,
+    targetPrice: parseFloat(targetPrice),
+    direction,
+    createdAt:   nowTime(),
+    triggered:   false,
+  };
+  state.priceAlerts.push(pa);
+  saveKey('priceAlerts', state.priceAlerts);
+  renderPriceAlertsPanel();
+  showToast(`🔔 Alerta creada: ${coin} ${direction === 'above' ? '≥' : '≤'} ${fmtP(pa.targetPrice, coin)}`);
+}
+
+function deletePriceAlert(id) {
+  state.priceAlerts = state.priceAlerts.filter(a => a.id !== id);
+  saveKey('priceAlerts', state.priceAlerts);
+  renderPriceAlertsPanel();
+}
+
+function checkPriceAlerts() {
+  let fired = false;
+  state.priceAlerts.forEach(pa => {
+    if (pa.triggered) return;
+    const price = state.prices[pa.coin];
+    if (!price) return;
+    const hit = pa.direction === 'above' ? price >= pa.targetPrice : price <= pa.targetPrice;
+    if (hit) {
+      pa.triggered  = true;
+      pa.triggeredAt = nowTime();
+      pa.triggeredPrice = price;
+      fired = true;
+      const msg = `🔔 ${pa.coin} ${pa.direction === 'above' ? 'superó' : 'bajó de'} ${fmtP(pa.targetPrice, pa.coin)} → precio actual ${fmtP(price, pa.coin)}`;
+      showToast(msg);
+      if (state.notifPermission === 'granted') {
+        try { new Notification(`🔔 Alerta de precio: ${pa.coin}`, { body: msg, tag: 'price-alert-' + pa.id }); } catch {}
+      }
+    }
+  });
+  if (fired) {
+    saveKey('priceAlerts', state.priceAlerts);
+    if (state.currentTab === 'alerts') renderAlerts();
+  }
+}
+
+function renderPriceAlertsPanel() {
+  const root = qs('#price-alerts-panel');
+  if (!root) return;
+
+  const active    = state.priceAlerts.filter(a => !a.triggered);
+  const triggered = state.priceAlerts.filter(a => a.triggered);
+
+  // Coin options from watchedCoins
+  const coinOpts = state.watchedCoins.map(c =>
+    `<option value="${c}">${c} — ${COIN_NAMES[c] || c}</option>`
+  ).join('');
+
+  root.innerHTML = `
+    <div class="stl">🔔 Alertas de Precio</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr auto auto;gap:8px;align-items:end;margin-bottom:14px;flex-wrap:wrap">
+      <div>
+        <div class="lbl">Moneda</div>
+        <select class="inp" id="pa-coin" style="padding:8px 10px;font-size:12px">
+          ${coinOpts}
+        </select>
+      </div>
+      <div>
+        <div class="lbl">Precio objetivo</div>
+        <input class="inp" type="number" id="pa-price" placeholder="Ej: 65000" step="any" style="font-size:12px"/>
+      </div>
+      <div>
+        <div class="lbl">Condición</div>
+        <select class="inp" id="pa-dir" style="padding:8px 10px;font-size:12px">
+          <option value="above">≥ Supera</option>
+          <option value="below">≤ Cae de</option>
+        </select>
+      </div>
+      <button class="btn btng" style="padding:8px 14px;font-size:11px;align-self:end" onclick="submitPriceAlert()">+ Añadir</button>
+    </div>
+
+    ${active.length === 0 && triggered.length === 0
+      ? `<div style="font-size:11px;color:var(--muted);padding:10px 0">Sin alertas activas. Crea una arriba.</div>`
+      : ''
+    }
+
+    ${active.length > 0 ? `
+      <div style="font-size:10px;color:var(--muted);letter-spacing:.8px;margin-bottom:7px;font-weight:600">ACTIVAS (${active.length})</div>
+      ${active.map(a => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--s2);border:1px solid var(--border);border-radius:8px;margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:16px">🔔</span>
+            <div>
+              <div style="font-weight:600;font-size:13px;font-family:var(--serif)">${a.coin}</div>
+              <div style="font-size:11px;color:var(--muted)">${a.direction === 'above' ? '≥' : '≤'} ${fmtP(a.targetPrice, a.coin)} · creada ${a.createdAt}</div>
+            </div>
+          </div>
+          <button onclick="deletePriceAlert('${a.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">×</button>
+        </div>`).join('')}
+    ` : ''}
+
+    ${triggered.length > 0 ? `
+      <div style="font-size:10px;color:var(--muted);letter-spacing:.8px;margin:10px 0 7px;font-weight:600">DISPARADAS (${triggered.length})</div>
+      ${triggered.map(a => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--s2);border:1px solid ${a.direction==='above'?'#BCD9C5':'#D9BCBC'};border-radius:8px;margin-bottom:6px;opacity:.7">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span style="font-size:16px">✓</span>
+            <div>
+              <div style="font-weight:600;font-size:13px;font-family:var(--serif)">${a.coin} ${a.direction === 'above' ? '≥' : '≤'} ${fmtP(a.targetPrice, a.coin)}</div>
+              <div style="font-size:11px;color:var(--muted)">Disparada a ${fmtP(a.triggeredPrice, a.coin)} · ${a.triggeredAt}</div>
+            </div>
+          </div>
+          <button onclick="deletePriceAlert('${a.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:16px;padding:4px">×</button>
+        </div>`).join('')}
+    ` : ''}`;
+}
+
+function submitPriceAlert() {
+  const coin   = qs('#pa-coin')?.value;
+  const price  = parseFloat(qs('#pa-price')?.value);
+  const dir    = qs('#pa-dir')?.value;
+  if (!coin || !price || price <= 0) { showToast('Introduce un precio válido', true); return; }
+  const cur = state.prices[coin];
+  if (dir === 'above' && cur && price <= cur) { showToast(`${coin} ya está por encima de ${fmtP(price, coin)}`, true); return; }
+  if (dir === 'below' && cur && price >= cur) { showToast(`${coin} ya está por debajo de ${fmtP(price, coin)}`, true); return; }
+  addPriceAlert(coin, price, dir);
+  if (qs('#pa-price')) qs('#pa-price').value = '';
+}
+
+/* ── Scanner Log ─────────────────────────────────────────────────────────── */
+function addScanLog(result) {
+  const entry = {
+    ts:      nowFull(),
+    found:   result.hay_oportunidad,
+    razon:   result.hay_oportunidad
+               ? `${result.par} ${result.tipo} — ${result.setup} (${result.confianza}% conf.)`
+               : result.razon,
+    coins:   state.watchedCoins.join(', '),
+  };
+  state.scanLog.unshift(entry);
+  if (state.scanLog.length > 50) state.scanLog = state.scanLog.slice(0, 50);
+  saveKey('scanLog', state.scanLog);
+  if (state.currentTab === 'alerts') renderScanLog();
+}
+
+function renderScanLog() {
+  const root = qs('#scan-log-panel');
+  if (!root) return;
+  if (state.scanLog.length === 0) {
+    root.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:10px 0">El log aparece aquí cada vez que el escáner analiza el mercado.</div>`;
+    return;
+  }
+  root.innerHTML = state.scanLog.slice(0, 20).map(e => `
+    <div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:14px;flex-shrink:0">${e.found ? '⚡' : '○'}</span>
+      <div>
+        <div style="font-size:11px;color:${e.found ? 'var(--text)' : 'var(--muted)'}">
+          ${e.found ? `<b style="color:var(--green)">Oportunidad</b> — ${e.razon}` : e.razon}
+        </div>
+        <div style="font-size:9px;color:var(--subtle);margin-top:2px">${e.ts} · ${e.coins}</div>
+      </div>
+    </div>`).join('');
+}
+
 /* ── Scanner ─────────────────────────────────────────────────────────────── */
 async function runScan() {
   if (state.scanning || state.wsStatus !== 'live') return;
@@ -732,6 +943,7 @@ async function runScan() {
 
   try {
     const result = await aiScanMarket();
+    addScanLog(result);
     if (result.hay_oportunidad) {
       const alert = {
         ...result,
@@ -992,6 +1204,7 @@ function renderOps() {
         </div>
         <div class="op-actions">
           <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="closeTradeAtMarket('${o.id}')">✓ Cerrar</button>
+          <button class="btn btny" style="font-size:10px;padding:6px 10px" onclick="openEditTrade('${o.id}')">✏ Editar</button>
           <button class="btn" style="font-size:10px;padding:6px 10px" onclick="toggleTradeNotes('${o.id}')">📝 Notas</button>
           <button class="btn btnr" style="font-size:10px;padding:6px 10px" onclick="cancelTrade('${o.id}');renderOps()">✕ Cancelar</button>
         </div>
@@ -1005,6 +1218,93 @@ function renderOps() {
   });
 
   root.innerHTML = html;
+}
+
+/* ── Editar operación activa ─────────────────────────────────────────────── */
+function openEditTrade(tradeId) {
+  const trade = state.activeTrades.find(t => t.id === tradeId);
+  if (!trade) return;
+  const coin = coinOf(trade.par);
+
+  const existing = qs('#edit-trade-modal');
+  if (existing) existing.remove();
+
+  const modal = el('div', '');
+  modal.id = 'edit-trade-modal';
+  modal.innerHTML = `
+    <div style="position:fixed;inset:0;background:rgba(44,40,37,.25);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:380px;box-shadow:var(--shadow-lg);overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-family:var(--serif);font-size:15px;font-weight:600">Editar ${trade.par}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">${trade.tipo} · Entrada ${fmtP(trade.entrada, coin)}</div>
+          </div>
+          <button onclick="qs('#edit-trade-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;padding:4px">×</button>
+        </div>
+        <div style="padding:16px 18px;display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label class="lbl">Stop Loss</label>
+            <input class="inp" type="number" id="et-sl" value="${trade.stopLoss}" step="any"/>
+          </div>
+          <div>
+            <label class="lbl">TP1</label>
+            <input class="inp" type="number" id="et-tp1" value="${trade.tp1}" step="any"/>
+          </div>
+          <div>
+            <label class="lbl">TP2 (opcional)</label>
+            <input class="inp" type="number" id="et-tp2" value="${trade.tp2 || ''}" step="any" placeholder="dejar vacío para ignorar"/>
+          </div>
+          <div>
+            <label class="lbl">Notas</label>
+            <textarea class="inp" id="et-notes" rows="2" placeholder="Notas de la operación...">${trade.notes || ''}</textarea>
+          </div>
+          <button class="btn btng" style="width:100%;justify-content:center;font-size:12px;padding:10px" onclick="saveEditTrade('${tradeId}')">✓ Guardar cambios</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('div').addEventListener('click', e => { if (e.target === e.currentTarget) modal.remove(); });
+  const onKey = e => { if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+}
+
+function saveEditTrade(tradeId) {
+  const trade = state.activeTrades.find(t => t.id === tradeId);
+  if (!trade) return;
+  const sl  = parseFloat(qs('#et-sl')?.value);
+  const tp1 = parseFloat(qs('#et-tp1')?.value);
+  const tp2 = parseFloat(qs('#et-tp2')?.value) || null;
+  const notes = qs('#et-notes')?.value?.trim() || '';
+  if (!sl || !tp1) { showToast('SL y TP1 son obligatorios', true); return; }
+  trade.stopLoss = sl;
+  trade.tp1      = tp1;
+  trade.tp2      = tp2;
+  trade.notes    = notes;
+  // Recalcular R:R
+  const dist  = Math.abs(trade.entrada - sl);
+  const gain  = Math.abs(tp1 - trade.entrada);
+  trade.rr    = dist > 0 ? (gain / dist).toFixed(1) : trade.rr;
+  saveKey('activeTrades', state.activeTrades);
+  syncTradesToServer();
+  qs('#edit-trade-modal')?.remove();
+  showToast(`✓ ${trade.par} actualizada`);
+  renderOps();
+}
+
+function toggleBalanceEdit() {
+  const area = qs('#balance-quick-edit');
+  if (!area) return;
+  area.style.display = area.style.display === 'none' || area.style.display === '' ? 'flex' : 'none';
+}
+
+function saveQuickCapital() {
+  const val = parseFloat(qs('#balance-input')?.value);
+  if (!val || val <= 0) { showToast('Introduce un valor válido', true); return; }
+  state.profile.capital = val;
+  saveKey('profile', state.profile);
+  toggleBalanceEdit();
+  renderBalanceWidget();
+  showToast(`✓ Capital actualizado a $${val.toLocaleString('en')}`);
 }
 
 /* ── Render: Alerts ──────────────────────────────────────────────────────── */
@@ -1120,6 +1420,36 @@ function renderAlerts() {
   }
 
   root.innerHTML = html;
+
+  // Inyectar paneles dinámicos después del renderizado
+  // Panel de alertas de precio
+  const paSection = el('div', '');
+  paSection.className = 'card';
+  paSection.id = 'price-alerts-panel';
+  root.insertBefore(paSection, root.firstChild);
+  renderPriceAlertsPanel();
+
+  // Log del escáner (colapsable)
+  const logSection = el('div', '');
+  logSection.className = 'card';
+  logSection.style.marginTop = '10px';
+  logSection.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none" onclick="toggleScanLog()">
+      <div class="stl" style="margin:0">📋 Log del Escáner <span style="font-size:10px;color:var(--muted);font-weight:400">(${state.scanLog.length} entradas)</span></div>
+      <span id="scan-log-toggle-icon" style="color:var(--muted);font-size:14px">▼</span>
+    </div>
+    <div id="scan-log-panel" style="display:none;margin-top:10px"></div>`;
+  root.appendChild(logSection);
+}
+
+function toggleScanLog() {
+  const panel = qs('#scan-log-panel');
+  const icon  = qs('#scan-log-toggle-icon');
+  if (!panel) return;
+  const open = panel.style.display === 'none';
+  panel.style.display = open ? 'block' : 'none';
+  if (icon) icon.textContent = open ? '▲' : '▼';
+  if (open) renderScanLog();
 }
 
 function rejectAlert(id) {
@@ -1146,40 +1476,101 @@ function updateAlertBadge() {
 }
 
 /* ── Render: Performance ─────────────────────────────────────────────────── */
+function calcAdvancedMetrics(trades) {
+  if (trades.length === 0) return null;
+
+  const wins   = trades.filter(t => t.result === 'WIN');
+  const losses = trades.filter(t => t.result === 'LOSS');
+  const totalPnl = trades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const grossWin = wins.reduce((a, t) => a + (t.pnl || 0), 0);
+  const grossLoss = Math.abs(losses.reduce((a, t) => a + (t.pnl || 0), 0));
+
+  // Drawdown máximo
+  let peak = 0, maxDD = 0, runningPnl = 0;
+  [...trades].reverse().forEach(t => {
+    runningPnl += (t.pnl || 0);
+    if (runningPnl > peak) peak = runningPnl;
+    const dd = peak - runningPnl;
+    if (dd > maxDD) maxDD = dd;
+  });
+
+  // Racha actual y máxima
+  let curStreak = 0, curType = null, maxWinStreak = 0, maxLossStreak = 0, tempStreak = 0, tempType = null;
+  [...trades].reverse().forEach((t, i) => {
+    if (i === 0) { curType = t.result; curStreak = 1; tempType = t.result; tempStreak = 1; return; }
+    if (t.result === curType) curStreak++;
+    else { curType = null; } // se rompe
+    if (t.result === tempType) { tempStreak++; }
+    else { if (tempType === 'WIN') maxWinStreak = Math.max(maxWinStreak, tempStreak); else maxLossStreak = Math.max(maxLossStreak, tempStreak); tempType = t.result; tempStreak = 1; }
+  });
+  if (tempType === 'WIN') maxWinStreak = Math.max(maxWinStreak, tempStreak);
+  else maxLossStreak = Math.max(maxLossStreak, tempStreak);
+  // racha actual (desde el último trade hacia atrás)
+  let streak = 0, streakType = trades[0]?.result;
+  for (const t of trades) { if (t.result === streakType) streak++; else break; }
+
+  const avgWin  = wins.length   > 0 ? grossWin / wins.length     : 0;
+  const avgLoss = losses.length > 0 ? grossLoss / losses.length   : 0;
+  const profitFactor = grossLoss > 0 ? (grossWin / grossLoss) : grossWin > 0 ? 999 : 0;
+  const bestTrade  = trades.reduce((a, t) => (t.pnl || 0) > (a.pnl || 0) ? t : a, trades[0]);
+  const worstTrade = trades.reduce((a, t) => (t.pnl || 0) < (a.pnl || 0) ? t : a, trades[0]);
+
+  // Por par
+  const byPair = {};
+  trades.forEach(t => {
+    if (!byPair[t.par]) byPair[t.par] = { wins: 0, total: 0, pnl: 0 };
+    byPair[t.par].total++;
+    byPair[t.par].pnl += t.pnl || 0;
+    if (t.result === 'WIN') byPair[t.par].wins++;
+  });
+
+  return { wins: wins.length, losses: losses.length, total: trades.length, totalPnl, grossWin, grossLoss, avgWin, avgLoss, profitFactor, maxDD, streak, streakType, maxWinStreak, maxLossStreak, bestTrade, worstTrade, byPair };
+}
+
 function renderPerf() {
   const root = qs('#sec-perf');
   if (!root) return;
 
   const { closedTrades, activeTrades, prices, profile } = state;
-  const wins    = closedTrades.filter(t => t.result === 'WIN').length;
-  const totalPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const m = calcAdvancedMetrics(closedTrades);
+  const winRate = m ? (m.wins / m.total * 100).toFixed(0) : 0;
+
   const activePnl = activeTrades.reduce((acc, t) => {
     const coin = coinOf(t.par);
     const p    = prices[coin] || t.entrada;
     const lev  = t.leverage || 1;
-    const pnl  = t.tipo === 'LONG'
-      ? (p - t.entrada) * t.size * lev
-      : (t.entrada - p) * t.size * lev;
-    return acc + pnl;
+    return acc + (t.tipo === 'LONG' ? (p - t.entrada) * t.size * lev : (t.entrada - p) * t.size * lev);
   }, 0);
-  const winRate  = closedTrades.length > 0 ? (wins / closedTrades.length * 100).toFixed(0) : 0;
-  const alertsTotal = state.alerts.length;
-  const alertsAcc   = state.alerts.filter(a => a.status === 'accepted').length;
 
   // Equity curve
   let cap = profile.capital;
   const points = [cap, ...closedTrades.slice().reverse().map(t => { cap += (t.pnl || 0); return cap; })];
-  const maxEq  = Math.max(...points);
-  const minEq  = Math.min(...points);
-
+  const maxEq  = Math.max(...points), minEq = Math.min(...points);
   let equityBars = '';
   points.forEach((v, i) => {
-    const h    = maxEq === minEq ? 50 : ((v - minEq) / (maxEq - minEq)) * 85 + 15;
+    const h   = maxEq === minEq ? 50 : ((v - minEq) / (maxEq - minEq)) * 85 + 15;
     const prev = points[i - 1];
-    const col  = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
-    equityBars += `<div class="equity-bar" style="height:${h}%;background:${col}99"></div>`;
+    const col = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
+    equityBars += `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
   });
 
+  // Par stats
+  let parRows = '';
+  if (m) {
+    Object.entries(m.byPair).sort((a,b) => b[1].pnl - a[1].pnl).forEach(([par, s]) => {
+      const wr = (s.wins / s.total * 100).toFixed(0);
+      parRows += `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-weight:600;font-family:var(--serif)">${par}</span>
+            <span style="font-size:10px;color:var(--muted)">${s.wins}/${s.total} · ${wr}% WR</span>
+          </div>
+          <span style="font-weight:600;color:${s.pnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(s.pnl)}</span>
+        </div>`;
+    });
+  }
+
+  // Historial
   let histRows = '';
   if (closedTrades.length === 0) {
     histRows = `<div class="empty" style="padding:16px"><div class="et">Sin operaciones cerradas.</div></div>`;
@@ -1205,18 +1596,47 @@ function renderPerf() {
 
   root.innerHTML = `
     <div class="stl">◈ Rendimiento</div>
+
+    <!-- KPIs principales -->
     <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-lbl">Win Rate</div><div class="kpi-val" style="color:${parseInt(winRate)>=50?'var(--green)':'var(--red)'}">${winRate}%</div><div class="kpi-sub">${wins}/${closedTrades.length} ops</div></div>
-      <div class="kpi"><div class="kpi-lbl">P&L Cerrado</div><div class="kpi-val" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(totalPnl)}</div><div class="kpi-sub">ops cerradas</div></div>
+      <div class="kpi"><div class="kpi-lbl">Win Rate</div><div class="kpi-val" style="color:${parseInt(winRate)>=50?'var(--green)':'var(--red)'}">${winRate}%</div><div class="kpi-sub">${m?.wins||0}/${m?.total||0} ops</div></div>
+      <div class="kpi"><div class="kpi-lbl">P&L Cerrado</div><div class="kpi-val" style="color:${(m?.totalPnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(m?.totalPnl||0)}</div><div class="kpi-sub">ops cerradas</div></div>
       <div class="kpi"><div class="kpi-lbl">P&L Activo</div><div class="kpi-val" style="color:${activePnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(activePnl)}</div><div class="kpi-sub">${activeTrades.length} posiciones</div></div>
-      <div class="kpi"><div class="kpi-lbl">Alertas IA</div><div class="kpi-val" style="color:var(--purple)">${alertsTotal}</div><div class="kpi-sub">${alertsAcc} aceptadas</div></div>
+      <div class="kpi"><div class="kpi-lbl">Profit Factor</div><div class="kpi-val" style="color:${(m?.profitFactor||0)>=1?'var(--green)':'var(--red)'}">${m ? m.profitFactor.toFixed(2) : '—'}</div><div class="kpi-sub">ganancias/pérdidas</div></div>
     </div>
+
+    <!-- Métricas avanzadas -->
+    ${m ? `
+    <div class="card">
+      <div class="stl">Métricas Avanzadas</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
+        <div class="cs"><div class="csl">Drawdown Máx.</div><div class="csv" style="color:var(--red)">-$${m.maxDD.toFixed(2)}</div></div>
+        <div class="cs"><div class="csl">Media por WIN</div><div class="csv" style="color:var(--green)">+$${m.avgWin.toFixed(2)}</div></div>
+        <div class="cs"><div class="csl">Media por LOSS</div><div class="csv" style="color:var(--red)">-$${m.avgLoss.toFixed(2)}</div></div>
+        <div class="cs"><div class="csl">Racha actual</div><div class="csv" style="color:${m.streakType==='WIN'?'var(--green)':'var(--red)'}">${m.streak} ${m.streakType === 'WIN' ? 'WIN' : 'LOSS'}</div></div>
+        <div class="cs"><div class="csl">Max racha WIN</div><div class="csv" style="color:var(--green)">${m.maxWinStreak} seguidas</div></div>
+        <div class="cs"><div class="csl">Max racha LOSS</div><div class="csv" style="color:var(--red)">${m.maxLossStreak} seguidas</div></div>
+        <div class="cs"><div class="csl">Mejor trade</div><div class="csv" style="color:var(--green);font-size:11px">${m.bestTrade.par} ${fmtUSD(m.bestTrade.pnl||0)}</div></div>
+        <div class="cs"><div class="csl">Peor trade</div><div class="csv" style="color:var(--red);font-size:11px">${m.worstTrade.par} ${fmtUSD(m.worstTrade.pnl||0)}</div></div>
+      </div>
+    </div>` : ''}
+
+    <!-- Curva de capital -->
     <div class="card">
       <div class="stl">Curva de Capital</div>
       ${points.length > 1
         ? `<div class="equity-bars">${equityBars}</div>`
         : `<div class="empty" style="padding:20px"><div class="et">Sin datos aún.</div></div>`}
     </div>
+
+    <!-- Rendimiento por par -->
+    ${m && Object.keys(m.byPair).length > 0 ? `
+    <div class="card">
+      <div class="stl">Por Moneda</div>
+      ${parRows}
+    </div>` : ''}
+
+    <!-- Historial -->
     <div class="card">
       <div class="stl">Historial Cerradas</div>
       ${histRows}
@@ -1571,6 +1991,9 @@ function resetAll() {
   state.scanInterval  = 5;
   state.watchedCoins  = [...DEFAULT_WATCHED_COINS];
   state.pending       = [];
+  state.priceAlerts   = [];
+  state.scanLog       = [];
+  state.aiHistory     = [];
   stopScanner();
   renderAll();
   renderStoragePanel();
@@ -1832,9 +2255,12 @@ Object.assign(window, {
   setScanIntervalVal, acceptAlertById, rejectAlert, clearAlerts,
   closeTradeAtMarket, confirmCloseWithPrice,
   toggleTradeNotes, saveTradeNotes,
+  openEditTrade, saveEditTrade,
   cancelTrade, onAcceptProposal, onRejectProposal,
   setProfileField, toggleCoin, saveProfile,
   saveCapital, updateCapCalc, setLeverage,
   toggleWatchedCoin, openChart,
+  submitPriceAlert, deletePriceAlert,
+  toggleScanLog, toggleBalanceEdit, saveQuickCapital,
   resetAll, renderAll,
 });
