@@ -105,8 +105,12 @@ app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-// Servir archivos estáticos (CSS, JS) sin autenticación para que el login cargue bien
-app.use('/styles.css',  express.static(path.join(__dirname, 'public', 'styles.css')));
+// ── Archivos estáticos: públicos (JS/CSS no contienen datos sensibles) ───────
+// Los datos sensibles solo están en /api/* que SÍ está protegido
+app.use(express.static(path.join(__dirname, 'public'), {
+  // No servir index.html automáticamente — lo controlamos nosotros
+  index: false,
+}));
 
 // Proteger el HTML principal — redirige a login si no hay sesión
 app.get('/', (req, res) => {
