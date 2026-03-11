@@ -298,27 +298,62 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 }
 
 /* ── Endpoint: GET balance de futuros ─────────────────────── */
-app.get('/api/bitunix/account', requireAuth, async (req, res) => {
-  try {
-    const data = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
-    // Log raw response para debug
-    console.log('[Bitunix account raw]', JSON.stringify(data.data));
-    res.json({ ok: true, account: data.data, raw: data });
-  } catch (err) {
-    console.error('Bitunix account error:', err.message);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
 // Endpoint de diagnóstico — devuelve respuesta cruda de Bitunix para ver campos reales
 app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
-  try {
-    const account   = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
-    const positions = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
-    res.json({ ok: true, account: account.data, positions: positions.data });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+  const results = {};
+
+  // Probar distintas variantes del endpoint de cuenta
+  const accountAttempts = [
+    { label: 'sin params',        path: '/api/v1/futures/account/singleAccount', params: {} },
+    { label: 'marginCoin=USDT',   path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
+    { label: 'coin=USDT',         path: '/api/v1/futures/account/singleAccount', params: { coin: 'USDT' } },
+    { label: 'getAccount',        path: '/api/v1/futures/account/getAccount',    params: {} },
+    { label: 'assets',            path: '/api/v1/futures/account/assets',        params: {} },
+  ];
+
+  for (const attempt of accountAttempts) {
+    try {
+      const data = await bitunixRequest('GET', attempt.path, attempt.params);
+      results[attempt.label] = { ok: true, data: data.data, code: data.code };
+      if (data.code === 0) break; // encontramos el que funciona
+    } catch (err) {
+      results[attempt.label] = { ok: false, error: err.message };
+    }
   }
+
+  // Probar posiciones
+  try {
+    const pos = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
+    results['positions'] = { ok: true, data: pos.data };
+  } catch (err) {
+    results['positions'] = { ok: false, error: err.message };
+  }
+
+  res.json({ ok: true, results });
+});
+
+app.get('/api/bitunix/account', requireAuth, async (req, res) => {
+  // Intentar primero sin parámetros, luego con marginCoin
+  const attempts = [
+    { path: '/api/v1/futures/account/singleAccount', params: {} },
+    { path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
+    { path: '/api/v1/futures/account/getAccount',    params: {} },
+    { path: '/api/v1/futures/account/assets',        params: {} },
+  ];
+
+  for (const attempt of attempts) {
+    try {
+      const data = await bitunixRequest('GET', attempt.path, attempt.params);
+      if (data.code === 0) {
+        console.log(`[Bitunix account OK] ${attempt.path}`, JSON.stringify(data.data));
+        return res.json({ ok: true, account: data.data });
+      }
+    } catch (err) {
+      console.warn(`[Bitunix account] ${attempt.path} falló:`, err.message);
+    }
+  }
+
+  res.status(500).json({ ok: false, error: 'No se pudo obtener el saldo. Revisa las API keys y permisos.' });
 });
 
 /* ── Endpoint: GET posiciones abiertas ────────────────────── */

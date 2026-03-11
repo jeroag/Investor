@@ -3399,48 +3399,59 @@ function onboardBack() {
 }
 
 async function showBitunixDebug() {
-  // Fetch raw data del endpoint de debug
-  let debugData = {};
-  try {
-    const res  = await authFetch('/api/bitunix/debug');
-    debugData  = await res.json();
-  } catch (e) {
-    debugData = { error: e.message };
-  }
-
   const existing = qs('#bitunix-debug-modal');
   if (existing) { existing.remove(); return; }
 
   const modal = el('div', '');
   modal.id = 'bitunix-debug-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease';
-
-  const accountFields = debugData.account ? Object.entries(debugData.account).map(([k,v]) =>
-    `<tr><td style="padding:4px 10px 4px 0;color:var(--muted);font-size:11px;font-family:monospace">${k}</td><td style="padding:4px 0;font-size:11px;font-weight:600;font-family:monospace">${v}</td></tr>`
-  ).join('') : `<tr><td colspan="2" style="color:var(--red);padding:8px 0">${debugData.error || 'Sin datos'}</td></tr>`;
-
   modal.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:500px;max-height:80vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:540px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
       <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface)">
-        <div style="font-family:var(--serif);font-size:15px;font-weight:600">🔍 Bitunix Debug — Campos reales de la API</div>
+        <div style="font-family:var(--serif);font-size:15px;font-weight:600">🔍 Bitunix Debug</div>
         <button onclick="qs('#bitunix-debug-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--muted);line-height:1">×</button>
       </div>
-      <div style="padding:16px 20px">
-        <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Respuesta cruda del endpoint <code>/api/v1/futures/account/singleAccount</code>:</div>
-        ${debugData.ok === false ? `
-          <div style="background:#F4EBEB;border:1px solid #D9BCBC;border-radius:8px;padding:12px;color:#8A4A4A;font-size:12px;font-family:monospace">${debugData.error}</div>
-        ` : `
-          <table style="width:100%;border-collapse:collapse">${accountFields}</table>
-        `}
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
-          <div style="font-size:10px;color:var(--muted);margin-bottom:6px">Datos en memoria (bitunix.account):</div>
-          <pre style="font-size:10px;background:var(--s2);border-radius:8px;padding:10px;overflow-x:auto;color:var(--text)">${JSON.stringify(bitunix.account, null, 2)}</pre>
-        </div>
-        ${bitunix.accountError ? `<div style="margin-top:12px;color:var(--red);font-size:11px">⚠️ Error: ${bitunix.accountError}</div>` : ''}
-      </div>
+      <div style="padding:20px;text-align:center;color:var(--muted)"><span class="spinner"></span> Probando endpoints...</div>
     </div>`;
   modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
   document.body.appendChild(modal);
+
+  let debugData = {};
+  try {
+    const res = await authFetch('/api/bitunix/debug');
+    debugData = await res.json();
+  } catch (e) {
+    debugData = { error: e.message };
+  }
+
+  const content = qs('#bitunix-debug-modal div > div:last-child');
+  if (!content) return;
+
+  const results = debugData.results || {};
+  const rows = Object.entries(results).map(([label, r]) => {
+    const ok = r.ok && r.data !== undefined;
+    const color = ok ? 'var(--green)' : 'var(--red)';
+    const icon  = ok ? '✅' : '❌';
+    const detail = ok
+      ? `<pre style="font-size:9px;background:var(--s2);border-radius:6px;padding:8px;overflow-x:auto;margin-top:6px;white-space:pre-wrap">${JSON.stringify(r.data, null, 2)}</pre>`
+      : `<div style="font-size:10px;color:var(--red);margin-top:4px">${r.error}</div>`;
+    return `
+      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span>${icon}</span>
+          <span style="font-size:12px;font-weight:600;color:${color}">${label}</span>
+        </div>
+        ${detail}
+      </div>`;
+  }).join('');
+
+  content.innerHTML = `
+    <div style="padding:16px 20px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
+        Probando endpoints de Bitunix con distintos parámetros — el ✅ verde indica cuál funciona:
+      </div>
+      ${rows || `<div style="color:var(--red)">${debugData.error || 'Error desconocido'}</div>`}
+    </div>`;
 }
 
 function showBitunixSetup() {
