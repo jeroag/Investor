@@ -530,7 +530,7 @@ async function callClaude(prompt, system, useHistory = false) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
-      max_tokens: 1000,
+      max_tokens: 4000,
       system,
       messages,
     })
@@ -551,7 +551,21 @@ async function callClaude(prompt, system, useHistory = false) {
 }
 
 function parseJSON(raw) {
-  return JSON.parse(raw.replace(/```json|```/g, '').trim());
+  try {
+    return JSON.parse(raw.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    // Si el JSON viene truncado, intenta repararlo buscando el último objeto completo
+    const clean = raw.replace(/```json|```/g, '').trim();
+    // Buscar el último } o ] válido
+    for (let i = clean.length - 1; i >= 0; i--) {
+      if (clean[i] === '}' || clean[i] === ']') {
+        try {
+          return JSON.parse(clean.slice(0, i + 1));
+        } catch {}
+      }
+    }
+    throw new Error('No se pudo parsear la respuesta IA: ' + e.message);
+  }
 }
 
 /* ── Contexto técnico completo para prompts ──────────────────────────────── */
