@@ -58,81 +58,230 @@ function initMarketMeta(coins) {
   Object.keys(MARKET_META).forEach(c => { if (!coins.includes(c)) delete MARKET_META[c]; });
 }
 
-/* ── RSI Calculator ──────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════
+   MOTOR DE INDICADORES TÉCNICOS
+   ══════════════════════════════════════════════════════════ */
+
 function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
+  let ag = 0, al = 0;
   for (let i = 1; i <= period; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains  += diff;
-    else           losses -= diff;
+    const d = closes[i] - closes[i-1];
+    if (d >= 0) ag += d; else al -= d;
   }
-  let avgGain = gains  / period;
-  let avgLoss = losses / period;
+  ag /= period; al /= period;
   for (let i = period + 1; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    avgGain = (avgGain * (period - 1) + Math.max(diff, 0)) / period;
-    avgLoss = (avgLoss * (period - 1) + Math.max(-diff, 0)) / period;
+    const d = closes[i] - closes[i-1];
+    ag = (ag * (period-1) + Math.max(d,0)) / period;
+    al = (al * (period-1) + Math.max(-d,0)) / period;
   }
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return Math.round(100 - 100 / (1 + rs));
+  if (al === 0) return 100;
+  return Math.round(100 - 100 / (1 + ag/al));
+}
+
+function calcEMA(closes, period) {
+  if (closes.length < period) return null;
+  const k = 2 / (period + 1);
+  let ema = closes.slice(0, period).reduce((a,b) => a+b, 0) / period;
+  for (let i = period; i < closes.length; i++) ema = closes[i]*k + ema*(1-k);
+  return ema;
+}
+
+function calcMACD(closes) {
+  if (closes.length < 35) return null;
+  const macdSeries = [];
+  for (let i = 26; i <= closes.length; i++) {
+    const e12 = calcEMA(closes.slice(0,i), 12);
+    const e26 = calcEMA(closes.slice(0,i), 26);
+    if (e12 !== null && e26 !== null) macdSeries.push(e12 - e26);
+  }
+  const macdLine = macdSeries[macdSeries.length-1];
+  const signal   = macdSeries.length >= 9 ? calcEMA(macdSeries, 9) : null;
+  return { macd: macdLine, signal, hist: signal !== null ? macdLine - signal : null };
+}
+
+function calcBB(closes, period = 20, mult = 2) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const sma   = slice.reduce((a,b) => a+b, 0) / period;
+  const std   = Math.sqrt(slice.reduce((a,b) => a + (b-sma)**2, 0) / period);
+  return { upper: sma + mult*std, mid: sma, lower: sma - mult*std, width: (4*std)/sma*100 };
+}
+
+function calcATR(highs, lows, closes, period = 14) {
+  if (closes.length < period+1) return null;
+  const trs = [];
+  for (let i = 1; i < closes.length; i++)
+    trs.push(Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1])));
+  return trs.slice(-period).reduce((a,b) => a+b, 0) / period;
+}
+
+function analyzeVolume(volumes) {
+  if (volumes.length < 21) return null;
+  const recent = volumes.slice(-1)[0];
+  const avg20  = volumes.slice(-21,-1).reduce((a,b) => a+b, 0) / 20;
+  const ratio  = recent / avg20;
+  const t5     = volumes.slice(-5).reduce((a,b) => a+b, 0) / 5;
+  return {
+    ratio: parseFloat(ratio.toFixed(2)),
+    signal: ratio > 1.5 ? 'ALTO — confirma movimiento' : ratio < 0.7 ? 'BAJO — movimiento débil' : 'normal',
+    trending: t5 > avg20*1.1 ? 'creciente' : t5 < avg20*0.9 ? 'decreciente' : 'estable',
+  };
+}
+
+function detectCandlePatterns(opens, highs, lows, closes) {
+  const patterns = [];
+  const n = closes.length - 1;
+  if (n < 2) return patterns;
+  const o=opens[n], h=highs[n], l=lows[n], c=closes[n];
+  const po=opens[n-1], ph=highs[n-1], pl=lows[n-1], pc=closes[n-1];
+  const body=Math.abs(c-o), range=h-l, prevBody=Math.abs(pc-po);
+  if (body<range*0.3 && (l<Math.min(o,c)-range*0.4) && (h-Math.max(o,c))<body && c>o)
+    patterns.push({name:'Martillo',bias:'ALCISTA',strength:'MEDIA'});
+  if (body<range*0.3 && (h-Math.max(o,c))>range*0.4 && (Math.min(o,c)-l)<body && c<o)
+    patterns.push({name:'Shooting Star',bias:'BAJISTA',strength:'MEDIA'});
+  if (c>o && pc<po && c>po && o<pc && body>prevBody)
+    patterns.push({name:'Engulfing Alcista',bias:'ALCISTA',strength:'FUERTE'});
+  if (c<o && pc>po && c<po && o>pc && body>prevBody)
+    patterns.push({name:'Engulfing Bajista',bias:'BAJISTA',strength:'FUERTE'});
+  if (body<range*0.1 && range>0)
+    patterns.push({name:'Doji',bias:'NEUTRO — indecisión',strength:'BAJA'});
+  if (c<o && body>range*0.7)
+    patterns.push({name:'Vela Bajista Fuerte',bias:'BAJISTA',strength:'FUERTE'});
+  if (c>o && body>range*0.7)
+    patterns.push({name:'Vela Alcista Fuerte',bias:'ALCISTA',strength:'FUERTE'});
+  return patterns;
+}
+
+function calcKeyLevels(highs, lows, closes) {
+  const swingH=[], swingL=[];
+  const range = Math.min(closes.length-2, 50);
+  for (let i=1; i<range; i++) {
+    if (highs[i]>highs[i-1] && highs[i]>highs[i+1]) swingH.push(highs[i]);
+    if (lows[i]<lows[i-1]   && lows[i]<lows[i+1])   swingL.push(lows[i]);
+  }
+  const price = closes[closes.length-1];
+  const sup = swingL.filter(l=>l<price).sort((a,b)=>b-a)[0] || Math.min(...lows.slice(-20));
+  const res = swingH.filter(h=>h>price).sort((a,b)=>a-b)[0] || Math.max(...highs.slice(-20));
+  return { sup, res };
+}
+
+function calcConfluence(meta) {
+  let bull=0, bear=0;
+  const r = meta.rsi;
+  if (typeof r === 'number') {
+    if (r<35) bull+=2; else if (r<45) bull+=1;
+    else if (r>65) bear+=2; else if (r>55) bear+=1;
+  }
+  if (meta.ema) {
+    const {price,ema20,ema50,ema200}=meta.ema;
+    if (price>ema20) bull++; else bear++;
+    if (price>ema50) bull++; else bear++;
+    if (ema20>ema50) bull++; else bear++;
+    if (ema200) { if (price>ema200) bull++; else bear++; }
+  }
+  if (meta.macd?.hist!=null) {
+    if (meta.macd.hist>0) bull++; else bear++;
+    if (meta.macd.macd>0) bull++; else bear++;
+  }
+  if (meta.bb) {
+    const {price,lower,upper,mid}=meta.bb;
+    if (price<lower) bull+=2; else if (price>upper) bear+=2;
+    else if (price<mid) bull++; else bear++;
+  }
+  (meta.patterns||[]).forEach(p => {
+    if (p.bias==='ALCISTA') bull += p.strength==='FUERTE' ? 2 : 1;
+    if (p.bias==='BAJISTA') bear += p.strength==='FUERTE' ? 2 : 1;
+  });
+  const total=bull+bear, score=total>0 ? Math.round(bull/total*100) : 50;
+  return { bull, bear, score, bias: score>=65?'ALCISTA':score<=35?'BAJISTA':'NEUTRO' };
 }
 
 function rsiTag(rsi) {
-  if (rsi === null || rsi === undefined) return { tag:'—', cls:'tm' };
-  if (rsi < 30)  return { tag:'SOBREVENDIDO', cls:'tg' };
-  if (rsi < 45)  return { tag:'ACUMULAR',     cls:'tg' };
-  if (rsi < 55)  return { tag:'NEUTRO',        cls:'tm' };
-  if (rsi < 70)  return { tag:'CAUTELA',       cls:'ty' };
-  return              { tag:'SOBRECOMPRADO',   cls:'tr' };
+  if (rsi===null||rsi===undefined) return {tag:'—',cls:'tm'};
+  if (rsi<30)  return {tag:'SOBREVENDIDO',cls:'tg'};
+  if (rsi<45)  return {tag:'ACUMULAR',cls:'tg'};
+  if (rsi<55)  return {tag:'NEUTRO',cls:'tm'};
+  if (rsi<70)  return {tag:'CAUTELA',cls:'ty'};
+  return             {tag:'SOBRECOMPRADO',cls:'tr'};
 }
 
 function fmtSup(price, coin) {
-  if (coin === 'XRP' || coin === 'DOGE') return '$' + price.toFixed(4);
-  if (price > 1000) return '$' + (price / 1000).toFixed(1) + 'K';
-  return '$' + price.toFixed(2);
+  if (coin==='XRP'||coin==='DOGE') return '$'+price.toFixed(4);
+  if (price>1000) return '$'+(price/1000).toFixed(1)+'K';
+  return '$'+price.toFixed(2);
 }
 
 async function fetchMarketMeta() {
   const coins = state.watchedCoins;
   initMarketMeta(coins);
+
   await Promise.all(coins.map(async (coin) => {
     try {
-      const symbol = coin + 'USDT';
-      // Fetch 100 candles de 4H para RSI y niveles
-      const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=100`;
-      const res  = await fetch(url);
-      if (!res.ok) return;
-      const klines = await res.json();
+      const symbol = coin+'USDT';
+      const [r4h, r1d] = await Promise.all([
+        fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=4h&limit=200`),
+        fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1d&limit=60`),
+      ]);
+      if (!r4h.ok) return;
+      const k4h = await r4h.json();
+      const k1d = r1d.ok ? await r1d.json() : [];
 
-      const closes = klines.map(k => parseFloat(k[4]));
-      const highs  = klines.map(k => parseFloat(k[2]));
-      const lows   = klines.map(k => parseFloat(k[3]));
+      const closes4h  = k4h.map(k=>parseFloat(k[4]));
+      const opens4h   = k4h.map(k=>parseFloat(k[1]));
+      const highs4h   = k4h.map(k=>parseFloat(k[2]));
+      const lows4h    = k4h.map(k=>parseFloat(k[3]));
+      const volumes4h = k4h.map(k=>parseFloat(k[5]));
+      const closes1d  = k1d.map(k=>parseFloat(k[4]));
+      const highs1d   = k1d.map(k=>parseFloat(k[2]));
+      const lows1d    = k1d.map(k=>parseFloat(k[3]));
 
-      const rsi = calcRSI(closes);
+      const rsi4h  = calcRSI(closes4h);
+      const rsi1d  = calcRSI(closes1d);
+      const ema20  = calcEMA(closes4h, 20);
+      const ema50  = calcEMA(closes4h, 50);
+      const ema200 = calcEMA(closes4h, 200);
+      const macd   = calcMACD(closes4h);
+      const bb     = calcBB(closes4h, 20);
+      const atr    = calcATR(highs4h, lows4h, closes4h, 14);
+      const vol    = analyzeVolume(volumes4h);
+      const patterns = detectCandlePatterns(opens4h, highs4h, lows4h, closes4h);
+      const { sup, res: resistance } = calcKeyLevels(highs4h, lows4h, closes4h);
+      const { sup: supDay, res: resDay } = closes1d.length > 5
+        ? calcKeyLevels(highs1d, lows1d, closes1d) : { sup, res: resistance };
 
-      // Soporte = mínimo de los últimos 20 periodos
-      const recentLows  = lows.slice(-20);
-      const recentHighs = highs.slice(-20);
-      const sup = Math.min(...recentLows);
-      const res2 = Math.max(...recentHighs);
+      const price      = closes4h[closes4h.length-1];
+      const ema50_1d   = calcEMA(closes1d, 50);
+      const ema200_1d  = calcEMA(closes1d, 200);
+      const macroTrend = ema50_1d && ema200_1d
+        ? (ema50_1d>ema200_1d && price>ema50_1d ? 'ALCISTA'
+          : ema50_1d<ema200_1d && price<ema50_1d ? 'BAJISTA' : 'LATERAL')
+        : 'LATERAL';
 
-      const { tag, cls } = rsiTag(rsi);
+      const { tag, cls } = rsiTag(rsi4h);
 
       MARKET_META[coin] = {
-        tag,
-        cls,
-        rsi: rsi !== null ? rsi : '—',
-        sup: fmtSup(sup, coin),
-        res: fmtSup(res2, coin),
+        tag, cls,
+        rsi:     rsi4h ?? '—',
+        rsi1d:   rsi1d ?? '—',
+        sup:     fmtSup(sup, coin),
+        res:     fmtSup(resistance, coin),
+        supRaw:  sup, resRaw: resistance,
+        supDay:  fmtSup(supDay, coin),
+        resDay:  fmtSup(resDay, coin),
+        ema:     { price, ema20: ema20?+ema20.toFixed(2):null, ema50: ema50?+ema50.toFixed(2):null, ema200: ema200?+ema200.toFixed(2):null },
+        macd:    macd ? { macd:+macd.macd.toFixed(4), signal: macd.signal?+macd.signal.toFixed(4):null, hist: macd.hist?+macd.hist.toFixed(4):null } : null,
+        bb:      bb   ? { price, upper:+bb.upper.toFixed(2), mid:+bb.mid.toFixed(2), lower:+bb.lower.toFixed(2), width:+bb.width.toFixed(1) } : null,
+        atr:     atr  ? +atr.toFixed(4) : null,
+        vol, patterns, macroTrend,
       };
+      MARKET_META[coin].confluence = calcConfluence(MARKET_META[coin]);
+
     } catch (e) {
       console.warn(`fetchMarketMeta ${coin}:`, e.message);
     }
   }));
 
-  // Re-render si la pestaña mercado está activa
   if (state.currentTab === 'mkt') renderMkt();
 }
 
@@ -396,29 +545,64 @@ function parseJSON(raw) {
   return JSON.parse(raw.replace(/```json|```/g, '').trim());
 }
 
-/* ── Contexto técnico real para los prompts ──────────────────────────────── */
+/* ── Contexto técnico completo para prompts ──────────────────────────────── */
 function buildTechContext() {
+  const btcMeta = MARKET_META['BTC'];
+  const btcTrend = btcMeta ? `BTC tendencia macro: ${btcMeta.macroTrend} (RSI 1D: ${btcMeta.rsi1d})` : '';
+
   const lines = state.watchedCoins.map(coin => {
     const meta  = MARKET_META[coin];
     const price = state.prices[coin];
     if (!meta || !price) return null;
 
-    const rsiVal = typeof meta.rsi === 'number' ? meta.rsi : null;
-    let rsiSignal = 'neutro';
-    if (rsiVal !== null) {
-      if (rsiVal < 30)  rsiSignal = 'SOBREVENDIDO — posible rebote alcista';
-      else if (rsiVal < 45) rsiSignal = 'zona de acumulación';
-      else if (rsiVal > 70) rsiSignal = 'SOBRECOMPRADO — riesgo de corrección';
-      else if (rsiVal > 60) rsiSignal = 'momentum alcista, cautela';
-    }
+    const p = (v, d=2) => v != null ? (+v).toFixed(d) : '?';
+    const conf = meta.confluence;
 
-    const distSup = price && meta.sup !== '...' ? ((price - parseFloat(meta.sup.replace(/[$K]/g,'').replace('K','000'))) / price * 100).toFixed(1) : '?';
-    const distRes = price && meta.res !== '...' ? ((parseFloat(meta.res.replace(/[$K]/g,'').replace('K','000')) - price) / price * 100).toFixed(1) : '?';
+    // EMAs
+    const emaLine = meta.ema
+      ? `EMA20=${p(meta.ema.ema20)} EMA50=${p(meta.ema.ema50)} EMA200=${p(meta.ema.ema200)} | precio ${price>meta.ema.ema50?'SOBRE':'BAJO'} EMA50 ${price>meta.ema.ema200?'SOBRE':'BAJO'} EMA200`
+      : '';
 
-    return `${coin}: precio $${price} | RSI(4H)=${rsiVal ?? '?'} (${rsiSignal}) | soporte=${meta.sup} (${distSup}% abajo) | resistencia=${meta.res} (${distRes}% arriba)`;
+    // MACD
+    const macdLine = meta.macd
+      ? `MACD=${p(meta.macd.macd,4)} Señal=${p(meta.macd.signal,4)} Hist=${p(meta.macd.hist,4)} (${meta.macd.hist>0?'ALCISTA':'BAJISTA'})`
+      : '';
+
+    // BB
+    const bbLine = meta.bb
+      ? `BB: lower=${p(meta.bb.lower)} mid=${p(meta.bb.mid)} upper=${p(meta.bb.upper)} ancho=${p(meta.bb.width,1)}% | precio ${price<meta.bb.lower?'BAJO BANDA — sobreventa extrema':price>meta.bb.upper?'SOBRE BANDA — sobrecompra extrema':price<meta.bb.mid?'bajo media BB':'sobre media BB'}`
+      : '';
+
+    // ATR → SL sugerido
+    const atrLine = meta.atr
+      ? `ATR(14)=${p(meta.atr,4)} → SL mínimo recomendado: ${p(meta.atr*1.5,4)} (1.5×ATR)`
+      : '';
+
+    // Volumen
+    const volLine = meta.vol
+      ? `Vol: ${meta.vol.ratio}× avg20 (${meta.vol.signal}), tendencia ${meta.vol.trending}`
+      : '';
+
+    // Patrones
+    const pattLine = meta.patterns?.length > 0
+      ? `Patrón última vela: ${meta.patterns.map(p=>p.name+' '+p.bias+' '+p.strength).join(', ')}`
+      : 'Sin patrón destacado';
+
+    // Confluencia
+    const confLine = conf
+      ? `CONFLUENCIA: ${conf.score}% alcista (${conf.bull} señales alcistas, ${conf.bear} bajistas) → SESGO ${conf.bias}`
+      : '';
+
+    return [
+      `\n── ${coin}/USDT ──`,
+      `Precio: $${price} | Tendencia macro 1D: ${meta.macroTrend} | RSI 1D: ${meta.rsi1d}`,
+      `RSI 4H: ${meta.rsi} | Soporte 4H: ${meta.sup} | Resistencia 4H: ${meta.res}`,
+      `Soporte diario: ${meta.supDay} | Resistencia diaria: ${meta.resDay}`,
+      emaLine, macdLine, bbLine, atrLine, volLine, pattLine, confLine,
+    ].filter(Boolean).join('\n');
   }).filter(Boolean);
 
-  return lines.join('\n');
+  return [btcTrend, ...lines].join('\n');
 }
 
 function buildTradeHistory() {
@@ -435,38 +619,58 @@ function buildTradeHistory() {
 
 async function aiGenerateProposals() {
   const { profile, strategy } = state;
-  const techCtx = buildTechContext();
+  const techCtx      = buildTechContext();
   const tradeHistory = buildTradeHistory();
 
   const raw = await callClaude(
-    `Genera 2-3 propuestas de trading accionables AHORA basándote en el contexto técnico REAL.
+    `Eres un analista técnico senior de criptomonedas. Genera 2-3 propuestas de trading de ALTA CALIDAD basadas en los datos técnicos REALES adjuntos.
 
-PERFIL DEL TRADER:
-- Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance}
-- Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}% ($${(profile.capital * profile.risk_pct / 100).toFixed(0)})
-- Apalancamiento: ${profile.leverage || 1}x
-- Monedas preferidas: ${profile.preferred_coins.join(', ') || 'BTC, ETH'}
-- Notas del trader: ${profile.notes || 'ninguna'}
-- Estrategia adaptada: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'N/A'} en ${strategy?.estrategiaAdaptada?.timeframe || '4H'}
+━━━ PERFIL DEL TRADER ━━━
+Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance}
+Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}% = $${(profile.capital*profile.risk_pct/100).toFixed(0)}
+Apalancamiento: ${profile.leverage||1}x | Monedas preferidas: ${profile.preferred_coins.join(', ')||'BTC, ETH'}
+Estrategia activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado||'swing'} en ${strategy?.estrategiaAdaptada?.timeframe||'4H'}
+Notas del trader: ${profile.notes||'ninguna'}
 
-HISTORIAL REAL:
+━━━ HISTORIAL ━━━
 ${tradeHistory}
 
-DATOS TÉCNICOS REALES BINANCE (4H):
+━━━ DATOS TÉCNICOS REALES BINANCE ━━━
 ${techCtx}
 
-INSTRUCCIONES:
-- Usa el RSI para identificar zonas de entrada: sobrevendido (<30) favorece LONG, sobrecomprado (>70) favorece SHORT
-- El SL debe estar al otro lado del soporte/resistencia más cercano, no arbitrario
-- El TP1 debe ser el siguiente nivel de resistencia/soporte real
-- Solo propone monedas donde el setup técnico es claro y el R:R mínimo es 1.5
-- La "razon" debe mencionar explícitamente el RSI actual y los niveles de precio
-- Si tienes historial de conversación previo, ten en cuenta las propuestas anteriores y no repitas las mismas
+━━━ REGLAS DE ANÁLISIS (SEGUIR ESTRICTAMENTE) ━━━
+1. CONFLUENCIA MÍNIMA: Solo propón setups con ≥3 señales alineadas (RSI+EMA+MACD+BB+patrón+volumen)
+2. TENDENCIA MACRO: Si la tendencia 1D es BAJISTA, solo SHORT o no operar. Si ALCISTA, preferir LONG.
+3. EMA FILTER: No entrar LONG si precio < EMA200 en 4H. No entrar SHORT si precio > EMA200.
+4. SL BASADO EN ATR: El SL DEBE ser al menos 1.5×ATR desde la entrada, y estar al otro lado del soporte/resistencia más cercano.
+5. TP EN NIVELES REALES: TP1 = siguiente resistencia/soporte real. TP2 = siguiente nivel macro.
+6. R:R MÍNIMO 2.0: Rechaza setups con R:R menor a 2. Con apalancamiento > 3x exige R:R ≥ 2.5.
+7. VOLUMEN: Si el volumen es BAJO en el setup, reduce la confianza al menos 10 puntos.
+8. NO REPETIR: Si tienes historial de conversación, no proponer el mismo par en la misma dirección.
 
 Responde SOLO JSON sin markdown:
-{"proposals":[{"par":"BTC/USDT","tipo":"LONG","setup":"RSI sobrevendido + soporte","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":74,"razon":"RSI(4H)=28 sobrevendido en soporte $68.9K, entrada con momentum. TP1 en resistencia $73K."}],"analisis_mercado":"Resumen técnico del mercado ahora.","recomendacion_ia":"Consejo personalizado para este trader."}`,
-    'Eres analista técnico de cripto experto. Usas RSI, soportes y resistencias reales para generar setups precisos. Responde SOLO con JSON válido sin markdown.',
-    true // usar historial de conversación
+{
+  "proposals": [{
+    "par": "BTC/USDT",
+    "tipo": "LONG",
+    "setup": "RSI4H=28 sobrevendido + Engulfing Alcista + precio bajo BB inferior + sobre EMA200",
+    "entrada": 70500,
+    "stopLoss": 68900,
+    "tp1": 73500,
+    "tp2": 76000,
+    "rr": "2.2",
+    "confianza": 76,
+    "confluence_score": 72,
+    "signals_aligned": ["RSI sobrevendido","Engulfing alcista fuerte","Precio bajo BB inferior","Tendencia macro alcista","MACD hist positivo"],
+    "signals_against": ["Volumen bajo media"],
+    "atr_sl": 1600,
+    "razon": "RSI4H=28 en zona crítica de sobrecompra, patrón Engulfing alcista fuerte confirmando reversión en soporte diario $68.9K. EMA200 a $67.1K como suelo macro. MACD hist virando positivo. TP1 en resistencia 4H $73.5K, TP2 en resistencia diaria $76K."
+  }],
+  "analisis_mercado": "Resumen técnico preciso del mercado con BTC como referencia.",
+  "recomendacion_ia": "Consejo específico y personalizado para este trader basado en su historial y perfil."
+}`,
+    'Eres analista técnico senior de criptomonedas. Usas análisis multitimeframe, confluencia de indicadores y gestión del riesgo profesional. Responde SOLO con JSON válido sin markdown ni texto extra.',
+    true
   );
   return parseJSON(raw);
 }
@@ -475,30 +679,36 @@ async function aiScanMarket() {
   const { profile, strategy, alerts, activeTrades } = state;
   const techCtx      = buildTechContext();
   const tradeHistory = buildTradeHistory();
-  const recentAlerts = alerts.slice(0, 3).map(a => `${a.par} ${a.tipo} @${a.entrada}`).join(', ');
+  const recentAlerts = alerts.slice(0, 5).map(a => `${a.par} ${a.tipo} entrada=${a.entrada} (${a.timestamp})`).join(' | ');
 
   const raw = await callClaude(
-    `Analiza el mercado AHORA y decide si existe una oportunidad técnica real y accionable.
+    `Eres un escáner de mercado automático. Analiza los datos técnicos AHORA y decide si existe una oportunidad de trading de ALTA CALIDAD.
 
-DATOS TÉCNICOS REALES BINANCE (4H):
+━━━ DATOS TÉCNICOS REALES BINANCE ━━━
 ${techCtx}
 
-PERFIL: ${profile.style}, riesgo ${profile.risk_tolerance}, capital $${profile.capital}, riesgo/op ${profile.risk_pct}%, apalancamiento ${profile.leverage || 1}x
-HISTORIAL: ${tradeHistory}
-ESTRATEGIA activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'swing'} ${strategy?.estrategiaAdaptada?.timeframe || '4H'}
-Alertas recientes (no duplicar): ${recentAlerts || 'ninguna'}
+━━━ CONTEXTO ━━━
+Perfil: ${profile.style}, riesgo ${profile.risk_tolerance}, capital $${profile.capital}, leverage ${profile.leverage||1}x
+Historial: ${tradeHistory}
+Estrategia activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado||'swing'} ${strategy?.estrategiaAdaptada?.timeframe||'4H'}
+Alertas recientes (NO duplicar mismo par+dirección): ${recentAlerts||'ninguna'}
 Posiciones abiertas: ${activeTrades.length}
 
-CRITERIOS para hay_oportunidad=true (todos deben cumplirse):
-1. RSI en zona extrema (<35 para LONG, >65 para SHORT) O precio tocando soporte/resistencia clave
-2. R:R mínimo 1.5 usando niveles técnicos reales
-3. No hay alerta reciente del mismo par y dirección
-4. El setup encaja con el estilo del trader (${profile.style})
+━━━ CRITERIOS ESTRICTOS PARA hay_oportunidad=true ━━━
+Todos deben cumplirse:
+1. CONFLUENCIA ≥60%: Al menos 3 señales alineadas entre RSI, EMA, MACD, BB, patrón de vela y volumen
+2. TENDENCIA MACRO: El trade va en dirección de la tendencia 1D
+3. R:R ≥ 2.0: Usando ATR y niveles reales de soporte/resistencia
+4. Sin alerta reciente del mismo par y dirección en las últimas alertas
+5. Volumen confirma (ratio ≥ 0.8× media)
+6. EMA200 del lado correcto (LONG = precio > EMA200, SHORT = precio < EMA200)
+
+Si no se cumplen TODOS: hay_oportunidad=false
 
 Responde SOLO JSON:
-{"hay_oportunidad":true,"urgencia":"ALTA","par":"BTC/USDT","tipo":"LONG","setup":"RSI 28 + soporte","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":78,"razon":"RSI(4H)=28 sobrevendido tocando soporte $68.9K. Patrón de reversión en timeframe 4H.","contexto_mercado":"Descripción técnica del mercado general."}
-Si NO hay oportunidad: {"hay_oportunidad":false,"razon":"motivo técnico concreto"}`,
-    'Eres analista técnico cripto muy selectivo. Solo señalas oportunidades con setup claro basado en datos reales. Responde SOLO con JSON válido.'
+{"hay_oportunidad":true,"urgencia":"ALTA","par":"ETH/USDT","tipo":"LONG","setup":"RSI28+Engulfing+BajoBB+TendAlcista","entrada":2015,"stopLoss":1940,"tp1":2150,"tp2":2280,"rr":"2.1","confianza":81,"confluence_score":73,"signals_aligned":["RSI4H=28","Engulfing alcista","Precio bajo BB","EMA200 soporte","MACD virando"],"razon":"RSI4H=28 sobrevendido. Engulfing alcista fuerte con volumen 1.4× media. Precio bajo BB inferior en soporte diario $1.94K. EMA200 a $1.89K como suelo macro. TP1 resistencia 4H $2.15K.","contexto_mercado":"Descripción concisa del estado del mercado global."}
+Si NO hay oportunidad: {"hay_oportunidad":false,"razon":"motivo técnico concreto y específico"}`,
+    'Eres escáner técnico de criptomonedas muy selectivo y preciso. Solo detectas oportunidades con confluencia alta y gestión del riesgo profesional. Responde SOLO con JSON válido sin markdown.'
   );
   return parseJSON(raw);
 }
@@ -508,35 +718,45 @@ async function aiAdaptStrategy() {
   const techCtx = buildTechContext();
   const wins    = closedTrades.filter(t => t.result === 'WIN').length;
 
-  // Análisis por par
   const byPair = {};
   closedTrades.forEach(t => {
-    if (!byPair[t.par]) byPair[t.par] = { wins: 0, total: 0, pnl: 0 };
+    if (!byPair[t.par]) byPair[t.par] = { wins:0, total:0, pnl:0, setups:[] };
     byPair[t.par].total++;
-    byPair[t.par].pnl += t.pnl || 0;
-    if (t.result === 'WIN') byPair[t.par].wins++;
+    byPair[t.par].pnl += t.pnl||0;
+    if (t.result==='WIN') byPair[t.par].wins++;
+    if (t.setup) byPair[t.par].setups.push(t.setup);
   });
   const pairStats = Object.entries(byPair)
-    .map(([par, s]) => `${par}: ${s.wins}/${s.total} wins, P&L $${s.pnl.toFixed(0)}`)
+    .map(([par,s]) => `${par}: ${s.wins}/${s.total} WR=${(s.wins/s.total*100).toFixed(0)}% P&L=$${s.pnl.toFixed(0)}`)
     .join(' | ');
 
+  // Análisis de setups ganadores vs perdedores
+  const winSetups  = closedTrades.filter(t=>t.result==='WIN').map(t=>t.setup).filter(Boolean);
+  const lossSetups = closedTrades.filter(t=>t.result==='LOSS').map(t=>t.setup).filter(Boolean);
+
   const raw = await callClaude(
-    `Analiza el historial real de este trader y adapta su estrategia.
+    `Analiza el historial real de este trader y genera una estrategia adaptada con reglas concretas.
 
-HISTORIAL COMPLETO:
-- WinRate: ${closedTrades.length > 0 ? (wins/closedTrades.length*100).toFixed(0) : 0}% (${wins}G/${closedTrades.length - wins}P de ${closedTrades.length} ops)
-- P&L total: $${closedTrades.reduce((a,t) => a+(t.pnl||0), 0).toFixed(2)}
-- Por par: ${pairStats || 'sin datos'}
-- Últimas 8 ops: ${closedTrades.slice(0, 8).map(t=>`${t.par} ${t.tipo} ${t.result} PnL:$${(t.pnl||0).toFixed(0)}${t.notes?` [${t.notes}]`:''}`).join(' | ')}
+━━━ HISTORIAL COMPLETO ━━━
+WinRate: ${closedTrades.length>0?(wins/closedTrades.length*100).toFixed(0):0}% | ${wins}W/${closedTrades.length-wins}L | ${closedTrades.length} ops total
+P&L total: $${closedTrades.reduce((a,t)=>a+(t.pnl||0),0).toFixed(2)}
+Por par: ${pairStats||'sin datos suficientes'}
+Setups ganadores frecuentes: ${winSetups.slice(0,5).join(', ')||'N/A'}
+Setups perdedores frecuentes: ${lossSetups.slice(0,5).join(', ')||'N/A'}
+Últimas 10 ops: ${closedTrades.slice(0,10).map(t=>`${t.par} ${t.tipo} ${t.result} PnL:$${(t.pnl||0).toFixed(0)}${t.notes?` [${t.notes}]`:''}`).join(' | ')}
 
-PERFIL: ${profile.style}, ${profile.risk_tolerance}, capital $${profile.capital}, apalancamiento ${profile.leverage||1}x
+━━━ PERFIL ━━━
+Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance} | Capital: $${profile.capital} | Leverage: ${profile.leverage||1}x
+Notas: ${profile.notes||'ninguna'}
 
-CONTEXTO TÉCNICO ACTUAL:
+━━━ CONTEXTO TÉCNICO ACTUAL ━━━
 ${techCtx}
 
+Genera una estrategia adaptada con reglas MUY CONCRETAS y accionables. Las reglas deben ser checkboxes que el trader pueda verificar antes de entrar.
+
 Responde SOLO JSON:
-{"diagnostico":"...","fortalezas":["..."],"debilidades":["..."],"alertas":["..."],"cambios":[{"area":"...","descripcion":"...","impacto":"ALTO"}],"estrategiaAdaptada":{"estiloRecomendado":"Swing","timeframe":"4H","riesgoRecomendado":2,"activos":["BTC","ETH"],"resumen":"...","reglas":["..."]}}`,
-    'Eres coach de trading experto. Analizas datos reales para dar consejos precisos y accionables. Responde SOLO con JSON válido.'
+{"diagnostico":"Análisis honesto del rendimiento actual.","fortalezas":["Descripción concreta"],"debilidades":["Descripción concreta"],"alertas":["Riesgo específico detectado"],"cambios":[{"area":"Gestión de riesgo","descripcion":"Bajar riesgo a 1.5% por operación dado el drawdown reciente","impacto":"ALTO"}],"estrategiaAdaptada":{"estiloRecomendado":"Swing","timeframe":"4H","riesgoRecomendado":2,"activos":["BTC","ETH"],"resumen":"Descripción clara de la estrategia adaptada.","reglas":["Solo entrar si RSI < 35 en 4H","Confirmar con MACD histograma positivo","SL siempre 1.5×ATR","No más de 2 posiciones simultáneas"]}}`,
+    'Eres coach de trading profesional. Das análisis honestos y consejos concretos y accionables basados en datos reales. Responde SOLO con JSON válido.'
   );
   return parseJSON(raw);
 }
@@ -1137,6 +1357,15 @@ function renderOps() {
               ${p.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(p.tp2, coin)}</span>` : ''}
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${p.rr}</span>
             </div>
+            ${p.confluence_score ? `
+            <div style="margin-top:8px;padding:7px 10px;background:var(--s2);border-radius:7px;border-left:3px solid ${p.confluence_score>=65?'var(--green)':p.confluence_score<=35?'var(--red)':'var(--yellow)'}">
+              <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+                <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">CONFLUENCIA</span>
+                <span style="font-size:11px;font-weight:700;color:${p.confluence_score>=65?'var(--green)':'var(--yellow)'}">${p.confluence_score}%</span>
+              </div>
+              ${p.signals_aligned?.length ? `<div style="font-size:9px;color:var(--muted)">${p.signals_aligned.map(s=>'✓ '+s).join(' · ')}</div>` : ''}
+              ${p.signals_against?.length ? `<div style="font-size:9px;color:var(--red);margin-top:2px">${p.signals_against.map(s=>'✗ '+s).join(' · ')}</div>` : ''}
+            </div>` : ''}
             <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-top:8px;margin-bottom:10px">${p.razon}</div>
           </div>
           <div class="proposal-actions">
@@ -1692,26 +1921,74 @@ function renderMkt() {
     const up   = p && prev && p > prev;
     const dn   = p && prev && p < prev;
     const bc   = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
-    const fullName = COIN_NAMES[coin] || coin;
+    const conf = meta.confluence;
+    const confColor = conf ? (conf.score>=65?'var(--green)':conf.score<=35?'var(--red)':'var(--yellow)') : 'var(--muted)';
+
+    // EMA pill
+    const emaPill = meta.ema?.ema200 ? `
+      <span style="font-size:9px;padding:2px 5px;border-radius:3px;background:${p>meta.ema.ema200?'rgba(130,173,143,.2)':'rgba(201,126,126,.15)'};color:${p>meta.ema.ema200?'var(--green)':'var(--red)'}">
+        ${p>meta.ema.ema200?'▲':'▼'} EMA200
+      </span>` : '';
+
+    // MACD pill
+    const macdPill = meta.macd?.hist != null ? `
+      <span style="font-size:9px;padding:2px 5px;border-radius:3px;background:${meta.macd.hist>0?'rgba(130,173,143,.2)':'rgba(201,126,126,.15)'};color:${meta.macd.hist>0?'var(--green)':'var(--red)'}">
+        MACD ${meta.macd.hist>0?'▲':'▼'}
+      </span>` : '';
+
+    // BB pill
+    const bbPill = meta.bb ? (() => {
+      const pos = p < meta.bb.lower ? 'BAJO BB' : p > meta.bb.upper ? 'SOBRE BB' : null;
+      return pos ? `<span style="font-size:9px;padding:2px 5px;border-radius:3px;background:${p<meta.bb.lower?'rgba(130,173,143,.2)':'rgba(201,126,126,.15)'};color:${p<meta.bb.lower?'var(--green)':'var(--red)'}">${pos}</span>` : '';
+    })() : '';
+
+    // Patrones
+    const patternPill = meta.patterns?.length > 0
+      ? `<span style="font-size:9px;padding:2px 5px;border-radius:3px;background:rgba(123,167,188,.15);color:var(--accent)">${meta.patterns[0].name}</span>`
+      : '';
 
     cards += `
       <div class="card" id="mkt-${coin}" style="border-color:${bc};transition:border-color .5s">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
           <div>
-            <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text);line-height:1.2">${fullName}</div>
-            <div style="font-size:10px;color:var(--muted);font-weight:500;margin-top:1px">${coin} · USDT</div>
+            <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text);line-height:1.2">${COIN_NAMES[coin]||coin}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:1px">${coin} · USDT · 1D: <b style="color:${meta.macroTrend==='ALCISTA'?'var(--green)':meta.macroTrend==='BAJISTA'?'var(--red)':'var(--muted)'}">${meta.macroTrend||'—'}</b></div>
           </div>
           <span class="tag ${meta.cls}">${meta.tag}</span>
         </div>
-        <div style="font-size:20px;font-weight:600;color:${up?'var(--green)':dn?'var(--red)':'var(--text)'};font-family:var(--serif);margin-bottom:3px;transition:color .3s" id="mkt-price-${coin}">
+        <div style="font-size:20px;font-weight:600;font-family:var(--serif);margin-bottom:2px;transition:color .3s;color:${up?'var(--green)':dn?'var(--red)':'var(--text)'}" id="mkt-price-${coin}">
           ${p ? fmtP(p, coin) : '<span style="color:var(--muted);font-size:13px">...</span>'}
         </div>
-        <div style="font-size:10px;margin-bottom:10px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px">
-          <div class="cs"><div class="csl">RSI</div><div class="csv" style="color:${meta.rsi<30?'var(--green)':meta.rsi>70?'var(--red)':'var(--text)'}">${meta.rsi}</div></div>
-          <div class="cs"><div class="csl">Soporte</div><div class="csv" style="color:var(--green);font-size:11px">${meta.sup}</div></div>
-          <div class="cs"><div class="csl">Resist.</div><div class="csv" style="color:var(--red);font-size:11px">${meta.res}</div></div>
+        <div style="font-size:10px;margin-bottom:8px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
+
+        <!-- Indicadores pills -->
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">
+          ${emaPill}${macdPill}${bbPill}${patternPill}
         </div>
+
+        <!-- KPIs -->
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:8px">
+          <div class="cs"><div class="csl">RSI 4H</div><div class="csv" style="color:${typeof meta.rsi==='number'&&meta.rsi<35?'var(--green)':typeof meta.rsi==='number'&&meta.rsi>65?'var(--red)':'var(--text)'}">${meta.rsi}</div></div>
+          <div class="cs"><div class="csl">RSI 1D</div><div class="csv" style="color:${typeof meta.rsi1d==='number'&&meta.rsi1d<40?'var(--green)':typeof meta.rsi1d==='number'&&meta.rsi1d>60?'var(--red)':'var(--text)'}">${meta.rsi1d||'—'}</div></div>
+          <div class="cs"><div class="csl">Soporte 4H</div><div class="csv" style="color:var(--green);font-size:11px">${meta.sup}</div></div>
+          <div class="cs"><div class="csl">Resist. 4H</div><div class="csv" style="color:var(--red);font-size:11px">${meta.res}</div></div>
+          ${meta.atr ? `<div class="cs"><div class="csl">ATR</div><div class="csv" style="font-size:11px">${fmtP(meta.atr,coin)}</div></div>` : ''}
+          ${meta.vol ? `<div class="cs"><div class="csl">Volumen</div><div class="csv" style="font-size:10px;color:${meta.vol.ratio>1.5?'var(--green)':meta.vol.ratio<0.7?'var(--red)':'var(--text)'}">${meta.vol.ratio}× avg</div></div>` : ''}
+        </div>
+
+        <!-- Confluencia -->
+        ${conf ? `
+        <div style="margin-bottom:10px;padding:7px 10px;background:var(--s2);border-radius:8px;border-left:3px solid ${confColor}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:10px;font-weight:600;color:var(--text)">Confluencia ${conf.bias}</span>
+            <span style="font-family:var(--serif);font-size:13px;font-weight:700;color:${confColor}">${conf.score}%</span>
+          </div>
+          <div style="height:4px;background:var(--border);border-radius:2px">
+            <div style="height:100%;width:${conf.score}%;background:${confColor};border-radius:2px;transition:width .5s"></div>
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:3px">${conf.bull}↑ alcistas · ${conf.bear}↓ bajistas</div>
+        </div>` : ''}
+
         <button class="btn" style="width:100%;justify-content:center;font-size:10px;padding:5px" onclick="openChart('${coin}')">
           📈 Ver gráfico
         </button>
@@ -1722,7 +1999,7 @@ function renderMkt() {
     <div class="stl">Mercado — Binance Live</div>
     <div style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);margin-bottom:16px">
       <span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:blink 2.5s infinite"></span>
-      Precios en tiempo real · WebSocket Binance
+      Precios en tiempo real · WebSocket Binance · Indicadores: RSI, EMA, MACD, BB, ATR, Volumen, Patrones
     </div>
     <div class="grid-market">${cards}</div>`;
 }
