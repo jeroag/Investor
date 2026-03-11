@@ -2200,8 +2200,8 @@ function openChart(coin) {
           <button onclick="qs('#tv-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;padding:4px">×</button>
         </div>
         <div style="height:480px">
-          <iframe
-            src="https://www.tradingview.com/widgetembed/?symbol=BINANCE:${coin}USDT&interval=4H&theme=light&style=1&locale=es&toolbar_bg=%23FFFFFF&hide_top_toolbar=0&hide_side_toolbar=0&allow_symbol_change=0&save_image=0&calendar=0&studies=RSI%4014"
+        <iframe
+            src="https://www.tradingview.com/widgetembed/?symbol=BINANCE:${coin}USDT&interval=4H&theme=dark&style=1&locale=es&toolbar_bg=%230B0D11&hide_top_toolbar=0&hide_side_toolbar=0&allow_symbol_change=0&save_image=0&calendar=0&studies=RSI%4014"
             style="width:100%;height:100%;border:none"
             allowtransparency="true"
             frameborder="0">
@@ -2807,10 +2807,11 @@ function renderAll() {
    MODO OSCURO
    ══════════════════════════════════════════════════════════ */
 function applyDarkMode(on) {
-  document.body.classList.toggle('dark', on);
+  // Nuevo: dark es el default, 'light' es el modo claro
+  // 'on' = quiere modo oscuro (behavior original)
+  document.body.classList.toggle('light', !on);
   const btn = qs('#dark-toggle');
   if (btn) btn.textContent = on ? '☀️' : '🌙';
-  // TradingView iframes necesitan recargarse
   if (qs('#tv-modal')) qs('#tv-modal').remove();
 }
 

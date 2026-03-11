@@ -10,15 +10,11 @@ app.use(express.json());
 
 /* ══════════════════════════════════════════════════════════
    AUTENTICACIÓN
-   - Contraseña guardada en variable de entorno APP_PASSWORD
-   - Sesiones en memoria (token aleatorio de 64 bytes)
-   - Todas las rutas /api/* y el HTML principal requieren sesión
    ══════════════════════════════════════════════════════════ */
 
-const sessions = new Map(); // token → { createdAt, ip }
-const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 horas
+const sessions = new Map();
+const SESSION_TTL = 12 * 60 * 60 * 1000;
 
-// Limpiar sesiones expiradas cada hora
 setInterval(() => {
   const now = Date.now();
   for (const [token, s] of sessions) {
@@ -31,7 +27,6 @@ function generateToken() {
 }
 
 function getToken(req) {
-  // Acepta token en header Authorization: Bearer <token>  o en cookie cp_token
   const auth = req.headers['authorization'];
   if (auth?.startsWith('Bearer ')) return auth.slice(7);
   const cookie = req.headers['cookie'] || '';
@@ -51,27 +46,23 @@ function isAuthenticated(req) {
   return true;
 }
 
-// Middleware de autenticación para todas las rutas /api/*
 function requireAuth(req, res, next) {
   if (isAuthenticated(req)) return next();
   return res.status(401).json({ error: 'No autorizado. Inicia sesión.' });
 }
 
-// ── Login endpoint (público) ───────────────────────────────
 app.post('/auth/login', (req, res) => {
   const { password } = req.body;
   const correctPassword = process.env.APP_PASSWORD;
 
   if (!correctPassword) {
-    // Si no hay contraseña configurada, advertir en consola pero permitir acceso
-    console.warn('⚠️  APP_PASSWORD no configurada. Configúrala en las variables de entorno.');
+    console.warn('⚠️  APP_PASSWORD no configurada.');
     const token = generateToken();
     sessions.set(token, { createdAt: Date.now() });
     return res.json({ ok: true, token });
   }
 
   if (!password || password !== correctPassword) {
-    // Delay de 1s para dificultar fuerza bruta
     return setTimeout(() => {
       res.status(401).json({ ok: false, error: 'Contraseña incorrecta.' });
     }, 1000);
@@ -82,12 +73,10 @@ app.post('/auth/login', (req, res) => {
   sessions.set(token, { createdAt: Date.now(), ip });
   console.log(`✓ Login exitoso desde ${ip}`);
 
-  // Configurar cookie segura (httpOnly) + devolver token para localStorage
   res.setHeader('Set-Cookie', `cp_token=${token}; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL/1000}; Path=/`);
   res.json({ ok: true, token });
 });
 
-// ── Logout endpoint ────────────────────────────────────────
 app.post('/auth/logout', (req, res) => {
   const token = getToken(req);
   if (token) sessions.delete(token);
@@ -95,24 +84,16 @@ app.post('/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Check session ──────────────────────────────────────────
 app.get('/auth/check', (req, res) => {
   res.json({ authenticated: isAuthenticated(req) });
 });
 
-// Servir login.html sin autenticación
 app.get('/login', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
-// ── Archivos estáticos: públicos (JS/CSS no contienen datos sensibles) ───────
-// Los datos sensibles solo están en /api/* que SÍ está protegido
-app.use(express.static(path.join(__dirname, 'public'), {
-  // No servir index.html automáticamente — lo controlamos nosotros
-  index: false,
-}));
+app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
-// Proteger el HTML principal — redirige a login si no hay sesión
 app.get('/', (req, res) => {
   if (!isAuthenticated(req)) return res.redirect('/login');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -157,7 +138,7 @@ setInterval(() => {
 }, 5 * 60_000);
 
 /* ══════════════════════════════════════════════════════════
-   BINANCE WEBSOCKET (precios en servidor para TP/SL)
+   BINANCE WEBSOCKET
    ══════════════════════════════════════════════════════════ */
 const COINS  = ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt'];
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
@@ -216,7 +197,7 @@ function checkTPSL(coin, price) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   BITUNIX API INTEGRATION
+   BITUNIX API INTEGRATION — CORREGIDA
    ══════════════════════════════════════════════════════════ */
 const BITUNIX_BASE = 'https://fapi.bitunix.com';
 
@@ -225,48 +206,39 @@ function sha256(str) {
 }
 
 function generateNonce() {
-  return crypto.randomBytes(16).toString('hex'); // 32 chars
+  // Bitunix espera nonce de exactamente 32 chars alfanuméricos
+  return crypto.randomBytes(16).toString('hex');
 }
 
 /**
- * Firma una request Bitunix según su spec:
- * digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
- * sign   = SHA256(digest + secretKey)
- *
- * queryParams: objeto de query params → ordenado por ASCII key, concatenado "k1v1k2v2"
- * body: string JSON sin espacios (o "" si no hay body)
+ * Firma Bitunix:
+ * 1. queryParams → ordenar por ASCII, concatenar "k1v1k2v2" (sin =, sin &)
+ * 2. bodyStr → JSON sin espacios, o "" si no hay body
+ * 3. digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
+ * 4. sign   = SHA256(digest + secretKey)
  */
 function bitunixSign(apiKey, secretKey, nonce, timestamp, queryParamsObj, bodyStr) {
-  // 1. Ordenar query params por clave ASCII ascendente y concatenar
   const qp = Object.keys(queryParamsObj || {})
     .sort()
-    .map(k => k + queryParamsObj[k])
+    .map(k => `${k}${queryParamsObj[k]}`)
     .join('');
 
-  // 2. Asegurarse que el body no tiene espacios
+  // El body NO debe tener espacios en blanco
   const body = bodyStr ? bodyStr.replace(/\s+/g, '') : '';
 
-  // 3. Doble SHA256
-  const digest = sha256(nonce + timestamp + apiKey + qp + body);
-  const sign   = sha256(digest + secretKey);
+  const digest = sha256(`${nonce}${timestamp}${apiKey}${qp}${body}`);
+  const sign   = sha256(`${digest}${secretKey}`);
   return sign;
 }
 
 /**
- * Llamada autenticada a Bitunix
- */
-/**
- * Bitunix soporta dos API keys separadas:
- *   BITUNIX_API_KEY    + BITUNIX_SECRET     → para OPERAR (trade)
- *   BITUNIX_READ_KEY   + BITUNIX_READ_SECRET → para LEER saldo/posiciones
+ * Llamada autenticada a Bitunix.
  *
- * Si solo hay una, se usa para todo.
+ * FIX: Usamos timestamp en milisegundos (requerido por Bitunix).
+ * FIX: Content-Type solo en requests con body (POST).
+ * FIX: marginCoin=USDT incluido por defecto en endpoints de cuenta.
  */
 async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null, forceKey = null) {
-  // Elegir qué key usar
-  // forceKey = 'read' | 'trade' | null (auto)
-  let apiKey, secretKey;
-
   const tradeKey  = process.env.BITUNIX_API_KEY;
   const tradeSec  = process.env.BITUNIX_SECRET;
   const readKey   = process.env.BITUNIX_READ_KEY   || tradeKey;
@@ -276,22 +248,22 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
     throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados.');
   }
 
-  // Endpoints de lectura → usar read key; escritura → usar trade key
   const isReadOnly = method === 'GET';
+  let apiKey, secretKey;
   if (forceKey === 'read' || (isReadOnly && forceKey !== 'trade')) {
-    apiKey    = readKey;
-    secretKey = readSec;
+    apiKey = readKey; secretKey = readSec;
   } else {
-    apiKey    = tradeKey;
-    secretKey = tradeSec;
+    apiKey = tradeKey; secretKey = tradeSec;
   }
 
   const nonce     = generateNonce();
-  const timestamp = Date.now().toString();
-  const bodyStr   = bodyObj ? JSON.stringify(bodyObj) : '';
-  const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, queryParams, bodyStr);
+  const timestamp = Date.now().toString(); // Bitunix usa milisegundos
 
-  // Construir URL con query string
+  // Para la firma usamos los valores RAW (no URL-encoded)
+  const bodyStr = bodyObj ? JSON.stringify(bodyObj).replace(/\s+/g, '') : '';
+  const sign    = bitunixSign(apiKey, secretKey, nonce, timestamp, queryParams, bodyStr);
+
+  // Para la URL sí hacemos encodeURIComponent
   const qs = Object.keys(queryParams).length
     ? '?' + Object.keys(queryParams).sort().map(k => `${k}=${encodeURIComponent(queryParams[k])}`).join('&')
     : '';
@@ -299,12 +271,13 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
   const url = BITUNIX_BASE + endpoint + qs;
 
   const headers = {
-    'Content-Type': 'application/json',
-    'api-key':      apiKey,
-    'nonce':        nonce,
-    'timestamp':    timestamp,
-    'sign':         sign,
+    'api-key':   apiKey,
+    'nonce':     nonce,
+    'timestamp': timestamp,
+    'sign':      sign,
   };
+  // FIX: solo añadir Content-Type si hay body
+  if (bodyObj) headers['Content-Type'] = 'application/json';
 
   const options = { method, headers };
   if (bodyObj) options.body = bodyStr;
@@ -312,7 +285,7 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
   const res  = await fetch(url, options);
   const data = await res.json();
 
-  if (!res.ok || data.code !== 0) {
+  if (!res.ok || (data.code !== undefined && data.code !== 0)) {
     const msg = data?.msg || data?.message || JSON.stringify(data);
     throw new Error(`Bitunix API error [${data?.code}]: ${msg}`);
   }
@@ -320,105 +293,113 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
   return data;
 }
 
-/* ── Endpoint: GET balance de futuros ─────────────────────── */
-// Endpoint de diagnóstico — devuelve respuesta cruda de Bitunix para ver campos reales
+/* ── Debug endpoint (diagnóstico completo) ────────────────── */
 app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
   const results = {};
-
-  // Helper que prueba con una key específica y distintas variantes de firma
-  async function tryWithKey(label, apiKey, secretKey, path, params = {}) {
-    // Variante 1: timestamp en milisegundos (actual)
-    try {
-      const nonce     = generateNonce();
-      const timestamp = Date.now().toString();
-      const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, params, '');
-      const qs = Object.keys(params).length
-        ? '?' + Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&')
-        : '';
-      const r = await fetch(BITUNIX_BASE + path + qs, {
-        headers: { 'Content-Type':'application/json','api-key':apiKey,'nonce':nonce,'timestamp':timestamp,'sign':sign }
-      });
-      const d = await r.json();
-      results[label + '_ms'] = { code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
-    } catch(e) { results[label + '_ms'] = { error: e.message }; }
-
-    // Variante 2: timestamp en segundos
-    try {
-      const nonce     = generateNonce();
-      const timestamp = Math.floor(Date.now() / 1000).toString();
-      const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, params, '');
-      const qs = Object.keys(params).length
-        ? '?' + Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&')
-        : '';
-      const r = await fetch(BITUNIX_BASE + path + qs, {
-        headers: { 'Content-Type':'application/json','api-key':apiKey,'nonce':nonce,'timestamp':timestamp,'sign':sign }
-      });
-      const d = await r.json();
-      results[label + '_sec'] = { code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
-    } catch(e) { results[label + '_sec'] = { error: e.message }; }
-  }
-
   const tradeKey = process.env.BITUNIX_API_KEY;
   const tradeSec = process.env.BITUNIX_SECRET;
   const readKey  = process.env.BITUNIX_READ_KEY   || tradeKey;
   const readSec  = process.env.BITUNIX_READ_SECRET || tradeSec;
 
-  // Test con READ key
-  await tryWithKey('read_account',   readKey,  readSec,  '/api/v1/futures/account/singleAccount');
-  await tryWithKey('read_positions', readKey,  readSec,  '/api/v1/futures/position/getPendingPositions');
+  if (!tradeKey || !tradeSec) {
+    return res.json({ ok: false, error: 'API keys no configuradas en variables de entorno' });
+  }
 
-  // Test con TRADE key
-  await tryWithKey('trade_account',   tradeKey, tradeSec, '/api/v1/futures/account/singleAccount');
-  await tryWithKey('trade_positions', tradeKey, tradeSec, '/api/v1/futures/position/getPendingPositions');
+  async function tryEndpoint(label, key, sec, method, path, params, body) {
+    const nonce = generateNonce();
+    const ts    = Date.now().toString();
+    const bodyStr = body ? JSON.stringify(body).replace(/\s+/g,'') : '';
+    const sign  = bitunixSign(key, sec, nonce, ts, params, bodyStr);
+    const qs    = Object.keys(params).length
+      ? '?' + Object.keys(params).sort().map(k=>`${k}=${encodeURIComponent(params[k])}`).join('&')
+      : '';
+    const headers = { 'api-key':key,'nonce':nonce,'timestamp':ts,'sign':sign };
+    if (body) headers['Content-Type'] = 'application/json';
+    try {
+      const r = await fetch(BITUNIX_BASE + path + qs, {
+        method, headers,
+        ...(body ? { body: bodyStr } : {}),
+      });
+      const d = await r.json();
+      results[label] = { httpStatus: r.status, code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
+    } catch(e) {
+      results[label] = { error: e.message };
+    }
+  }
 
-  // Verificar que las keys no sean iguales (solo informativo)
-  results['_info'] = {
-    readKeySameAsTradeKey: readKey === tradeKey,
-    readKeyPrefix: readKey?.slice(0, 6) + '...',
-    tradeKeyPrefix: tradeKey?.slice(0, 6) + '...',
+  // Test endpoints de cuenta con ambas keys
+  await tryEndpoint('account_read',  readKey, readSec, 'GET', '/api/v1/futures/account/singleAccount', { marginCoin:'USDT' });
+  await tryEndpoint('account_trade', tradeKey, tradeSec, 'GET', '/api/v1/futures/account/singleAccount', { marginCoin:'USDT' });
+  await tryEndpoint('positions_read', readKey, readSec, 'GET', '/api/v1/futures/position/getPendingPositions', {});
+  await tryEndpoint('history_orders', readKey, readSec, 'GET', '/api/v1/futures/trade/getHistoryOrders', { pageSize:'5', page:'1' });
+
+  results['_config'] = {
+    sameKey: readKey === tradeKey,
+    tradeKeyPrefix: tradeKey?.slice(0,8) + '...',
+    readKeyPrefix:  readKey?.slice(0,8) + '...',
+    timestamp_ms: Date.now(),
+    timestamp_s:  Math.floor(Date.now()/1000),
   };
 
   res.json({ ok: true, results });
 });
 
+/* ── GET saldo de futuros ─────────────────────────────────── */
 app.get('/api/bitunix/account', requireAuth, async (req, res) => {
-  const attempts = [
-    { path: '/api/v1/futures/account/singleAccount', params: {} },
+  // FIX: Usar directamente el endpoint correcto con marginCoin=USDT
+  // que es el requerido por Bitunix para futuros USDT
+  const endpoints = [
     { path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
-    { path: '/api/v1/futures/account/getAccount',    params: {} },
-    { path: '/api/v1/futures/account/assets',        params: {} },
-    { path: '/api/v1/futures/account/accounts',      params: {} },
-    { path: '/api/v1/futures/account/balance',       params: {} },
-    { path: '/api/v1/futures/account/balance',       params: { coin: 'USDT' } },
+    { path: '/api/v1/futures/account/singleAccount', params: {} },
+    { path: '/api/v1/futures/account/getAccount',    params: { marginCoin: 'USDT' } },
   ];
 
-  for (const attempt of attempts) {
+  for (const ep of endpoints) {
     try {
-      const data = await bitunixRequest('GET', attempt.path, attempt.params);
-      if (data.code === 0 && data.data) {
-        console.log(`[Bitunix account OK] ${attempt.path}`, JSON.stringify(data.data));
-        return res.json({ ok: true, account: data.data });
+      const data = await bitunixRequest('GET', ep.path, ep.params);
+      if (data.code === 0) {
+        // Normalizar los campos del account para que el frontend
+        // siempre reciba los mismos nombres de campo
+        const raw = data.data || {};
+        const account = {
+          // Campos normalizados que el frontend lee
+          available:      raw.available      ?? raw.availableBalance ?? raw.availAmt ?? raw.freeBalance ?? null,
+          equity:         raw.equity         ?? raw.totalEquity      ?? raw.marginBalance ?? null,
+          balance:        raw.balance        ?? raw.walletBalance    ?? raw.totalBalance   ?? null,
+          unrealizedPnl:  raw.unrealizedPnl  ?? raw.crossUnPnl      ?? raw.unPnl          ?? null,
+          // Guardar campos originales también
+          ...raw,
+        };
+        console.log(`[Bitunix account OK] endpoint: ${ep.path}`, JSON.stringify(account));
+        return res.json({ ok: true, account });
       }
     } catch (err) {
-      console.warn(`[Bitunix account] ${attempt.path} → ${err.message}`);
+      console.warn(`[Bitunix account] ${ep.path} → ${err.message}`);
     }
   }
 
-  res.status(500).json({ ok: false, error: 'No se pudo obtener el saldo. Revisa los permisos de la API key en Bitunix.' });
+  res.status(500).json({
+    ok: false,
+    error: 'No se pudo obtener el saldo. Verifica:\n1. Que las API keys estén correctamente configuradas\n2. Que tengan permiso de LECTURA en futuros\n3. Que la IP de Railway esté en la whitelist de Bitunix'
+  });
 });
 
-/* ── Endpoint: GET posiciones abiertas ────────────────────── */
+/* ── GET posiciones abiertas ──────────────────────────────── */
 app.get('/api/bitunix/positions', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
-    res.json({ ok: true, positions: data.data || [] });
+    // Bitunix puede devolver la lista directamente o en data.resultList
+    const positions = Array.isArray(data.data)
+      ? data.data
+      : (data.data?.resultList || data.data?.list || []);
+    res.json({ ok: true, positions });
   } catch (err) {
     console.error('Bitunix positions error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/* ── Endpoint: POST colocar orden ─────────────────────────── */
+/* ── POST colocar orden ───────────────────────────────────── */
 app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
   try {
     const { symbol, qty, side, leverage, orderType, price, tpPrice, slPrice, clientOrderId } = req.body;
@@ -427,51 +408,58 @@ app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
       return res.status(400).json({ ok: false, error: 'symbol, qty y side son obligatorios' });
     }
 
-    // 1. Establecer apalancamiento
+    // 1. Configurar apalancamiento
+    // FIX: usar positionType (1=LONG si BUY, 2=SHORT si SELL)
+    const positionType = side === 'BUY' ? 1 : 2;
     try {
       await bitunixRequest('POST', '/api/v1/futures/account/changeLeverage', {}, {
         symbol,
-        leverage: leverage || 1,
-        marginType: 'CROSSED', // margin cruzado por defecto
+        leverage:     String(leverage || 1),
+        positionType,   // 1 = LONG, 2 = SHORT
+        marginCoin:  'USDT',
       });
     } catch (levErr) {
-      console.warn('No se pudo cambiar leverage (puede que ya esté configurado):', levErr.message);
+      console.warn('changeLeverage (puede que ya esté configurado):', levErr.message);
     }
 
-    // 2. Colocar orden de mercado
+    // 2. Colocar orden
     const orderBody = {
       symbol,
-      qty:         String(qty),
-      side,             // BUY | SELL
-      tradeSide:   'OPEN',
-      orderType:   orderType || 'MARKET',
-      reduceOnly:  false,
-      clientId:    clientOrderId || `cp_${Date.now()}`,
+      qty:        String(qty),
+      side,                            // BUY | SELL
+      tradeSide:  'OPEN',
+      orderType:  orderType || 'MARKET',
+      reduceOnly: false,
+      clientId:   clientOrderId || `cp_${Date.now()}`,
+      marginCoin: 'USDT',
     };
     if (orderType === 'LIMIT' && price) orderBody.price = String(price);
 
     const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/placeOrder', {}, orderBody);
     const orderId   = orderData.data?.orderId;
 
-    // 3. Colocar TP/SL si se proporcionaron
+    // 3. TP/SL
+    // FIX: usar positionSide (LONG/SHORT) para el endpoint de TP/SL
     let tpslResult = null;
     if ((tpPrice || slPrice) && orderId) {
       try {
+        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
         const tpslBody = {
           symbol,
-          side:     side === 'BUY' ? 'SELL' : 'BUY', // dirección opuesta para cerrar
-          tpPrice:  tpPrice  ? String(tpPrice)  : undefined,
-          slPrice:  slPrice  ? String(slPrice)  : undefined,
-          tpSize:   String(qty),
-          slSize:   String(qty),
-          tpOrderType: 'MARKET',
-          slOrderType: 'MARKET',
+          positionSide,              // FIX: campo correcto para este endpoint
+          marginCoin: 'USDT',
         };
-        // Eliminar campos undefined
-        Object.keys(tpslBody).forEach(k => tpslBody[k] === undefined && delete tpslBody[k]);
+        if (tpPrice) {
+          tpslBody.tpTriggerPrice = String(tpPrice);
+          tpslBody.tpOrderType    = 'MARKET';  // cierre a mercado al tocar TP
+        }
+        if (slPrice) {
+          tpslBody.slTriggerPrice = String(slPrice);
+          tpslBody.slOrderType    = 'MARKET';  // cierre a mercado al tocar SL
+        }
         tpslResult = await bitunixRequest('POST', '/api/v1/futures/tpsl/placePositionTpSlOrder', {}, tpslBody);
       } catch (tpslErr) {
-        console.warn('No se pudo colocar TP/SL:', tpslErr.message);
+        console.warn('TP/SL placement error:', tpslErr.message);
       }
     }
 
@@ -482,17 +470,18 @@ app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
   }
 });
 
-/* ── Endpoint: POST cerrar posición (flash close) ─────────── */
+/* ── POST cerrar posición ─────────────────────────────────── */
 app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
   try {
     const { symbol, side } = req.body;
     if (!symbol) return res.status(400).json({ ok: false, error: 'symbol es obligatorio' });
 
-    const data = await bitunixRequest('POST', '/api/v1/futures/trade/flashClosePosition', {}, {
-      symbol,
-      side: side || undefined, // LONG | SHORT, si no se pasa cierra todo
-    });
+    // FIX: flashClosePosition espera positionSide (LONG|SHORT), no BUY|SELL
+    // El campo side del trade en el frontend ya es LONG|SHORT
+    const body = { symbol, marginCoin: 'USDT' };
+    if (side) body.side = side; // LONG | SHORT
 
+    const data = await bitunixRequest('POST', '/api/v1/futures/trade/flashClosePosition', {}, body);
     res.json({ ok: true, data: data.data });
   } catch (err) {
     console.error('Bitunix close-position error:', err.message);
@@ -500,21 +489,22 @@ app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
   }
 });
 
-/* ── Endpoint: GET historial órdenes de Bitunix ───────────── */
+/* ── GET historial órdenes ────────────────────────────────── */
 app.get('/api/bitunix/history', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/trade/getHistoryOrders', {
       pageSize: '20',
       page:     '1',
     });
-    res.json({ ok: true, orders: data.data?.resultList || [] });
+    const orders = data.data?.resultList || data.data?.list || data.data || [];
+    res.json({ ok: true, orders: Array.isArray(orders) ? orders : [] });
   } catch (err) {
     console.error('Bitunix history error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/* ── Endpoint: estado de configuración Bitunix ────────────── */
+/* ── Estado de configuración Bitunix ──────────────────────── */
 app.get('/api/bitunix/status', requireAuth, (req, res) => {
   const hasTradeKey = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
   const hasReadKey  = !!(process.env.BITUNIX_READ_KEY && process.env.BITUNIX_READ_SECRET);
@@ -522,7 +512,6 @@ app.get('/api/bitunix/status', requireAuth, (req, res) => {
     configured: hasTradeKey,
     hasTradeKey,
     hasReadKey,
-    // Si hay read key separada o se comparte la trade key para leer
     canRead: hasTradeKey || hasReadKey,
   });
 });
@@ -541,7 +530,7 @@ function isValidTrade(t) {
   );
 }
 
-app.post('/api/trades/sync', requireAuth,  (req, res) => {
+app.post('/api/trades/sync', requireAuth, (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
   const validTrades = activeTrades.filter(isValidTrade);
@@ -555,18 +544,18 @@ app.post('/api/trades/sync', requireAuth,  (req, res) => {
   res.json({ ok: true, watching: serverState.activeTrades.length, rejected });
 });
 
-app.get('/api/trades/closed-by-server', requireAuth,  (req, res) => {
+app.get('/api/trades/closed-by-server', requireAuth, (req, res) => {
   res.json({ closed: [...serverState.closedTrades] });
 });
 
-app.post('/api/trades/confirm-closed', requireAuth,  (req, res) => {
+app.post('/api/trades/confirm-closed', requireAuth, (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids inválido' });
   serverState.closedTrades = serverState.closedTrades.filter(t => !ids.includes(t.id));
   res.json({ ok: true, remaining: serverState.closedTrades.length });
 });
 
-app.get('/api/prices', requireAuth,  (req, res) => {
+app.get('/api/prices', requireAuth, (req, res) => {
   res.json(serverState.prices);
 });
 
