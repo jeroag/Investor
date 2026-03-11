@@ -175,8 +175,8 @@ function bitunixSign(apiKey, secretKey, nonce, timestamp, queryParamsObj, bodySt
 }
 
 async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null) {
-  const apiKey    = process.env.BITUNIX_API_KEY;
-  const secretKey = process.env.BITUNIX_SECRET;
+  const apiKey    = (process.env.BITUNIX_API_KEY    || '').trim();
+  const secretKey = (process.env.BITUNIX_SECRET     || '').trim();
   if (!apiKey || !secretKey) throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados en Railway.');
 
   const nonce     = generateNonce();
@@ -224,19 +224,48 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 
 /* ── Debug endpoint ──────────────────────────────────────── */
 app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
-  const apiKey    = process.env.BITUNIX_API_KEY;
-  const secretKey = process.env.BITUNIX_SECRET;
+  const apiKey    = (process.env.BITUNIX_API_KEY || '').trim();
+  const secretKey = (process.env.BITUNIX_SECRET  || '').trim();
 
   if (!apiKey || !secretKey)
     return res.json({ ok: false, error: 'Variables BITUNIX_API_KEY y BITUNIX_SECRET no configuradas.' });
 
   const results = {};
 
+  // 1. Diagnóstico de las keys (sin exponer el valor real)
+  results['_keys_info'] = {
+    apiKey_length:    apiKey.length,
+    secret_length:    secretKey.length,
+    apiKey_prefix:    apiKey.slice(0,6) + '...',
+    apiKey_suffix:    '...' + apiKey.slice(-4),
+    secret_prefix:    secretKey.slice(0,4) + '...',
+    apiKey_hasSpaces: apiKey !== (process.env.BITUNIX_API_KEY || ''),
+    secret_hasSpaces: secretKey !== (process.env.BITUNIX_SECRET || ''),
+    timestamp_ms:     Date.now(),
+    nodeVersion:      process.version,
+  };
+
+  // 2. Muestra el string exacto que se firma (SIN el secret)
+  const testNonce = '123456';
+  const testTs    = Date.now().toString();
+  const testQp    = 'marginCoinUSDT';
+  const testBody  = '';
+  const testDigestInput = `${testNonce}${testTs}${apiKey}${testQp}${testBody}`;
+  results['_sign_preview'] = {
+    nonce:       testNonce,
+    timestamp:   testTs,
+    qpString:    testQp,
+    digestInput: testDigestInput,
+    digest:      sha256(testDigestInput),
+    // sign = sha256(digest + secretKey)  ← no se muestra el sign real para no exponer el secret
+  };
+
   async function tryEp(label, method, path, params, body) {
     const nonce   = generateNonce();
     const ts      = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body).replace(/\s+/g,'') : '';
     const sign    = bitunixSign(apiKey, secretKey, nonce, ts, params, bodyStr);
+    const qpStr   = Object.keys(params).sort().map(k=>`${k}${params[k]}`).join('');
     const qs      = Object.keys(params).length
       ? '?' + Object.keys(params).sort().map(k=>`${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&')
       : '';
@@ -248,22 +277,20 @@ app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
       });
       const text = await r.text();
       let d; try { d = JSON.parse(text); } catch { d = { raw: text.slice(0,300) }; }
-      results[label] = { httpStatus: r.status, code: d.code, msg: d.msg, ok: d.code === 0, dataPreview: JSON.stringify(d.data).slice(0,200) };
+      results[label] = {
+        httpStatus: r.status, code: d.code, msg: d.msg, ok: d.code === 0,
+        dataPreview: JSON.stringify(d.data).slice(0,200),
+        // debug: qué se firmó exactamente
+        signed: { nonce, timestamp: ts, qpString: qpStr, bodyStr: bodyStr.slice(0,100) },
+      };
     } catch(e) {
       results[label] = { error: e.message };
     }
   }
 
-  // Probar los 3 endpoints principales con URLs CORRECTAS
   await tryEp('account',        'GET', '/api/v1/futures/account', { marginCoin: 'USDT' });
   await tryEp('positions',      'GET', '/api/v1/futures/position/get_pending_positions', {});
   await tryEp('history_orders', 'GET', '/api/v1/futures/trade/get_history_orders', { pageSize:'5', page:'1' });
-
-  results['_config'] = {
-    keyPrefix:    apiKey.slice(0,8) + '...',
-    timestamp_ms: Date.now(),
-    nodeVersion:  process.version,
-  };
 
   res.json({ ok: true, results });
 });
