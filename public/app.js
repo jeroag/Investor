@@ -1082,7 +1082,7 @@ function renderMkt() {
     const prev = state.prevPrices[coin];
     const up   = p && prev && p > prev;
     const dn   = p && prev && p < prev;
-    const bc   = up ? 'rgba(0,255,157,.2)' : dn ? 'rgba(255,77,109,.15)' : 'var(--border)';
+    const bc = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
 
     const fullName = COIN_NAMES[coin] || coin;
     cards += `
@@ -1099,7 +1099,7 @@ function renderMkt() {
         </div>
         <div style="font-size:10px;margin-bottom:10px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
-          <div class="cs"><div class="csl">RSI</div><div class="csv" style="color:${meta.rsi<30?'var(--green)':'var(--yellow)'}">${meta.rsi}</div></div>
+          <div class="cs"><div class="csl">RSI</div><div class="csv" style="color:${meta.rsi<30?'var(--green)':meta.rsi>70?'var(--red)':'var(--text)'}">${meta.rsi}</div></div>
           <div class="cs"><div class="csl">Soporte</div><div class="csv" style="color:var(--green);font-size:11px">${meta.sup}</div></div>
           <div class="cs"><div class="csl">Resist.</div><div class="csv" style="color:var(--red);font-size:11px">${meta.res}</div></div>
         </div>
@@ -1107,8 +1107,11 @@ function renderMkt() {
   });
 
   root.innerHTML = `
-    <div class="stl">◈ Mercado — Binance Live</div>
-    <div class="al al-b">Precios en tiempo real vía WebSocket público de Binance. Sin API key requerida.</div>
+    <div class="stl">Mercado — Binance Live</div>
+    <div style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);margin-bottom:16px">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--green);display:inline-block;animation:blink 2.5s infinite"></span>
+      Precios en tiempo real · WebSocket Binance
+    </div>
     <div class="grid-market">${cards}</div>`;
 }
 
@@ -1129,7 +1132,7 @@ function updateMarketPrice(coin, price) {
     chgEl.textContent = chg !== 0 ? (up ? '▲ +' : '▼ ') + Math.abs(chg).toFixed(4) + '%' : '—';
     chgEl.style.color = up ? 'var(--green)' : dn ? 'var(--red)' : 'var(--muted)';
   }
-  if (card) card.style.borderColor = up ? 'rgba(0,255,157,.2)' : dn ? 'rgba(255,77,109,.15)' : 'var(--border)';
+  if (card) card.style.borderColor = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
 }
 
 /* ── Render: Strategy ────────────────────────────────────────────────────── */
