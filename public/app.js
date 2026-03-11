@@ -29,6 +29,16 @@ const DEFAULT_PROFILE = {
   leverage: 1,         // apalancamiento por defecto (1x = sin apalancamiento)
 };
 
+// Nombres completos de cada moneda
+const COIN_NAMES = {
+  BTC:  "Bitcoin",
+  ETH:  "Ethereum",
+  SOL:  "Solana",
+  XRP:  "XRP Ledger",
+  BNB:  "BNB Chain",
+  DOGE: "Dogecoin",
+};
+
 // MARKET_META — se actualiza dinámicamente desde Binance
 const MARKET_META = {
   BTC:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
@@ -1074,16 +1084,20 @@ function renderMkt() {
     const dn   = p && prev && p < prev;
     const bc   = up ? 'rgba(0,255,157,.2)' : dn ? 'rgba(255,77,109,.15)' : 'var(--border)';
 
+    const fullName = COIN_NAMES[coin] || coin;
     cards += `
       <div class="card" id="mkt-${coin}" style="border-color:${bc};transition:border-color .5s">
-        <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-          <b style="font-family:var(--display);color:#fff">${coin}</b>
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div>
+            <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text);line-height:1.2">${fullName}</div>
+            <div style="font-size:10px;color:var(--muted);font-weight:500;margin-top:1px">${coin} · USDT</div>
+          </div>
           <span class="tag ${meta.cls}">${meta.tag}</span>
         </div>
-        <div style="font-size:19px;font-weight:bold;color:${up?'var(--green)':dn?'var(--red)':'var(--accent)'};font-family:var(--display);margin-bottom:4px;transition:color .3s" id="mkt-price-${coin}">
+        <div style="font-size:20px;font-weight:600;color:${up?'var(--green)':dn?'var(--red)':'var(--text)'};font-family:var(--serif);margin-bottom:3px;transition:color .3s" id="mkt-price-${coin}">
           ${p ? fmtP(p, coin) : '<span style="color:var(--muted);font-size:13px">...</span>'}
         </div>
-        <div style="font-size:10px;margin-bottom:8px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
+        <div style="font-size:10px;margin-bottom:10px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
           <div class="cs"><div class="csl">RSI</div><div class="csv" style="color:${meta.rsi<30?'var(--green)':'var(--yellow)'}">${meta.rsi}</div></div>
           <div class="cs"><div class="csl">Soporte</div><div class="csv" style="color:var(--green);font-size:11px">${meta.sup}</div></div>
