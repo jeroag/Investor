@@ -3429,12 +3429,12 @@ async function showBitunixDebug() {
 
   const results = debugData.results || {};
   const rows = Object.entries(results).map(([label, r]) => {
-    const ok = r.ok && r.data !== undefined;
+    const ok = r.code === 0 && r.data != null;
     const color = ok ? 'var(--green)' : 'var(--red)';
     const icon  = ok ? '✅' : '❌';
     const detail = ok
-      ? `<pre style="font-size:9px;background:var(--s2);border-radius:6px;padding:8px;overflow-x:auto;margin-top:6px;white-space:pre-wrap">${JSON.stringify(r.data, null, 2)}</pre>`
-      : `<div style="font-size:10px;color:var(--red);margin-top:4px">${r.error}</div>`;
+      ? `<pre style="font-size:9px;background:var(--s2);border-radius:6px;padding:8px;overflow-x:auto;margin-top:6px;white-space:pre-wrap">${JSON.stringify(r.data, null, 2).slice(0, 500)}</pre>`
+      : `<div style="font-size:10px;color:var(--red);margin-top:4px">${r.error || `code ${r.code}: ${r.msg || ''}`}</div>`;
     return `
       <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
         <div style="display:flex;align-items:center;gap:8px">

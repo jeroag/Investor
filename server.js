@@ -304,56 +304,61 @@ app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
 
   // Probar distintas variantes del endpoint de cuenta
   const accountAttempts = [
-    { label: 'sin params',        path: '/api/v1/futures/account/singleAccount', params: {} },
-    { label: 'marginCoin=USDT',   path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
-    { label: 'coin=USDT',         path: '/api/v1/futures/account/singleAccount', params: { coin: 'USDT' } },
-    { label: 'getAccount',        path: '/api/v1/futures/account/getAccount',    params: {} },
-    { label: 'assets',            path: '/api/v1/futures/account/assets',        params: {} },
+    { label: 'singleAccount_empty',      path: '/api/v1/futures/account/singleAccount', params: {} },
+    { label: 'singleAccount_marginCoin', path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
+    { label: 'singleAccount_coin',       path: '/api/v1/futures/account/singleAccount', params: { coin: 'USDT' } },
+    { label: 'getAccount',               path: '/api/v1/futures/account/getAccount',    params: {} },
+    { label: 'assets',                   path: '/api/v1/futures/account/assets',        params: {} },
+    { label: 'accounts',                 path: '/api/v1/futures/account/accounts',      params: {} },
+    { label: 'wallet',                   path: '/api/v1/futures/account/wallet',        params: {} },
+    { label: 'balance',                  path: '/api/v1/futures/account/balance',       params: {} },
+    { label: 'balance_USDT',             path: '/api/v1/futures/account/balance',       params: { coin: 'USDT' } },
   ];
 
   for (const attempt of accountAttempts) {
     try {
       const data = await bitunixRequest('GET', attempt.path, attempt.params);
-      results[attempt.label] = { ok: true, data: data.data, code: data.code };
-      if (data.code === 0) break; // encontramos el que funciona
+      results[attempt.label] = { code: data.code, msg: data.msg, data: data.data };
     } catch (err) {
-      results[attempt.label] = { ok: false, error: err.message };
+      results[attempt.label] = { error: err.message };
     }
   }
 
   // Probar posiciones
   try {
     const pos = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
-    results['positions'] = { ok: true, data: pos.data };
+    results['positions'] = { code: pos.code, data: pos.data };
   } catch (err) {
-    results['positions'] = { ok: false, error: err.message };
+    results['positions'] = { error: err.message };
   }
 
   res.json({ ok: true, results });
 });
 
 app.get('/api/bitunix/account', requireAuth, async (req, res) => {
-  // Intentar primero sin parámetros, luego con marginCoin
   const attempts = [
     { path: '/api/v1/futures/account/singleAccount', params: {} },
     { path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
     { path: '/api/v1/futures/account/getAccount',    params: {} },
     { path: '/api/v1/futures/account/assets',        params: {} },
+    { path: '/api/v1/futures/account/accounts',      params: {} },
+    { path: '/api/v1/futures/account/balance',       params: {} },
+    { path: '/api/v1/futures/account/balance',       params: { coin: 'USDT' } },
   ];
 
   for (const attempt of attempts) {
     try {
       const data = await bitunixRequest('GET', attempt.path, attempt.params);
-      if (data.code === 0) {
+      if (data.code === 0 && data.data) {
         console.log(`[Bitunix account OK] ${attempt.path}`, JSON.stringify(data.data));
         return res.json({ ok: true, account: data.data });
       }
     } catch (err) {
-      console.warn(`[Bitunix account] ${attempt.path} falló:`, err.message);
+      console.warn(`[Bitunix account] ${attempt.path} → ${err.message}`);
     }
   }
 
-  res.status(500).json({ ok: false, error: 'No se pudo obtener el saldo. Revisa las API keys y permisos.' });
+  res.status(500).json({ ok: false, error: 'No se pudo obtener el saldo. Revisa los permisos de la API key en Bitunix.' });
 });
 
 /* ── Endpoint: GET posiciones abiertas ────────────────────── */
