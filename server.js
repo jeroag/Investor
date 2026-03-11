@@ -255,12 +255,35 @@ function bitunixSign(apiKey, secretKey, nonce, timestamp, queryParamsObj, bodySt
 /**
  * Llamada autenticada a Bitunix
  */
-async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null) {
-  const apiKey    = process.env.BITUNIX_API_KEY;
-  const secretKey = process.env.BITUNIX_SECRET;
+/**
+ * Bitunix soporta dos API keys separadas:
+ *   BITUNIX_API_KEY    + BITUNIX_SECRET     → para OPERAR (trade)
+ *   BITUNIX_READ_KEY   + BITUNIX_READ_SECRET → para LEER saldo/posiciones
+ *
+ * Si solo hay una, se usa para todo.
+ */
+async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null, forceKey = null) {
+  // Elegir qué key usar
+  // forceKey = 'read' | 'trade' | null (auto)
+  let apiKey, secretKey;
 
-  if (!apiKey || !secretKey) {
-    throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados en las variables de entorno.');
+  const tradeKey  = process.env.BITUNIX_API_KEY;
+  const tradeSec  = process.env.BITUNIX_SECRET;
+  const readKey   = process.env.BITUNIX_READ_KEY   || tradeKey;
+  const readSec   = process.env.BITUNIX_READ_SECRET || tradeSec;
+
+  if (!tradeKey || !tradeSec) {
+    throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados.');
+  }
+
+  // Endpoints de lectura → usar read key; escritura → usar trade key
+  const isReadOnly = method === 'GET';
+  if (forceKey === 'read' || (isReadOnly && forceKey !== 'trade')) {
+    apiKey    = readKey;
+    secretKey = readSec;
+  } else {
+    apiKey    = tradeKey;
+    secretKey = tradeSec;
   }
 
   const nonce     = generateNonce();
@@ -469,9 +492,16 @@ app.get('/api/bitunix/history', requireAuth, async (req, res) => {
 });
 
 /* ── Endpoint: estado de configuración Bitunix ────────────── */
-app.get('/api/bitunix/status', requireAuth,  (req, res) => {
-  const configured = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
-  res.json({ configured });
+app.get('/api/bitunix/status', requireAuth, (req, res) => {
+  const hasTradeKey = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
+  const hasReadKey  = !!(process.env.BITUNIX_READ_KEY && process.env.BITUNIX_READ_SECRET);
+  res.json({
+    configured: hasTradeKey,
+    hasTradeKey,
+    hasReadKey,
+    // Si hay read key separada o se comparte la trade key para leer
+    canRead: hasTradeKey || hasReadKey,
+  });
 });
 
 /* ══════════════════════════════════════════════════════════
