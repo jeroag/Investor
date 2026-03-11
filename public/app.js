@@ -4,6 +4,41 @@
 
 'use strict';
 
+/* ── Auth helpers ─────────────────────────────────────────────────────────── */
+
+/** Devuelve el token de sesión guardado en sessionStorage */
+function getAuthToken() {
+  return sessionStorage.getItem('cp_token') || '';
+}
+
+/**
+ * Wrapper de fetch que inyecta el token en todas las peticiones a /api/*
+ * Uso: authFetch('/api/...', options)  →  igual que fetch pero autenticado
+ * Si el servidor devuelve 401, redirige al login automáticamente.
+ */
+async function authFetch(url, options = {}) {
+  const token = getAuthToken();
+  options.headers = options.headers || {};
+  if (token) options.headers['Authorization'] = `Bearer ${token}`;
+  const res = await fetch(url, options);
+  if (res.status === 401) {
+    // Sesión expirada — ir al login
+    sessionStorage.removeItem('cp_token');
+    window.location.href = '/login';
+    throw new Error('Sesión expirada. Redirigiendo al login...');
+  }
+  return res;
+}
+
+/** Cierra sesión: borra token local, llama al servidor y redirige al login */
+async function doLogout() {
+  try {
+    await authFetch('/auth/logout', { method: 'POST' });
+  } catch {}
+  sessionStorage.removeItem('cp_token');
+  window.location.href = '/login';
+}
+
 /* ── Constants ───────────────────────────────────────────────────────────── */
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 
@@ -395,7 +430,7 @@ function showToast(msg, err = false) {
 /* ── Sincronización con servidor (TP/SL en background) ───────────────────── */
 async function syncTradesToServer() {
   try {
-    await fetch('/api/trades/sync', {
+    await authFetch('/api/trades/sync', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ activeTrades: state.activeTrades }),
@@ -407,7 +442,7 @@ async function syncTradesToServer() {
 
 async function pollServerClosedTrades() {
   try {
-    const res  = await fetch('/api/trades/closed-by-server');
+    const res  = await authFetch('/api/trades/closed-by-server');
     const data = await res.json();
     if (!data.closed || data.closed.length === 0) return;
 
@@ -447,7 +482,7 @@ async function pollServerClosedTrades() {
     // El servidor borra estos trades de su lista solo tras recibir esta confirmación.
     // Si la red falla antes de llegar aquí, el servidor los conserva y los reenvía en el próximo poll.
     if (confirmedIds.length > 0) {
-      await fetch('/api/trades/confirm-closed', {
+      await authFetch('/api/trades/confirm-closed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: confirmedIds }),
@@ -525,7 +560,7 @@ async function callClaude(prompt, system, useHistory = false) {
     messages = [{ role: 'user', content: prompt }];
   }
 
-  const res = await fetch('/api/claude', {
+  const res = await authFetch('/api/claude', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -803,7 +838,7 @@ const bitunix = {
 /* Comprueba si Bitunix está configurado */
 async function checkBitunixStatus() {
   try {
-    const res  = await fetch('/api/bitunix/status');
+    const res  = await authFetch('/api/bitunix/status');
     const data = await res.json();
     bitunix.configured = !!data.configured;
   } catch { bitunix.configured = false; }
@@ -814,7 +849,7 @@ async function checkBitunixStatus() {
 async function fetchBitunixAccount() {
   if (!bitunix.configured) return null;
   try {
-    const res  = await fetch('/api/bitunix/account');
+    const res  = await authFetch('/api/bitunix/account');
     const data = await res.json();
     if (data.ok) {
       bitunix.account  = data.account;
@@ -839,7 +874,7 @@ async function fetchBitunixAccount() {
 async function syncBitunixPositions() {
   if (!bitunix.configured) return;
   try {
-    const res  = await fetch('/api/bitunix/positions');
+    const res  = await authFetch('/api/bitunix/positions');
     const data = await res.json();
     if (!data.ok) return;
 
@@ -894,7 +929,7 @@ async function placeBitunixOrder(trade) {
   showToast(`📡 Enviando orden ${symbol} ${side} ${qty} a Bitunix...`);
 
   try {
-    const res  = await fetch('/api/bitunix/place-order', {
+    const res  = await authFetch('/api/bitunix/place-order', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -932,7 +967,7 @@ async function flashCloseBitunix(trade) {
   const symbol = trade.bitunixSymbol || (coinOf(trade.par) + 'USDT');
   const side   = trade.tipo === 'LONG' ? 'LONG' : 'SHORT';
   try {
-    const res  = await fetch('/api/bitunix/close-position', {
+    const res  = await authFetch('/api/bitunix/close-position', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ symbol, side }),
@@ -3439,5 +3474,6 @@ Object.assign(window, {
   onboardNext, onboardBack, setObRisk,
   refreshCalendar,
   showBitunixSetup, refreshBitunixData,
+  doLogout,
   resetAll, renderAll,
 });

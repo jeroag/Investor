@@ -7,7 +7,112 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+
+/* ══════════════════════════════════════════════════════════
+   AUTENTICACIÓN
+   - Contraseña guardada en variable de entorno APP_PASSWORD
+   - Sesiones en memoria (token aleatorio de 64 bytes)
+   - Todas las rutas /api/* y el HTML principal requieren sesión
+   ══════════════════════════════════════════════════════════ */
+
+const sessions = new Map(); // token → { createdAt, ip }
+const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 horas
+
+// Limpiar sesiones expiradas cada hora
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, s] of sessions) {
+    if (now - s.createdAt > SESSION_TTL) sessions.delete(token);
+  }
+}, 60 * 60 * 1000);
+
+function generateToken() {
+  return crypto.randomBytes(64).toString('hex');
+}
+
+function getToken(req) {
+  // Acepta token en header Authorization: Bearer <token>  o en cookie cp_token
+  const auth = req.headers['authorization'];
+  if (auth?.startsWith('Bearer ')) return auth.slice(7);
+  const cookie = req.headers['cookie'] || '';
+  const match  = cookie.match(/cp_token=([^;]+)/);
+  return match ? match[1] : null;
+}
+
+function isAuthenticated(req) {
+  const token = getToken(req);
+  if (!token) return false;
+  const session = sessions.get(token);
+  if (!session) return false;
+  if (Date.now() - session.createdAt > SESSION_TTL) {
+    sessions.delete(token);
+    return false;
+  }
+  return true;
+}
+
+// Middleware de autenticación para todas las rutas /api/*
+function requireAuth(req, res, next) {
+  if (isAuthenticated(req)) return next();
+  return res.status(401).json({ error: 'No autorizado. Inicia sesión.' });
+}
+
+// ── Login endpoint (público) ───────────────────────────────
+app.post('/auth/login', (req, res) => {
+  const { password } = req.body;
+  const correctPassword = process.env.APP_PASSWORD;
+
+  if (!correctPassword) {
+    // Si no hay contraseña configurada, advertir en consola pero permitir acceso
+    console.warn('⚠️  APP_PASSWORD no configurada. Configúrala en las variables de entorno.');
+    const token = generateToken();
+    sessions.set(token, { createdAt: Date.now() });
+    return res.json({ ok: true, token });
+  }
+
+  if (!password || password !== correctPassword) {
+    // Delay de 1s para dificultar fuerza bruta
+    return setTimeout(() => {
+      res.status(401).json({ ok: false, error: 'Contraseña incorrecta.' });
+    }, 1000);
+  }
+
+  const token = generateToken();
+  const ip    = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+  sessions.set(token, { createdAt: Date.now(), ip });
+  console.log(`✓ Login exitoso desde ${ip}`);
+
+  // Configurar cookie segura (httpOnly) + devolver token para localStorage
+  res.setHeader('Set-Cookie', `cp_token=${token}; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL/1000}; Path=/`);
+  res.json({ ok: true, token });
+});
+
+// ── Logout endpoint ────────────────────────────────────────
+app.post('/auth/logout', (req, res) => {
+  const token = getToken(req);
+  if (token) sessions.delete(token);
+  res.setHeader('Set-Cookie', 'cp_token=; HttpOnly; Max-Age=0; Path=/');
+  res.json({ ok: true });
+});
+
+// ── Check session ──────────────────────────────────────────
+app.get('/auth/check', (req, res) => {
+  res.json({ authenticated: isAuthenticated(req) });
+});
+
+// Servir login.html sin autenticación
+app.get('/login', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Servir archivos estáticos (CSS, JS) sin autenticación para que el login cargue bien
+app.use('/styles.css',  express.static(path.join(__dirname, 'public', 'styles.css')));
+
+// Proteger el HTML principal — redirige a login si no hay sesión
+app.get('/', (req, res) => {
+  if (!isAuthenticated(req)) return res.redirect('/login');
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 /* ══════════════════════════════════════════════════════════
    ESTADO EN MEMORIA
@@ -189,7 +294,7 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 }
 
 /* ── Endpoint: GET balance de futuros ─────────────────────── */
-app.get('/api/bitunix/account', async (req, res) => {
+app.get('/api/bitunix/account', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
     // data.data: { available, balance, crossUnPnl, equity, marginRate, ... }
@@ -201,7 +306,7 @@ app.get('/api/bitunix/account', async (req, res) => {
 });
 
 /* ── Endpoint: GET posiciones abiertas ────────────────────── */
-app.get('/api/bitunix/positions', async (req, res) => {
+app.get('/api/bitunix/positions', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
     res.json({ ok: true, positions: data.data || [] });
@@ -212,7 +317,7 @@ app.get('/api/bitunix/positions', async (req, res) => {
 });
 
 /* ── Endpoint: POST colocar orden ─────────────────────────── */
-app.post('/api/bitunix/place-order', async (req, res) => {
+app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
   try {
     const { symbol, qty, side, leverage, orderType, price, tpPrice, slPrice, clientOrderId } = req.body;
 
@@ -276,7 +381,7 @@ app.post('/api/bitunix/place-order', async (req, res) => {
 });
 
 /* ── Endpoint: POST cerrar posición (flash close) ─────────── */
-app.post('/api/bitunix/close-position', async (req, res) => {
+app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
   try {
     const { symbol, side } = req.body;
     if (!symbol) return res.status(400).json({ ok: false, error: 'symbol es obligatorio' });
@@ -294,7 +399,7 @@ app.post('/api/bitunix/close-position', async (req, res) => {
 });
 
 /* ── Endpoint: GET historial órdenes de Bitunix ───────────── */
-app.get('/api/bitunix/history', async (req, res) => {
+app.get('/api/bitunix/history', requireAuth, async (req, res) => {
   try {
     const data = await bitunixRequest('GET', '/api/v1/futures/trade/getHistoryOrders', {
       pageSize: '20',
@@ -308,7 +413,7 @@ app.get('/api/bitunix/history', async (req, res) => {
 });
 
 /* ── Endpoint: estado de configuración Bitunix ────────────── */
-app.get('/api/bitunix/status', (req, res) => {
+app.get('/api/bitunix/status', requireAuth,  (req, res) => {
   const configured = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
   res.json({ configured });
 });
@@ -327,7 +432,7 @@ function isValidTrade(t) {
   );
 }
 
-app.post('/api/trades/sync', (req, res) => {
+app.post('/api/trades/sync', requireAuth,  (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
   const validTrades = activeTrades.filter(isValidTrade);
@@ -341,25 +446,25 @@ app.post('/api/trades/sync', (req, res) => {
   res.json({ ok: true, watching: serverState.activeTrades.length, rejected });
 });
 
-app.get('/api/trades/closed-by-server', (req, res) => {
+app.get('/api/trades/closed-by-server', requireAuth,  (req, res) => {
   res.json({ closed: [...serverState.closedTrades] });
 });
 
-app.post('/api/trades/confirm-closed', (req, res) => {
+app.post('/api/trades/confirm-closed', requireAuth,  (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids inválido' });
   serverState.closedTrades = serverState.closedTrades.filter(t => !ids.includes(t.id));
   res.json({ ok: true, remaining: serverState.closedTrades.length });
 });
 
-app.get('/api/prices', (req, res) => {
+app.get('/api/prices', requireAuth,  (req, res) => {
   res.json(serverState.prices);
 });
 
 /* ══════════════════════════════════════════════════════════
    PROXY CLAUDE API
    ══════════════════════════════════════════════════════════ */
-app.post('/api/claude', rateLimit, async (req, res) => {
+app.post('/api/claude', requireAuth, rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada.' });
   const { model, max_tokens, system, messages } = req.body;
@@ -392,6 +497,7 @@ app.post('/api/claude', rateLimit, async (req, res) => {
    FALLBACK
    ══════════════════════════════════════════════════════════ */
 app.get('*', (req, res) => {
+  if (!isAuthenticated(req)) return res.redirect('/login');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
