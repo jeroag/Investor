@@ -38,6 +38,14 @@
     </div>
   </header>
 
+  <!-- Balance widget -->
+  <div id="balance-widget" style="
+    background:var(--surface);
+    border-bottom:1px solid var(--border);
+    padding:10px 20px;
+    box-shadow:var(--shadow-sm);
+  "></div>
+
   <div class="layout">
     <!-- Backdrop -->
     <div class="side-backdrop" id="side-backdrop"></div>
@@ -61,7 +69,7 @@
     </nav>
 
     <!-- Main content -->
-    <main class="cnt">
+    <main class="cnt" style="height:calc(100vh - 54px - 49px)">
       <div id="sec-ops"     class="sec on"></div>
       <div id="sec-alerts"  class="sec"></div>
       <div id="sec-perf"    class="sec"></div>

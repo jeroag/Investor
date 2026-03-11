@@ -337,12 +337,10 @@ function setWsStatus(s) {
 }
 
 function onPriceUpdate(coin, price) {
-  // Update ticker
   renderTicker();
-  // Update active trades PnL and check TP/SL
   checkTPSL();
   updateTradesPnl();
-  // Update market tab if visible
+  renderBalanceWidget();
   if (state.currentTab === 'mkt') updateMarketPrice(coin, price);
 }
 
@@ -367,71 +365,201 @@ function parseJSON(raw) {
   return JSON.parse(raw.replace(/```json|```/g, '').trim());
 }
 
+/* ── Contexto técnico real para los prompts ──────────────────────────────── */
+function buildTechContext() {
+  const lines = state.watchedCoins.map(coin => {
+    const meta  = MARKET_META[coin];
+    const price = state.prices[coin];
+    if (!meta || !price) return null;
+
+    const rsiVal = typeof meta.rsi === 'number' ? meta.rsi : null;
+    let rsiSignal = 'neutro';
+    if (rsiVal !== null) {
+      if (rsiVal < 30)  rsiSignal = 'SOBREVENDIDO — posible rebote alcista';
+      else if (rsiVal < 45) rsiSignal = 'zona de acumulación';
+      else if (rsiVal > 70) rsiSignal = 'SOBRECOMPRADO — riesgo de corrección';
+      else if (rsiVal > 60) rsiSignal = 'momentum alcista, cautela';
+    }
+
+    const distSup = price && meta.sup !== '...' ? ((price - parseFloat(meta.sup.replace(/[$K]/g,'').replace('K','000'))) / price * 100).toFixed(1) : '?';
+    const distRes = price && meta.res !== '...' ? ((parseFloat(meta.res.replace(/[$K]/g,'').replace('K','000')) - price) / price * 100).toFixed(1) : '?';
+
+    return `${coin}: precio $${price} | RSI(4H)=${rsiVal ?? '?'} (${rsiSignal}) | soporte=${meta.sup} (${distSup}% abajo) | resistencia=${meta.res} (${distRes}% arriba)`;
+  }).filter(Boolean);
+
+  return lines.join('\n');
+}
+
+function buildTradeHistory() {
+  const { closedTrades } = state;
+  if (closedTrades.length === 0) return 'Sin historial de operaciones.';
+  const wins     = closedTrades.filter(t => t.result === 'WIN').length;
+  const winRate  = (wins / closedTrades.length * 100).toFixed(0);
+  const totalPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0).toFixed(2);
+  const recent   = closedTrades.slice(0, 6).map(t =>
+    `${t.par} ${t.tipo} ${t.result} PnL:$${(t.pnl||0).toFixed(0)}${t.notes ? ` [nota: ${t.notes}]` : ''}`
+  ).join(' | ');
+  return `WinRate: ${winRate}% (${wins}G/${closedTrades.length-wins}P) | P&L total: $${totalPnl}\nÚltimas ops: ${recent}`;
+}
+
 async function aiGenerateProposals() {
-  const { profile, prices, closedTrades, strategy } = state;
-  const priceStr = Object.entries(prices).map(([c,p]) => `${c}: $${p}`).join(' | ');
-  const statsStr = closedTrades.length > 0
-    ? `WinRate: ${(closedTrades.filter(t=>t.result==='WIN').length/closedTrades.length*100).toFixed(0)}% (${closedTrades.length} ops). Estrategia: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'N/A'}`
-    : 'Sin historial.';
+  const { profile, strategy } = state;
+  const techCtx = buildTechContext();
+  const tradeHistory = buildTradeHistory();
 
   const raw = await callClaude(
-    `Genera 2-3 propuestas de trading para este perfil:
-Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance} | Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}%
-Monedas preferidas: ${profile.preferred_coins.join(', ') || 'BTC, ETH'}
-${statsStr}
-Notas: ${profile.notes || 'ninguna'}
-PRECIOS REALES BINANCE AHORA: ${priceStr}
+    `Genera 2-3 propuestas de trading accionables AHORA basándote en el contexto técnico REAL.
+
+PERFIL DEL TRADER:
+- Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance}
+- Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}% ($${(profile.capital * profile.risk_pct / 100).toFixed(0)})
+- Apalancamiento: ${profile.leverage || 1}x
+- Monedas preferidas: ${profile.preferred_coins.join(', ') || 'BTC, ETH'}
+- Notas del trader: ${profile.notes || 'ninguna'}
+- Estrategia adaptada: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'N/A'} en ${strategy?.estrategiaAdaptada?.timeframe || '4H'}
+
+HISTORIAL REAL:
+${tradeHistory}
+
+DATOS TÉCNICOS REALES BINANCE (4H):
+${techCtx}
+
+INSTRUCCIONES:
+- Usa el RSI para identificar zonas de entrada: sobrevendido (<30) favorece LONG, sobrecomprado (>70) favorece SHORT
+- El SL debe estar al otro lado del soporte/resistencia más cercano, no arbitrario
+- El TP1 debe ser el siguiente nivel de resistencia/soporte real
+- Solo propone monedas donde el setup técnico es claro y el R:R mínimo es 1.5
+- La "razon" debe mencionar explícitamente el RSI actual y los niveles de precio
 
 Responde SOLO JSON sin markdown:
-{"proposals":[{"par":"BTC/USDT","tipo":"LONG","setup":"EMA50","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.6","confianza":74,"razon":"Explicación técnica concisa."}],"analisis_mercado":"Contexto breve.","recomendacion_ia":"Recomendación personalizada."}`,
-    'Eres experto en trading cripto. Responde SOLO con JSON válido sin markdown.'
+{"proposals":[{"par":"BTC/USDT","tipo":"LONG","setup":"RSI sobrevendido + soporte","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":74,"razon":"RSI(4H)=28 sobrevendido en soporte $68.9K, entrada con momentum. TP1 en resistencia $73K."}],"analisis_mercado":"Resumen técnico del mercado ahora.","recomendacion_ia":"Consejo personalizado para este trader."}`,
+    'Eres analista técnico de cripto experto. Usas RSI, soportes y resistencias reales para generar setups precisos. Responde SOLO con JSON válido sin markdown.'
   );
   return parseJSON(raw);
 }
 
 async function aiScanMarket() {
-  const { profile, prices, closedTrades, strategy, alerts, activeTrades } = state;
-  const priceStr = Object.entries(prices).map(([c,p]) => `${c}: $${p}`).join(' | ');
-  const recentAlerts = alerts.slice(0, 3).map(a => `${a.par} ${a.tipo} (${a.timestamp})`).join(', ');
+  const { profile, strategy, alerts, activeTrades } = state;
+  const techCtx      = buildTechContext();
+  const tradeHistory = buildTradeHistory();
+  const recentAlerts = alerts.slice(0, 3).map(a => `${a.par} ${a.tipo} @${a.entrada}`).join(', ');
 
   const raw = await callClaude(
-    `Analiza el mercado ahora y decide si HAY una oportunidad real.
+    `Analiza el mercado AHORA y decide si existe una oportunidad técnica real y accionable.
 
-PRECIOS REALES BINANCE: ${priceStr}
-Perfil: ${profile.style}, riesgo ${profile.risk_tolerance}, capital $${profile.capital}, riesgo/op ${profile.risk_pct}%
-Monedas preferidas: ${profile.preferred_coins.join(', ') || 'BTC, ETH'}
-WinRate: ${closedTrades.length > 0 ? (closedTrades.filter(t=>t.result==='WIN').length/closedTrades.length*100).toFixed(0)+'%' : 'Sin historial'}
-Estrategia actual: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'swing'}
-Alertas recientes (evitar duplicar): ${recentAlerts || 'ninguna'}
-Operaciones activas: ${activeTrades.length}
+DATOS TÉCNICOS REALES BINANCE (4H):
+${techCtx}
 
-IMPORTANTE: Solo hay_oportunidad=true si hay setup REAL y concreto ahora. Sé selectivo.
+PERFIL: ${profile.style}, riesgo ${profile.risk_tolerance}, capital $${profile.capital}, riesgo/op ${profile.risk_pct}%, apalancamiento ${profile.leverage || 1}x
+HISTORIAL: ${tradeHistory}
+ESTRATEGIA activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado || 'swing'} ${strategy?.estrategiaAdaptada?.timeframe || '4H'}
+Alertas recientes (no duplicar): ${recentAlerts || 'ninguna'}
+Posiciones abiertas: ${activeTrades.length}
+
+CRITERIOS para hay_oportunidad=true (todos deben cumplirse):
+1. RSI en zona extrema (<35 para LONG, >65 para SHORT) O precio tocando soporte/resistencia clave
+2. R:R mínimo 1.5 usando niveles técnicos reales
+3. No hay alerta reciente del mismo par y dirección
+4. El setup encaja con el estilo del trader (${profile.style})
 
 Responde SOLO JSON:
-{"hay_oportunidad":true,"urgencia":"ALTA","par":"BTC/USDT","tipo":"LONG","setup":"EMA50 Breakout","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":78,"razon":"Explicación técnica concisa de por qué AHORA.","contexto_mercado":"Contexto general."}
-Si NO hay oportunidad: {"hay_oportunidad":false,"razon":"motivo breve"}`,
-    'Eres analista de trading cripto experto y selectivo. Responde SOLO con JSON válido.'
+{"hay_oportunidad":true,"urgencia":"ALTA","par":"BTC/USDT","tipo":"LONG","setup":"RSI 28 + soporte","entrada":70500,"stopLoss":68900,"tp1":73000,"tp2":76000,"rr":"1.8","confianza":78,"razon":"RSI(4H)=28 sobrevendido tocando soporte $68.9K. Patrón de reversión en timeframe 4H.","contexto_mercado":"Descripción técnica del mercado general."}
+Si NO hay oportunidad: {"hay_oportunidad":false,"razon":"motivo técnico concreto"}`,
+    'Eres analista técnico cripto muy selectivo. Solo señalas oportunidades con setup claro basado en datos reales. Responde SOLO con JSON válido.'
   );
   return parseJSON(raw);
 }
 
 async function aiAdaptStrategy() {
   const { profile, closedTrades } = state;
-  const wins = closedTrades.filter(t => t.result === 'WIN').length;
+  const techCtx = buildTechContext();
+  const wins    = closedTrades.filter(t => t.result === 'WIN').length;
+
+  // Análisis por par
+  const byPair = {};
+  closedTrades.forEach(t => {
+    if (!byPair[t.par]) byPair[t.par] = { wins: 0, total: 0, pnl: 0 };
+    byPair[t.par].total++;
+    byPair[t.par].pnl += t.pnl || 0;
+    if (t.result === 'WIN') byPair[t.par].wins++;
+  });
+  const pairStats = Object.entries(byPair)
+    .map(([par, s]) => `${par}: ${s.wins}/${s.total} wins, P&L $${s.pnl.toFixed(0)}`)
+    .join(' | ');
+
   const raw = await callClaude(
-    `Adapta la estrategia basándote en el historial:
-Perfil: ${profile.style}, ${profile.risk_tolerance}, capital $${profile.capital}
-WinRate: ${(wins/closedTrades.length*100).toFixed(0)}% (${wins}G/${closedTrades.length-wins}P)
-Ops recientes: ${closedTrades.slice(-8).map(t=>`${t.par} ${t.tipo} ${t.result} PnL:$${(t.pnl||0).toFixed(0)}`).join(' | ')}
+    `Analiza el historial real de este trader y adapta su estrategia.
+
+HISTORIAL COMPLETO:
+- WinRate: ${closedTrades.length > 0 ? (wins/closedTrades.length*100).toFixed(0) : 0}% (${wins}G/${closedTrades.length - wins}P de ${closedTrades.length} ops)
+- P&L total: $${closedTrades.reduce((a,t) => a+(t.pnl||0), 0).toFixed(2)}
+- Por par: ${pairStats || 'sin datos'}
+- Últimas 8 ops: ${closedTrades.slice(0, 8).map(t=>`${t.par} ${t.tipo} ${t.result} PnL:$${(t.pnl||0).toFixed(0)}${t.notes?` [${t.notes}]`:''}`).join(' | ')}
+
+PERFIL: ${profile.style}, ${profile.risk_tolerance}, capital $${profile.capital}, apalancamiento ${profile.leverage||1}x
+
+CONTEXTO TÉCNICO ACTUAL:
+${techCtx}
 
 Responde SOLO JSON:
 {"diagnostico":"...","fortalezas":["..."],"debilidades":["..."],"alertas":["..."],"cambios":[{"area":"...","descripcion":"...","impacto":"ALTO"}],"estrategiaAdaptada":{"estiloRecomendado":"Swing","timeframe":"4H","riesgoRecomendado":2,"activos":["BTC","ETH"],"resumen":"...","reglas":["..."]}}`,
-    'Eres coach de trading experto. Responde SOLO con JSON válido.'
+    'Eres coach de trading experto. Analizas datos reales para dar consejos precisos y accionables. Responde SOLO con JSON válido.'
   );
   return parseJSON(raw);
 }
 
-/* ── Trade management ────────────────────────────────────────────────────── */
+/* ── Widget de saldo ─────────────────────────────────────────────────────── */
+function calcEquity() {
+  const { profile, closedTrades, activeTrades, prices } = state;
+  const closedPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const activePnl = activeTrades.reduce((acc, t) => {
+    const coin = coinOf(t.par);
+    const p    = prices[coin] || t.entrada;
+    const lev  = t.leverage || 1;
+    const pnl  = t.tipo === 'LONG'
+      ? (p - t.entrada) * t.size * lev
+      : (t.entrada - p) * t.size * lev;
+    return acc + pnl;
+  }, 0);
+  return {
+    capital:    profile.capital,
+    closedPnl,
+    activePnl,
+    total:      profile.capital + closedPnl + activePnl,
+  };
+}
+
+function renderBalanceWidget() {
+  const w = qs('#balance-widget');
+  if (!w) return;
+  const { capital, closedPnl, activePnl, total } = calcEquity();
+  const totalPnl   = closedPnl + activePnl;
+  const totalColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
+  const totalSign  = totalPnl >= 0 ? '+' : '';
+
+  w.innerHTML = `
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:1px">
+        <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase">Saldo total</span>
+        <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">$${total.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+      </div>
+      <div style="width:1px;height:28px;background:var(--border)"></div>
+      <div style="display:flex;gap:12px">
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
+          <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
+          <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:1px">
+          <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L</span>
+          <span style="font-size:12px;font-weight:600;color:${totalColor}">${totalSign}$${totalPnl.toFixed(2)}</span>
+        </div>
+      </div>
+    </div>`;
+}
 function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
   // Con apalancamiento: la posición efectiva se multiplica, pero el riesgo en USD no cambia.
   // Unidades = riesgo / (distancia_precio * apalancamiento)
@@ -1639,6 +1767,7 @@ async function onAdaptStrategy() {
 /* ── Full render ─────────────────────────────────────────────────────────── */
 function renderAll() {
   renderStoragePanel();
+  renderBalanceWidget();
   updateAlertBadge();
   const adaptBtn = qs('#btn-adapt');
   if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
@@ -1681,6 +1810,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initial render
   setTab('ops');
   renderStoragePanel();
+  renderBalanceWidget();
   updateAlertBadge();
 
   // Show/hide adapt button
