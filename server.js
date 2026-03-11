@@ -223,7 +223,11 @@ async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null
 }
 
 /* ── Debug endpoint ──────────────────────────────────────── */
-app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
+// Debug accesible sin sesión — usar /api/bitunix/debug?token=debug123
+app.get('/api/bitunix/debug', async (req, res) => {
+  if (!isAuthenticated(req) && req.query.token !== 'debug123') {
+    return res.status(401).json({ error: 'Añade ?token=debug123 a la URL' });
+  }
   const apiKey    = (process.env.BITUNIX_API_KEY || '').trim();
   const secretKey = (process.env.BITUNIX_SECRET  || '').trim();
 
