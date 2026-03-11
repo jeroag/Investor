@@ -6,9 +6,24 @@
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
-  ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt']
-    .map(s => s + '@miniTicker').join('/');
+
+// Todas las monedas disponibles
+const ALL_COINS = ['BTC','ETH','SOL','XRP','BNB','DOGE','AVAX','ADA','MATIC','DOT','LINK','LTC','UNI','ATOM'];
+
+const COIN_NAMES = {
+  BTC:   'Bitcoin',    ETH:  'Ethereum',  SOL:  'Solana',
+  XRP:   'XRP',        BNB:  'BNB',       DOGE: 'Dogecoin',
+  AVAX:  'Avalanche',  ADA:  'Cardano',   MATIC:'Polygon',
+  DOT:   'Polkadot',   LINK: 'Chainlink', LTC:  'Litecoin',
+  UNI:   'Uniswap',    ATOM: 'Cosmos',
+};
+
+const DEFAULT_WATCHED_COINS = ['BTC','ETH','SOL','XRP','BNB','DOGE'];
+
+function buildWsUrl(coins) {
+  return 'wss://stream.binance.com:9443/stream?streams=' +
+    coins.map(c => c.toLowerCase() + 'usdt@miniTicker').join('/');
+}
 
 const STORAGE_KEYS = {
   activeTrades:  'cp:activeTrades',
@@ -17,6 +32,7 @@ const STORAGE_KEYS = {
   strategy:      'cp:strategy',
   profile:       'cp:profile',
   scanInterval:  'cp:scanInterval',
+  watchedCoins:  'cp:watchedCoins',
 };
 
 const DEFAULT_PROFILE = {
@@ -29,25 +45,15 @@ const DEFAULT_PROFILE = {
   leverage: 1,         // apalancamiento por defecto (1x = sin apalancamiento)
 };
 
-// Nombres completos de cada moneda
-const COIN_NAMES = {
-  BTC:  "Bitcoin",
-  ETH:  "Ethereum",
-  SOL:  "Solana",
-  XRP:  "XRP Ledger",
-  BNB:  "BNB Chain",
-  DOGE: "Dogecoin",
-};
-
 // MARKET_META — se actualiza dinámicamente desde Binance
-const MARKET_META = {
-  BTC:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-  ETH:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-  SOL:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-  XRP:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-  BNB:  { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-  DOGE: { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' },
-};
+const MARKET_META = {};
+function initMarketMeta(coins) {
+  coins.forEach(c => {
+    if (!MARKET_META[c]) MARKET_META[c] = { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' };
+  });
+  // Eliminar monedas que ya no se siguen
+  Object.keys(MARKET_META).forEach(c => { if (!coins.includes(c)) delete MARKET_META[c]; });
+}
 
 /* ── RSI Calculator ──────────────────────────────────────────────────────── */
 function calcRSI(closes, period = 14) {
@@ -86,7 +92,8 @@ function fmtSup(price, coin) {
 }
 
 async function fetchMarketMeta() {
-  const coins = Object.keys(MARKET_META);
+  const coins = state.watchedCoins;
+  initMarketMeta(coins);
   await Promise.all(coins.map(async (coin) => {
     try {
       const symbol = coin + 'USDT';
@@ -135,6 +142,7 @@ const state = {
   strategy:     null,
   profile:      { ...DEFAULT_PROFILE },
   scanInterval: 5,
+  watchedCoins: [...DEFAULT_WATCHED_COINS],
 
   // session
   prices:       {},
@@ -171,6 +179,7 @@ function loadAll() {
   state.strategy     = storage.get(STORAGE_KEYS.strategy)      ?? null;
   state.profile      = { ...DEFAULT_PROFILE, ...( storage.get(STORAGE_KEYS.profile) ?? {} ) };
   state.scanInterval = storage.get(STORAGE_KEYS.scanInterval)  ?? 5;
+  state.watchedCoins = storage.get(STORAGE_KEYS.watchedCoins)  ?? [...DEFAULT_WATCHED_COINS];
 }
 
 function saveKey(key, value) { storage.set(STORAGE_KEYS[key], value); }
@@ -290,8 +299,10 @@ async function pollServerClosedTrades() {
 let ws, wsRetryTimer;
 
 function connectWS() {
+  if (ws) { try { ws.close(); } catch {} }
+  clearTimeout(wsRetryTimer);
   setWsStatus('connecting');
-  ws = new WebSocket(WS_URL);
+  ws = new WebSocket(buildWsUrl(state.watchedCoins));
 
   ws.onopen = () => setWsStatus('live');
 
@@ -848,11 +859,19 @@ function renderOps() {
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${o.rr}</span>
             </div>
             <div class="op-reason">${o.razon}</div>
+            ${o.notes ? `<div style="margin-top:7px;padding:7px 10px;background:var(--s2);border-radius:6px;font-size:11px;color:var(--muted);border-left:2px solid var(--border)">📝 ${o.notes}</div>` : ''}
           </div>
         </div>
         <div class="op-actions">
-          <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="closeTradeAtMarket('${o.id}')">✓ Cerrar a mercado</button>
+          <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="closeTradeAtMarket('${o.id}')">✓ Cerrar</button>
+          <button class="btn" style="font-size:10px;padding:6px 10px" onclick="toggleTradeNotes('${o.id}')">📝 Notas</button>
           <button class="btn btnr" style="font-size:10px;padding:6px 10px" onclick="cancelTrade('${o.id}');renderOps()">✕ Cancelar</button>
+        </div>
+        <div id="notes-panel-${o.id}" style="display:none;padding:10px 15px;border-top:1px solid var(--border);background:var(--s2)">
+          <textarea class="inp" id="notes-input-${o.id}" rows="2"
+            placeholder="Añade notas a esta operación..."
+            style="margin-bottom:7px;font-size:12px">${o.notes || ''}</textarea>
+          <button class="btn btng" style="font-size:10px;padding:5px 12px" onclick="saveTradeNotes('${o.id}')">✓ Guardar nota</button>
         </div>
       </div>`;
   });
@@ -1038,15 +1057,20 @@ function renderPerf() {
     histRows = `<div class="empty" style="padding:16px"><div class="et">Sin operaciones cerradas.</div></div>`;
   } else {
     closedTrades.forEach(t => {
+      const coin = coinOf(t.par);
       histRows += `
-        <div class="hist-row">
-          <div style="display:flex;gap:8px;align-items:center">
-            <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result === 'WIN' ? '✓ WIN' : '✕ LOSS'}</span>
-            <span style="color:#fff;font-weight:bold">${t.par}</span>
-            <span style="color:var(--muted)">${t.tipo}</span>
-            <span style="color:var(--muted);font-size:9px">${t.closedAt}</span>
+        <div class="hist-row" style="flex-direction:column;align-items:flex-start;gap:4px;padding:10px 0">
+          <div style="display:flex;justify-content:space-between;align-items:center;width:100%">
+            <div style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+              <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result === 'WIN' ? '✓ WIN' : '✕ LOSS'}</span>
+              <span style="font-weight:600;color:var(--text)">${t.par}</span>
+              <span style="color:var(--muted)">${t.tipo}</span>
+              ${t.exitPrice ? `<span style="font-size:10px;color:var(--muted)">→ ${fmtP(t.exitPrice, coin)}</span>` : ''}
+              <span style="font-size:9px;color:var(--subtle)">${t.closedAt}</span>
+            </div>
+            <span style="font-family:var(--serif);font-weight:600;color:${t.result === 'WIN' ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
           </div>
-          <span style="font-weight:800;color:${t.result === 'WIN' ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
+          ${t.notes ? `<div style="font-size:11px;color:var(--muted);padding:4px 8px;background:var(--s2);border-radius:5px;width:100%;border-left:2px solid var(--border)">📝 ${t.notes}</div>` : ''}
         </div>`;
     });
   }
@@ -1071,20 +1095,57 @@ function renderPerf() {
     </div>`;
 }
 
+/* ── TradingView chart modal ─────────────────────────────────────────────── */
+function openChart(coin) {
+  const existing = qs('#tv-modal');
+  if (existing) existing.remove();
+
+  const modal = el('div', '');
+  modal.id = 'tv-modal';
+  modal.innerHTML = `
+    <div style="position:fixed;inset:0;background:rgba(44,40,37,.35);backdrop-filter:blur(4px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:860px;overflow:hidden;box-shadow:var(--shadow-lg)">
+        <div style="padding:13px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <span style="font-family:var(--serif);font-size:15px;font-weight:600">${COIN_NAMES[coin] || coin}</span>
+            <span style="color:var(--muted);font-size:11px;margin-left:8px">${coin}/USDT</span>
+          </div>
+          <button onclick="qs('#tv-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;padding:4px">×</button>
+        </div>
+        <div style="height:480px">
+          <iframe
+            src="https://www.tradingview.com/widgetembed/?symbol=BINANCE:${coin}USDT&interval=4H&theme=light&style=1&locale=es&toolbar_bg=%23FFFFFF&hide_top_toolbar=0&hide_side_toolbar=0&allow_symbol_change=0&save_image=0&calendar=0&studies=RSI%4014"
+            style="width:100%;height:100%;border:none"
+            allowtransparency="true"
+            frameborder="0">
+          </iframe>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  // Cerrar con Escape
+  const onKey = (e) => { if (e.key === 'Escape') { modal.remove(); document.removeEventListener('keydown', onKey); } };
+  document.addEventListener('keydown', onKey);
+  // Cerrar al click en backdrop
+  modal.querySelector('div').addEventListener('click', (e) => { if (e.target === e.currentTarget) modal.remove(); });
+}
+
 /* ── Render: Market ──────────────────────────────────────────────────────── */
 function renderMkt() {
   const root = qs('#sec-mkt');
   if (!root) return;
 
   let cards = '';
-  Object.entries(MARKET_META).forEach(([coin, meta]) => {
+  state.watchedCoins.forEach(coin => {
+    const meta = MARKET_META[coin] || { tag:'—', cls:'tm', rsi:'...', sup:'...', res:'...' };
     const p    = state.prices[coin];
     const prev = state.prevPrices[coin];
     const up   = p && prev && p > prev;
     const dn   = p && prev && p < prev;
-    const bc = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
-
+    const bc   = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
     const fullName = COIN_NAMES[coin] || coin;
+
     cards += `
       <div class="card" id="mkt-${coin}" style="border-color:${bc};transition:border-color .5s">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
@@ -1098,11 +1159,14 @@ function renderMkt() {
           ${p ? fmtP(p, coin) : '<span style="color:var(--muted);font-size:13px">...</span>'}
         </div>
         <div style="font-size:10px;margin-bottom:10px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:10px">
           <div class="cs"><div class="csl">RSI</div><div class="csv" style="color:${meta.rsi<30?'var(--green)':meta.rsi>70?'var(--red)':'var(--text)'}">${meta.rsi}</div></div>
           <div class="cs"><div class="csl">Soporte</div><div class="csv" style="color:var(--green);font-size:11px">${meta.sup}</div></div>
           <div class="cs"><div class="csl">Resist.</div><div class="csv" style="color:var(--red);font-size:11px">${meta.res}</div></div>
         </div>
+        <button class="btn" style="width:100%;justify-content:center;font-size:10px;padding:5px" onclick="openChart('${coin}')">
+          📈 Ver gráfico
+        </button>
       </div>`;
   });
 
@@ -1290,6 +1354,22 @@ function renderCapital() {
       <div class="lbl">Nivel de riesgo</div>
       <div class="bar" style="margin-bottom:12px"><div class="bf" id="cap-bar" style="width:${barW}%;background:${riskColor}"></div></div>
       <button class="btn btng" onclick="saveCapital()">✓ Guardar</button>
+    </div>
+
+    <div class="card">
+      <div class="stl">Monedas seguidas</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Selecciona qué monedas aparecen en Mercado y se usan en el análisis IA. Mínimo 2, máximo 10.
+      </div>
+      <div style="display:flex;flex-wrap:wrap;margin-bottom:14px">
+        ${ALL_COINS.map(c => {
+          const active = state.watchedCoins.includes(c);
+          return `<span class="chip${active ? ' on' : ''}" onclick="toggleWatchedCoin('${c}')">${c} <span style="font-size:9px;color:var(--muted)">${COIN_NAMES[c] || ''}</span></span>`;
+        }).join('')}
+      </div>
+      <div style="font-size:10px;color:var(--muted)">
+        Activas: <b style="color:var(--text)">${state.watchedCoins.join(', ')}</b>
+      </div>
     </div>`;
 }
 
@@ -1307,6 +1387,23 @@ function updateCapCalc() {
   set('cap-ops',  '~' + Math.floor(50 / risk) + ' ops',      '');
   const bar = qs('#cap-bar');
   if (bar) { bar.style.width = Math.min(risk/10*100,100) + '%'; bar.style.background = riskColor; }
+}
+
+function toggleWatchedCoin(coin) {
+  const idx = state.watchedCoins.indexOf(coin);
+  if (idx > -1) {
+    if (state.watchedCoins.length <= 2) { showToast('Mínimo 2 monedas activas', true); return; }
+    state.watchedCoins.splice(idx, 1);
+  } else {
+    if (state.watchedCoins.length >= 10) { showToast('Máximo 10 monedas activas', true); return; }
+    state.watchedCoins.push(coin);
+  }
+  saveKey('watchedCoins', state.watchedCoins);
+  initMarketMeta(state.watchedCoins);
+  connectWS(); // reconectar WS con la nueva lista
+  fetchMarketMeta();
+  renderCapital();
+  if (state.currentTab === 'mkt') renderMkt();
 }
 
 function setLeverage(lev) {
@@ -1344,6 +1441,7 @@ function resetAll() {
   state.strategy      = null;
   state.profile       = { ...DEFAULT_PROFILE };
   state.scanInterval  = 5;
+  state.watchedCoins  = [...DEFAULT_WATCHED_COINS];
   state.pending       = [];
   stopScanner();
   renderAll();
@@ -1370,27 +1468,114 @@ function setTab(id) {
   if (renders[id]) renders[id]();
 }
 
-/* ── Cierre al precio de mercado (sin modal) ─────────────────────────────── */
+/* ── Cierre con precio real ───────────────────────────────────────────────── */
 function closeTradeAtMarket(tradeId) {
   const trade = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
 
   const coin      = coinOf(trade.par);
-  const exitPrice = state.prices[coin] || trade.entrada;
-  const lev       = trade.leverage || 1;
+  const mktPrice  = state.prices[coin] || trade.entrada;
 
-  const rawPnl = trade.tipo === 'LONG'
+  // Mostrar mini-modal de cierre
+  const existing = qs('#close-price-modal');
+  if (existing) existing.remove();
+
+  const modal = el('div', '');
+  modal.id = 'close-price-modal';
+  modal.innerHTML = `
+    <div style="position:fixed;inset:0;background:rgba(44,40,37,.25);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:380px;box-shadow:var(--shadow-lg);overflow:hidden">
+        <div style="padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text)">Cerrar ${trade.par}</div>
+            <div style="font-size:10px;color:var(--muted);margin-top:2px">${trade.tipo} · Entrada ${fmtP(trade.entrada, coin)}</div>
+          </div>
+          <button onclick="qs('#close-price-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:4px">×</button>
+        </div>
+        <div style="padding:16px 18px">
+          <div style="margin-bottom:14px">
+            <label class="lbl">Precio de ejecución real</label>
+            <input class="inp" type="number" id="cpm-price" value="${mktPrice}" step="any"
+              style="font-family:var(--serif);font-size:18px;font-weight:600;text-align:center"/>
+            <div style="font-size:10px;color:var(--muted);margin-top:5px;text-align:center">
+              Precio Binance ahora: <b style="color:var(--text)">${fmtP(mktPrice, coin)}</b> — edítalo si ejecutaste a otro precio
+            </div>
+          </div>
+          <div style="margin-bottom:14px">
+            <label class="lbl">Notas del cierre (opcional)</label>
+            <textarea class="inp" id="cpm-notes" rows="2" placeholder="Ej: cerré antes del TP por noticias macro..."></textarea>
+          </div>
+          <div id="cpm-preview" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;text-align:center"></div>
+          <button class="btn btng" style="width:100%;justify-content:center;font-size:12px;padding:10px" onclick="confirmCloseWithPrice('${tradeId}')">
+            ✓ Confirmar cierre
+          </button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  // Preview en tiempo real
+  const priceInput = qs('#cpm-price');
+  function updatePreview() {
+    const exitPrice = parseFloat(priceInput.value) || mktPrice;
+    const lev  = trade.leverage || 1;
+    const pnl  = trade.tipo === 'LONG'
+      ? (exitPrice - trade.entrada) * trade.size * lev
+      : (trade.entrada - exitPrice) * trade.size * lev;
+    const pct  = trade.tipo === 'LONG'
+      ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
+      : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
+    const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    qs('#cpm-preview').innerHTML = `
+      <span style="color:var(--muted)">P&L estimado: </span>
+      <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:${color}">${fmtUSD(pnl)}</span>
+      <span style="color:var(--muted);font-size:11px"> (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span>`;
+  }
+  priceInput.addEventListener('input', updatePreview);
+  updatePreview();
+}
+
+function confirmCloseWithPrice(tradeId) {
+  const trade     = state.activeTrades.find(t => t.id === tradeId);
+  if (!trade) return;
+  const coin      = coinOf(trade.par);
+  const exitPrice = parseFloat(qs('#cpm-price')?.value) || state.prices[coin] || trade.entrada;
+  const notes     = qs('#cpm-notes')?.value?.trim() || '';
+  const lev       = trade.leverage || 1;
+  const rawPnl    = trade.tipo === 'LONG'
     ? (exitPrice - trade.entrada) * trade.size * lev
     : (trade.entrada - exitPrice) * trade.size * lev;
-
   const result = rawPnl >= 0 ? 'WIN' : 'LOSS';
 
-  closeTrade(tradeId, result, rawPnl);
-  showToast(
-    `${trade.par} cerrada a ${fmtP(exitPrice, coin)} — ${fmtUSD(rawPnl)}`,
-    result === 'LOSS'
-  );
+  // Cerrar el trade con precio real y notas
+  const idx = state.activeTrades.findIndex(t => t.id === tradeId);
+  if (idx === -1) return;
+  const closed = { ...trade, result, pnl: rawPnl, exitPrice, notes, closedAt: nowFull() };
+  state.closedTrades.unshift(closed);
+  state.activeTrades.splice(idx, 1);
+  saveKey('activeTrades', state.activeTrades);
+  saveKey('closedTrades', state.closedTrades);
+  syncTradesToServer();
+
+  qs('#close-price-modal')?.remove();
+  showToast(`${trade.par} cerrada a ${fmtP(exitPrice, coin)} — ${fmtUSD(rawPnl)}`, result === 'LOSS');
   renderAll();
+}
+
+function toggleTradeNotes(id) {
+  const panel = qs(`#notes-panel-${id}`);
+  if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+}
+
+function saveTradeNotes(id) {
+  const input = qs(`#notes-input-${id}`);
+  if (!input) return;
+  const trade = state.activeTrades.find(t => t.id === id);
+  if (!trade) return;
+  trade.notes = input.value.trim();
+  saveKey('activeTrades', state.activeTrades);
+  showToast('📝 Nota guardada');
+  renderOps();
 }
 
 /* ── Proposal handlers ───────────────────────────────────────────────────── */
@@ -1487,6 +1672,9 @@ document.addEventListener('DOMContentLoaded', () => {
   qs('#btn-adapt')          ?.addEventListener('click', onAdaptStrategy);
   qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
 
+  // Inicializar MARKET_META con las monedas guardadas
+  initMarketMeta(state.watchedCoins);
+
   // Start WebSocket
   connectWS();
 
@@ -1512,8 +1700,11 @@ document.addEventListener('DOMContentLoaded', () => {
 Object.assign(window, {
   qs, state, setTab, toggleScanner, runScan, requestNotifPermission,
   setScanIntervalVal, acceptAlertById, rejectAlert, clearAlerts,
-  closeTradeAtMarket,
+  closeTradeAtMarket, confirmCloseWithPrice,
+  toggleTradeNotes, saveTradeNotes,
   cancelTrade, onAcceptProposal, onRejectProposal,
   setProfileField, toggleCoin, saveProfile,
-  saveCapital, updateCapCalc, setLeverage, resetAll, renderAll,
+  saveCapital, updateCapCalc, setLeverage,
+  toggleWatchedCoin, openChart,
+  resetAll, renderAll,
 });
