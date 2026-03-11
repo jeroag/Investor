@@ -788,6 +788,168 @@ Responde SOLO JSON:
   return parseJSON(raw);
 }
 
+/* ══════════════════════════════════════════════════════════
+   BITUNIX INTEGRATION
+   ══════════════════════════════════════════════════════════ */
+
+// Estado Bitunix
+const bitunix = {
+  configured: false,   // si las API keys están en el servidor
+  account:    null,    // datos de cuenta reales
+  positions:  [],      // posiciones abiertas reales
+  lastSync:   0,
+};
+
+/* Comprueba si Bitunix está configurado */
+async function checkBitunixStatus() {
+  try {
+    const res  = await fetch('/api/bitunix/status');
+    const data = await res.json();
+    bitunix.configured = !!data.configured;
+  } catch { bitunix.configured = false; }
+  return bitunix.configured;
+}
+
+/* Fetch saldo real de Bitunix */
+async function fetchBitunixAccount() {
+  if (!bitunix.configured) return null;
+  try {
+    const res  = await fetch('/api/bitunix/account');
+    const data = await res.json();
+    if (data.ok) {
+      bitunix.account  = data.account;
+      bitunix.lastSync = Date.now();
+      // Sincronizar capital real en el perfil
+      if (data.account?.available) {
+        const available = parseFloat(data.account.available);
+        if (available > 0) {
+          state.profile.capital = parseFloat((available).toFixed(2));
+          saveKey('profile', state.profile);
+        }
+      }
+    }
+    return bitunix.account;
+  } catch (e) {
+    console.warn('fetchBitunixAccount:', e.message);
+    return null;
+  }
+}
+
+/* Fetch posiciones abiertas de Bitunix y las sincroniza con activeTrades */
+async function syncBitunixPositions() {
+  if (!bitunix.configured) return;
+  try {
+    const res  = await fetch('/api/bitunix/positions');
+    const data = await res.json();
+    if (!data.ok) return;
+
+    bitunix.positions = data.positions || [];
+
+    // Marcar trades locales que tienen una posición real en Bitunix
+    bitunix.positions.forEach(pos => {
+      const symbol = pos.symbol?.replace('USDT', ''); // "BTCUSDT" → "BTC"
+      const side   = pos.side === 'BUY' ? 'LONG' : 'SHORT';
+      const match  = state.activeTrades.find(t =>
+        coinOf(t.par) === symbol && t.tipo === side
+      );
+      if (match) {
+        match.bitunixPos     = true;
+        match.bitunixSymbol  = pos.symbol;
+        match.unrealizedPnl  = parseFloat(pos.unrealizedPnl || 0);
+        match.bitunixQty     = parseFloat(pos.qty || 0);
+        match.bitunixSide    = pos.side;
+      }
+    });
+
+    renderAll();
+  } catch (e) {
+    console.warn('syncBitunixPositions:', e.message);
+  }
+}
+
+/* Calcular qty en unidades base para Bitunix dado el riskUSD y precio */
+function calcBitunixQty(riskUSD, entry, stopLoss, leverage, symbol) {
+  // Para BTC y ETH: qty en contratos (unidades de la moneda base)
+  // Fórmula: qty = riskUSD / (|entry - sl| * leverage)
+  const dist = Math.abs(entry - stopLoss);
+  if (dist === 0) return 0;
+  const qty = riskUSD / (dist * leverage);
+  // Redondear según el par: BTC 3 decimales, resto 2
+  const decimals = symbol?.startsWith('BTC') ? 3 : 2;
+  return parseFloat(qty.toFixed(decimals));
+}
+
+/* Ejecutar orden en Bitunix */
+async function placeBitunixOrder(trade) {
+  const symbol   = coinOf(trade.par) + 'USDT';
+  const side     = trade.tipo === 'LONG' ? 'BUY' : 'SELL';
+  const leverage = trade.leverage || 1;
+  const qty      = calcBitunixQty(trade.riskUSD, trade.entrada, trade.stopLoss, leverage, symbol);
+
+  if (qty <= 0) {
+    showToast('⚠️ Qty calculada es 0 — revisa SL y capital', true);
+    return null;
+  }
+
+  showToast(`📡 Enviando orden ${symbol} ${side} ${qty} a Bitunix...`);
+
+  try {
+    const res  = await fetch('/api/bitunix/place-order', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol,
+        qty:           qty,
+        side,
+        leverage,
+        orderType:     'MARKET',
+        tpPrice:       trade.tp2 || trade.tp1 || null,
+        slPrice:       trade.stopLoss || null,
+        clientOrderId: trade.id,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      trade.bitunixOrderId = data.orderId;
+      trade.bitunixSymbol  = symbol;
+      trade.bitunixQty     = qty;
+      showToast(`✅ Orden ejecutada en Bitunix — ID ${data.orderId}`);
+      saveKey('activeTrades', state.activeTrades);
+      // Sincronizar posiciones tras unos segundos
+      setTimeout(syncBitunixPositions, 3000);
+    } else {
+      showToast(`❌ Error Bitunix: ${data.error}`, true);
+    }
+    return data;
+  } catch (e) {
+    showToast(`❌ Error enviando a Bitunix: ${e.message}`, true);
+    return null;
+  }
+}
+
+/* Flash close en Bitunix */
+async function flashCloseBitunix(trade) {
+  const symbol = trade.bitunixSymbol || (coinOf(trade.par) + 'USDT');
+  const side   = trade.tipo === 'LONG' ? 'LONG' : 'SHORT';
+  try {
+    const res  = await fetch('/api/bitunix/close-position', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, side }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      showToast(`✅ Posición cerrada en Bitunix`);
+    } else {
+      showToast(`⚠️ Error cerrando en Bitunix: ${data.error}`, true);
+    }
+    return data;
+  } catch (e) {
+    showToast(`⚠️ No se pudo cerrar en Bitunix: ${e.message}`, true);
+    return null;
+  }
+}
+
 /* ── Widget de saldo ─────────────────────────────────────────────────────── */
 function calcEquity() {
   const { profile, closedTrades, activeTrades, prices } = state;
@@ -817,15 +979,43 @@ function renderBalanceWidget() {
   const totalColor = totalPnl >= 0 ? 'var(--green)' : 'var(--red)';
   const totalSign  = totalPnl >= 0 ? '+' : '';
 
+  // Datos reales de Bitunix si están disponibles
+  const acc = bitunix.account;
+  const realEquity    = acc ? parseFloat(acc.equity    || 0) : null;
+  const realAvailable = acc ? parseFloat(acc.available || 0) : null;
+  const realUnPnl     = acc ? parseFloat(acc.crossUnPnl || acc.unrealizedPnl || 0) : null;
+  const bitunixBadge  = bitunix.configured
+    ? `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:rgba(130,173,143,.15);border:1px solid rgba(130,173,143,.3);color:var(--green);margin-left:8px">🔗 Bitunix Live</span>`
+    : `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:var(--s2);border:1px solid var(--border);color:var(--muted);margin-left:8px;cursor:pointer" onclick="showBitunixSetup()">🔌 Conectar Bitunix</span>`;
+
   w.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
       <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+
+        <!-- Saldo principal -->
         <div style="display:flex;flex-direction:column;gap:1px">
-          <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase">Saldo total</span>
-          <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">$${total.toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}</span>
+          <span style="font-size:9px;color:var(--muted);font-weight:500;letter-spacing:.8px;text-transform:uppercase;display:flex;align-items:center">
+            ${acc ? 'Equity Real' : 'Saldo estimado'}${bitunixBadge}
+          </span>
+          <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:var(--text);line-height:1">
+            $${(acc ? realEquity : total).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:2})}
+          </span>
         </div>
+
         <div style="width:1px;height:28px;background:var(--border)"></div>
-        <div style="display:flex;gap:12px">
+
+        <div style="display:flex;gap:12px;flex-wrap:wrap">
+          ${acc ? `
+          <!-- Datos reales Bitunix -->
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Disponible</span>
+            <span style="font-size:12px;font-weight:600;color:var(--text)">$${realAvailable?.toFixed(2)}</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:1px">
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L no realizado</span>
+            <span style="font-size:12px;font-weight:600;color:${realUnPnl>=0?'var(--green)':'var(--red)'}">${realUnPnl>=0?'+':''}$${realUnPnl?.toFixed(2)}</span>
+          </div>` : `
+          <!-- Datos estimados locales -->
           <div style="display:flex;flex-direction:column;gap:1px">
             <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L cerrado</span>
             <span style="font-size:12px;font-weight:600;color:${closedPnl>=0?'var(--green)':'var(--red)'}">${closedPnl>=0?'+':''}$${closedPnl.toFixed(2)}</span>
@@ -833,20 +1023,22 @@ function renderBalanceWidget() {
           <div style="display:flex;flex-direction:column;gap:1px">
             <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">P&L activo</span>
             <span style="font-size:12px;font-weight:600;color:${activePnl>=0?'var(--green)':'var(--red)'}">${activePnl>=0?'+':''}$${activePnl.toFixed(2)}</span>
-          </div>
+          </div>`}
           <div style="display:flex;flex-direction:column;gap:1px">
-            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L</span>
+            <span style="font-size:9px;color:var(--muted);letter-spacing:.5px">Total P&L app</span>
             <span style="font-size:12px;font-weight:600;color:${totalColor}">${totalSign}$${totalPnl.toFixed(2)}</span>
           </div>
         </div>
       </div>
+
       <div style="display:flex;align-items:center;gap:8px" id="balance-edit-area">
+        ${acc ? `<button onclick="refreshBitunixData()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">↻ Actualizar</button>` : ''}
         <span style="font-size:9px;color:var(--muted)">Capital base: $${capital.toLocaleString('en')}</span>
-        <button onclick="toggleBalanceEdit()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">✏ Actualizar</button>
+        <button onclick="toggleBalanceEdit()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">✏ Editar</button>
       </div>
     </div>
-    <div id="balance-quick-edit" style="display:none;margin-top:8px;display:none;align-items:center;gap:8px;flex-wrap:wrap">
-      <span style="font-size:11px;color:var(--muted)">Capital real en exchange:</span>
+    <div id="balance-quick-edit" style="display:none;margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--muted)">Capital:</span>
       <input class="inp" type="number" id="balance-input" value="${capital}" step="any" style="width:120px;padding:5px 8px;font-size:12px"/>
       <button class="btn btng" style="padding:5px 12px;font-size:11px" onclick="saveQuickCapital()">✓ Guardar</button>
       <button onclick="toggleBalanceEdit()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1">×</button>
@@ -2417,7 +2609,6 @@ function confirmCloseWithPrice(tradeId) {
     : (trade.entrada - exitPrice) * trade.size * lev;
   const result = rawPnl >= 0 ? 'WIN' : 'LOSS';
 
-  // Cerrar el trade con precio real y notas
   const idx = state.activeTrades.findIndex(t => t.id === tradeId);
   if (idx === -1) return;
   const closed = { ...trade, result, pnl: rawPnl, exitPrice, notes, closedAt: nowFull() };
@@ -2430,6 +2621,11 @@ function confirmCloseWithPrice(tradeId) {
   qs('#close-price-modal')?.remove();
   showToast(`${trade.par} cerrada a ${fmtP(exitPrice, coin)} — ${fmtUSD(rawPnl)}`, result === 'LOSS');
   renderAll();
+
+  // Flash close en Bitunix si está conectado y la posición existía en el exchange
+  if (bitunix.configured && (trade.bitunixPos || trade.bitunixOrderId)) {
+    flashCloseBitunix(trade);
+  }
 }
 
 function toggleTradeNotes(id) {
@@ -2452,9 +2648,13 @@ function saveTradeNotes(id) {
 function onAcceptProposal(i) {
   const p = state.pending[i];
   if (!p) return;
-  acceptProposal(p);
+  const trade = acceptProposal(p);
   state.pending.splice(i, 1);
   renderAll();
+  // Ejecutar en Bitunix si está conectado
+  if (bitunix.configured && trade) {
+    placeBitunixOrder(trade);
+  }
 }
 function onRejectProposal(i) {
   state.pending.splice(i, 1);
@@ -3121,6 +3321,46 @@ function onboardBack() {
   if (onboardStep > 0) { onboardStep--; renderOnboardStep(); }
 }
 
+function showBitunixSetup() {
+  const existing = qs('#bitunix-setup-modal');
+  if (existing) { existing.remove(); return; }
+  const modal = el('div', '');
+  modal.id = 'bitunix-setup-modal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease';
+  modal.innerHTML = `
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:460px;box-shadow:var(--shadow-lg);overflow:hidden">
+      <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:var(--s2)">
+        <div style="font-family:var(--serif);font-size:16px;font-weight:600">🔗 Conectar Bitunix</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">Las claves se guardan como variables de entorno en el servidor — nunca en el navegador.</div>
+      </div>
+      <div style="padding:20px 24px">
+        <div style="background:#F4F0E6;border:1px solid #D9CCAA;border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:11px;color:#7A6030;line-height:1.6">
+          <b>Cómo configurar:</b><br>
+          1. Ve a <b>Bitunix → Gestión de API</b> y crea una API Key con permisos de <b>trading</b> (sin retiros).<br>
+          2. En tu panel de <b>Railway</b>, añade estas dos variables de entorno:<br>
+          <code style="background:rgba(0,0,0,.1);padding:2px 6px;border-radius:3px;display:inline-block;margin-top:6px">BITUNIX_API_KEY = tu_api_key<br>BITUNIX_SECRET = tu_secret_key</code><br>
+          3. Redeploy la app y el widget mostrará <b>🔗 Bitunix Live</b>.
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:16px">
+          <b>Permisos recomendados:</b> Leer cuenta ✓ · Operar futuros ✓ · Sin retiros ✗<br>
+          <b>IP whitelist:</b> Añade la IP de Railway para mayor seguridad.
+        </div>
+        <button class="btn-main" style="width:100%;justify-content:center" onclick="qs('#bitunix-setup-modal').remove()">Entendido</button>
+      </div>
+    </div>`;
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  document.body.appendChild(modal);
+}
+
+async function refreshBitunixData() {
+  const btn = qs('#balance-widget button[onclick="refreshBitunixData()"]');
+  if (btn) { btn.textContent = '↻ ...'; btn.disabled = true; }
+  await Promise.all([fetchBitunixAccount(), syncBitunixPositions()]);
+  renderBalanceWidget();
+  if (btn) { btn.textContent = '↻ Actualizar'; btn.disabled = false; }
+  showToast('✓ Datos de Bitunix actualizados');
+}
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
   loadAll();
@@ -3156,6 +3396,21 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(fetchMarketMeta, 15 * 60 * 1000);
   setInterval(fetchEconomicCalendar, 30 * 60 * 1000);
 
+  // Bitunix: comprobar config, cargar cuenta y sincronizar posiciones
+  checkBitunixStatus().then(configured => {
+    if (configured) {
+      fetchBitunixAccount().then(() => {
+        renderBalanceWidget();
+        syncBitunixPositions();
+      });
+      // Refrescar cuenta cada 30 segundos y posiciones cada 15 segundos
+      setInterval(() => {
+        fetchBitunixAccount().then(() => renderBalanceWidget());
+      }, 30_000);
+      setInterval(syncBitunixPositions, 15_000);
+    }
+  });
+
   syncTradesToServer();
   setInterval(pollServerClosedTrades, 15000);
 
@@ -3183,5 +3438,6 @@ Object.assign(window, {
   submitGoal, deleteGoal,
   onboardNext, onboardBack, setObRisk,
   refreshCalendar,
+  showBitunixSetup, refreshBitunixData,
   resetAll, renderAll,
 });

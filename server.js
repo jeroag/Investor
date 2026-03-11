@@ -1,6 +1,7 @@
-const express  = require('express');
-const path     = require('path');
+const express   = require('express');
+const path      = require('path');
 const WebSocket = require('ws');
+const crypto    = require('crypto');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -8,14 +9,18 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ── Estado en memoria del servidor ────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   ESTADO EN MEMORIA
+   ══════════════════════════════════════════════════════════ */
 const serverState = {
   activeTrades:  [],
   closedTrades:  [],
   prices:        {},
 };
 
-// ── Rate Limiting ─────────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   RATE LIMITING
+   ══════════════════════════════════════════════════════════ */
 const rateLimitMap = new Map();
 const RATE_LIMIT   = 20;
 const RATE_WINDOW  = 60_000;
@@ -35,24 +40,24 @@ function rateLimit(req, res, next) {
   rateLimitMap.set(ip, entry);
   next();
 }
-
 setInterval(() => {
   const now = Date.now();
-  for (const [ip, entry] of rateLimitMap) {
-    if (now - entry.start > RATE_WINDOW) rateLimitMap.delete(ip);
+  for (const [ip, e] of rateLimitMap) {
+    if (now - e.start > RATE_WINDOW) rateLimitMap.delete(ip);
   }
 }, 5 * 60_000);
 
-// ── Binance WebSocket (servidor) ──────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   BINANCE WEBSOCKET (precios en servidor para TP/SL)
+   ══════════════════════════════════════════════════════════ */
 const COINS  = ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt'];
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
   COINS.map(s => s + '@miniTicker').join('/');
-
 let binanceWs;
 
 function connectBinanceWS() {
   binanceWs = new WebSocket(WS_URL);
-  binanceWs.on('open',  () => console.log('Binance WS conectado en servidor'));
+  binanceWs.on('open',  () => console.log('Binance WS conectado'));
   binanceWs.on('message', (raw) => {
     try {
       const { data: d } = JSON.parse(raw);
@@ -63,11 +68,13 @@ function connectBinanceWS() {
       checkTPSL(coin, price);
     } catch {}
   });
-  binanceWs.on('close', () => { setTimeout(connectBinanceWS, 5000); });
-  binanceWs.on('error', (err) => console.error('Binance WS error:', err.message));
+  binanceWs.on('close', () => setTimeout(connectBinanceWS, 5000));
+  binanceWs.on('error', (e) => console.error('Binance WS error:', e.message));
 }
 
-// ── Lógica TP/SL en servidor ──────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   TP/SL LOGIC
+   ══════════════════════════════════════════════════════════ */
 function coinOf(par) { return (par || '').split('/')[0]; }
 function nowFull() {
   return new Date().toLocaleString('es-ES', {
@@ -83,22 +90,232 @@ function checkTPSL(coin, price) {
       ? price >= (trade.tp2 || trade.tp1)
       : price <= (trade.tp2 || trade.tp1);
     if (hitSL || hitTP) {
-      const result     = hitTP ? 'WIN' : 'LOSS';
-      const lev        = trade.leverage || 1;
-      const exitPrice  = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
-      const pnl        = trade.tipo === 'LONG'
+      const lev       = trade.leverage || 1;
+      const exitPrice = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
+      const pnl       = trade.tipo === 'LONG'
         ? (exitPrice - trade.entrada) * trade.size * lev
         : (trade.entrada - exitPrice) * trade.size * lev;
-      const closed = { ...trade, result, pnl, closedAt: nowFull(), closedByServer: true };
-      serverState.closedTrades.unshift(closed);
-      console.log(`${trade.par} cerrada: ${result} Lev:${lev}x PnL:${pnl.toFixed(2)}`);
+      serverState.closedTrades.unshift({
+        ...trade, result: hitTP ? 'WIN' : 'LOSS', pnl,
+        closedAt: nowFull(), closedByServer: true,
+      });
+      console.log(`${trade.par} cerrada TP/SL: PnL ${pnl.toFixed(2)}`);
       return false;
     }
     return true;
   });
 }
 
-// ── API Trades ────────────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   BITUNIX API INTEGRATION
+   ══════════════════════════════════════════════════════════ */
+const BITUNIX_BASE = 'https://fapi.bitunix.com';
+
+function sha256(str) {
+  return crypto.createHash('sha256').update(str, 'utf8').digest('hex');
+}
+
+function generateNonce() {
+  return crypto.randomBytes(16).toString('hex'); // 32 chars
+}
+
+/**
+ * Firma una request Bitunix según su spec:
+ * digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
+ * sign   = SHA256(digest + secretKey)
+ *
+ * queryParams: objeto de query params → ordenado por ASCII key, concatenado "k1v1k2v2"
+ * body: string JSON sin espacios (o "" si no hay body)
+ */
+function bitunixSign(apiKey, secretKey, nonce, timestamp, queryParamsObj, bodyStr) {
+  // 1. Ordenar query params por clave ASCII ascendente y concatenar
+  const qp = Object.keys(queryParamsObj || {})
+    .sort()
+    .map(k => k + queryParamsObj[k])
+    .join('');
+
+  // 2. Asegurarse que el body no tiene espacios
+  const body = bodyStr ? bodyStr.replace(/\s+/g, '') : '';
+
+  // 3. Doble SHA256
+  const digest = sha256(nonce + timestamp + apiKey + qp + body);
+  const sign   = sha256(digest + secretKey);
+  return sign;
+}
+
+/**
+ * Llamada autenticada a Bitunix
+ */
+async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null) {
+  const apiKey    = process.env.BITUNIX_API_KEY;
+  const secretKey = process.env.BITUNIX_SECRET;
+
+  if (!apiKey || !secretKey) {
+    throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados en las variables de entorno.');
+  }
+
+  const nonce     = generateNonce();
+  const timestamp = Date.now().toString();
+  const bodyStr   = bodyObj ? JSON.stringify(bodyObj) : '';
+  const sign      = bitunixSign(apiKey, secretKey, nonce, timestamp, queryParams, bodyStr);
+
+  // Construir URL con query string
+  const qs = Object.keys(queryParams).length
+    ? '?' + Object.keys(queryParams).sort().map(k => `${k}=${encodeURIComponent(queryParams[k])}`).join('&')
+    : '';
+
+  const url = BITUNIX_BASE + endpoint + qs;
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'api-key':      apiKey,
+    'nonce':        nonce,
+    'timestamp':    timestamp,
+    'sign':         sign,
+  };
+
+  const options = { method, headers };
+  if (bodyObj) options.body = bodyStr;
+
+  const res  = await fetch(url, options);
+  const data = await res.json();
+
+  if (!res.ok || data.code !== 0) {
+    const msg = data?.msg || data?.message || JSON.stringify(data);
+    throw new Error(`Bitunix API error [${data?.code}]: ${msg}`);
+  }
+
+  return data;
+}
+
+/* ── Endpoint: GET balance de futuros ─────────────────────── */
+app.get('/api/bitunix/account', async (req, res) => {
+  try {
+    const data = await bitunixRequest('GET', '/api/v1/futures/account/singleAccount', { coin: 'USDT' });
+    // data.data: { available, balance, crossUnPnl, equity, marginRate, ... }
+    res.json({ ok: true, account: data.data });
+  } catch (err) {
+    console.error('Bitunix account error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── Endpoint: GET posiciones abiertas ────────────────────── */
+app.get('/api/bitunix/positions', async (req, res) => {
+  try {
+    const data = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
+    res.json({ ok: true, positions: data.data || [] });
+  } catch (err) {
+    console.error('Bitunix positions error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── Endpoint: POST colocar orden ─────────────────────────── */
+app.post('/api/bitunix/place-order', async (req, res) => {
+  try {
+    const { symbol, qty, side, leverage, orderType, price, tpPrice, slPrice, clientOrderId } = req.body;
+
+    if (!symbol || !qty || !side) {
+      return res.status(400).json({ ok: false, error: 'symbol, qty y side son obligatorios' });
+    }
+
+    // 1. Establecer apalancamiento
+    try {
+      await bitunixRequest('POST', '/api/v1/futures/account/changeLeverage', {}, {
+        symbol,
+        leverage: leverage || 1,
+        marginType: 'CROSSED', // margin cruzado por defecto
+      });
+    } catch (levErr) {
+      console.warn('No se pudo cambiar leverage (puede que ya esté configurado):', levErr.message);
+    }
+
+    // 2. Colocar orden de mercado
+    const orderBody = {
+      symbol,
+      qty:         String(qty),
+      side,             // BUY | SELL
+      tradeSide:   'OPEN',
+      orderType:   orderType || 'MARKET',
+      reduceOnly:  false,
+      clientId:    clientOrderId || `cp_${Date.now()}`,
+    };
+    if (orderType === 'LIMIT' && price) orderBody.price = String(price);
+
+    const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/placeOrder', {}, orderBody);
+    const orderId   = orderData.data?.orderId;
+
+    // 3. Colocar TP/SL si se proporcionaron
+    let tpslResult = null;
+    if ((tpPrice || slPrice) && orderId) {
+      try {
+        const tpslBody = {
+          symbol,
+          side:     side === 'BUY' ? 'SELL' : 'BUY', // dirección opuesta para cerrar
+          tpPrice:  tpPrice  ? String(tpPrice)  : undefined,
+          slPrice:  slPrice  ? String(slPrice)  : undefined,
+          tpSize:   String(qty),
+          slSize:   String(qty),
+          tpOrderType: 'MARKET',
+          slOrderType: 'MARKET',
+        };
+        // Eliminar campos undefined
+        Object.keys(tpslBody).forEach(k => tpslBody[k] === undefined && delete tpslBody[k]);
+        tpslResult = await bitunixRequest('POST', '/api/v1/futures/tpsl/placePositionTpSlOrder', {}, tpslBody);
+      } catch (tpslErr) {
+        console.warn('No se pudo colocar TP/SL:', tpslErr.message);
+      }
+    }
+
+    res.json({ ok: true, orderId, tpsl: tpslResult?.data || null });
+  } catch (err) {
+    console.error('Bitunix place-order error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── Endpoint: POST cerrar posición (flash close) ─────────── */
+app.post('/api/bitunix/close-position', async (req, res) => {
+  try {
+    const { symbol, side } = req.body;
+    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol es obligatorio' });
+
+    const data = await bitunixRequest('POST', '/api/v1/futures/trade/flashClosePosition', {}, {
+      symbol,
+      side: side || undefined, // LONG | SHORT, si no se pasa cierra todo
+    });
+
+    res.json({ ok: true, data: data.data });
+  } catch (err) {
+    console.error('Bitunix close-position error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── Endpoint: GET historial órdenes de Bitunix ───────────── */
+app.get('/api/bitunix/history', async (req, res) => {
+  try {
+    const data = await bitunixRequest('GET', '/api/v1/futures/trade/getHistoryOrders', {
+      pageSize: '20',
+      page:     '1',
+    });
+    res.json({ ok: true, orders: data.data?.resultList || [] });
+  } catch (err) {
+    console.error('Bitunix history error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+/* ── Endpoint: estado de configuración Bitunix ────────────── */
+app.get('/api/bitunix/status', (req, res) => {
+  const configured = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
+  res.json({ configured });
+});
+
+/* ══════════════════════════════════════════════════════════
+   API TRADES (interno)
+   ══════════════════════════════════════════════════════════ */
 function isValidTrade(t) {
   return (
     t && typeof t.id === 'string' &&
@@ -113,12 +330,8 @@ function isValidTrade(t) {
 app.post('/api/trades/sync', (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
-
-  // Rechazar trades con campos faltantes o inválidos
   const validTrades = activeTrades.filter(isValidTrade);
   const rejected    = activeTrades.length - validTrades.length;
-  if (rejected > 0) console.warn(`sync: ${rejected} trade(s) rechazados por validación`);
-
   const existingIds = new Set(serverState.activeTrades.map(t => t.id));
   for (const trade of validTrades) {
     if (!existingIds.has(trade.id)) serverState.activeTrades.push(trade);
@@ -129,14 +342,12 @@ app.post('/api/trades/sync', (req, res) => {
 });
 
 app.get('/api/trades/closed-by-server', (req, res) => {
-  // Solo lee — NO borra. El cliente confirma la recepción antes de que borremos.
   res.json({ closed: [...serverState.closedTrades] });
 });
 
 app.post('/api/trades/confirm-closed', (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids inválido' });
-  // Solo borramos los trades cuya recepción confirmó el cliente
   serverState.closedTrades = serverState.closedTrades.filter(t => !ids.includes(t.id));
   res.json({ ok: true, remaining: serverState.closedTrades.length });
 });
@@ -145,7 +356,9 @@ app.get('/api/prices', (req, res) => {
   res.json(serverState.prices);
 });
 
-// ── Proxy Claude API ──────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   PROXY CLAUDE API
+   ══════════════════════════════════════════════════════════ */
 app.post('/api/claude', rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada.' });
@@ -160,8 +373,8 @@ app.post('/api/claude', rateLimit, async (req, res) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model:      model      || 'claude-sonnet-4-6',
-        max_tokens: max_tokens || 1000,
+        model:      model      || 'claude-sonnet-4-20250514',
+        max_tokens: max_tokens || 4000,
         system,
         messages,
       }),
@@ -175,7 +388,9 @@ app.post('/api/claude', rateLimit, async (req, res) => {
   }
 });
 
-// ── Fallback ──────────────────────────────────────────────────────────────
+/* ══════════════════════════════════════════════════════════
+   FALLBACK
+   ══════════════════════════════════════════════════════════ */
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
