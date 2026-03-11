@@ -11,68 +11,52 @@ app.use(express.json());
 /* ══════════════════════════════════════════════════════════
    AUTENTICACIÓN
    ══════════════════════════════════════════════════════════ */
-
-const sessions = new Map();
+const sessions    = new Map();
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 
 setInterval(() => {
   const now = Date.now();
-  for (const [token, s] of sessions) {
+  for (const [token, s] of sessions)
     if (now - s.createdAt > SESSION_TTL) sessions.delete(token);
-  }
 }, 60 * 60 * 1000);
 
-function generateToken() {
-  return crypto.randomBytes(64).toString('hex');
-}
+function generateToken()  { return crypto.randomBytes(64).toString('hex'); }
 
 function getToken(req) {
   const auth = req.headers['authorization'];
   if (auth?.startsWith('Bearer ')) return auth.slice(7);
-  const cookie = req.headers['cookie'] || '';
-  const match  = cookie.match(/cp_token=([^;]+)/);
-  return match ? match[1] : null;
+  const m = (req.headers['cookie'] || '').match(/cp_token=([^;]+)/);
+  return m ? m[1] : null;
 }
 
 function isAuthenticated(req) {
-  const token = getToken(req);
+  const token   = getToken(req);
   if (!token) return false;
   const session = sessions.get(token);
   if (!session) return false;
-  if (Date.now() - session.createdAt > SESSION_TTL) {
-    sessions.delete(token);
-    return false;
-  }
+  if (Date.now() - session.createdAt > SESSION_TTL) { sessions.delete(token); return false; }
   return true;
 }
 
 function requireAuth(req, res, next) {
   if (isAuthenticated(req)) return next();
-  return res.status(401).json({ error: 'No autorizado. Inicia sesión.' });
+  return res.status(401).json({ error: 'No autorizado.' });
 }
 
 app.post('/auth/login', (req, res) => {
-  const { password } = req.body;
+  const { password }    = req.body;
   const correctPassword = process.env.APP_PASSWORD;
-
   if (!correctPassword) {
-    console.warn('⚠️  APP_PASSWORD no configurada.');
     const token = generateToken();
     sessions.set(token, { createdAt: Date.now() });
     return res.json({ ok: true, token });
   }
-
-  if (!password || password !== correctPassword) {
-    return setTimeout(() => {
-      res.status(401).json({ ok: false, error: 'Contraseña incorrecta.' });
-    }, 1000);
-  }
-
+  if (!password || password !== correctPassword)
+    return setTimeout(() => res.status(401).json({ ok: false, error: 'Contraseña incorrecta.' }), 1000);
   const token = generateToken();
   const ip    = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
   sessions.set(token, { createdAt: Date.now(), ip });
-  console.log(`✓ Login exitoso desde ${ip}`);
-
+  console.log(`✓ Login desde ${ip}`);
   res.setHeader('Set-Cookie', `cp_token=${token}; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL/1000}; Path=/`);
   res.json({ ok: true, token });
 });
@@ -84,13 +68,8 @@ app.post('/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/auth/check', (req, res) => {
-  res.json({ authenticated: isAuthenticated(req) });
-});
-
-app.get('/login', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
+app.get('/auth/check', (req, res) => res.json({ authenticated: isAuthenticated(req) }));
+app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'public', 'login.html')));
 
 app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 
@@ -102,94 +81,62 @@ app.get('/', (req, res) => {
 /* ══════════════════════════════════════════════════════════
    ESTADO EN MEMORIA
    ══════════════════════════════════════════════════════════ */
-const serverState = {
-  activeTrades:  [],
-  closedTrades:  [],
-  prices:        {},
-};
+const serverState = { activeTrades: [], closedTrades: [], prices: {} };
 
 /* ══════════════════════════════════════════════════════════
    RATE LIMITING
    ══════════════════════════════════════════════════════════ */
 const rateLimitMap = new Map();
-const RATE_LIMIT   = 20;
-const RATE_WINDOW  = 60_000;
-
 function rateLimit(req, res, next) {
   const ip    = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
   const now   = Date.now();
   const entry = rateLimitMap.get(ip) || { count: 0, start: now };
-  if (now - entry.start > RATE_WINDOW) {
-    rateLimitMap.set(ip, { count: 1, start: now });
-    return next();
-  }
-  if (entry.count >= RATE_LIMIT) {
-    return res.status(429).json({ error: 'Demasiadas peticiones. Espera un minuto.' });
-  }
+  if (now - entry.start > 60_000) { rateLimitMap.set(ip, { count: 1, start: now }); return next(); }
+  if (entry.count >= 20) return res.status(429).json({ error: 'Rate limit. Espera un minuto.' });
   entry.count++;
   rateLimitMap.set(ip, entry);
   next();
 }
-setInterval(() => {
-  const now = Date.now();
-  for (const [ip, e] of rateLimitMap) {
-    if (now - e.start > RATE_WINDOW) rateLimitMap.delete(ip);
-  }
-}, 5 * 60_000);
 
 /* ══════════════════════════════════════════════════════════
-   BINANCE WEBSOCKET
+   BINANCE WEBSOCKET (precios en tiempo real)
    ══════════════════════════════════════════════════════════ */
 const COINS  = ['btcusdt','ethusdt','solusdt','xrpusdt','bnbusdt','dogeusdt'];
-const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
-  COINS.map(s => s + '@miniTicker').join('/');
+const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' + COINS.map(s => s + '@miniTicker').join('/');
 let binanceWs;
 
 function connectBinanceWS() {
   binanceWs = new WebSocket(WS_URL);
-  binanceWs.on('open',  () => console.log('Binance WS conectado'));
+  binanceWs.on('open',    () => console.log('Binance WS conectado'));
   binanceWs.on('message', (raw) => {
     try {
       const { data: d } = JSON.parse(raw);
       if (!d) return;
-      const coin  = d.s.replace('USDT', '');
-      const price = parseFloat(d.c);
-      serverState.prices[coin] = price;
-      checkTPSL(coin, price);
+      const coin = d.s.replace('USDT', '');
+      serverState.prices[coin] = parseFloat(d.c);
+      checkTPSL(coin, serverState.prices[coin]);
     } catch {}
   });
   binanceWs.on('close', () => setTimeout(connectBinanceWS, 5000));
   binanceWs.on('error', (e) => console.error('Binance WS error:', e.message));
 }
 
-/* ══════════════════════════════════════════════════════════
-   TP/SL LOGIC
-   ══════════════════════════════════════════════════════════ */
 function coinOf(par) { return (par || '').split('/')[0]; }
 function nowFull() {
-  return new Date().toLocaleString('es-ES', {
-    day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit'
-  });
+  return new Date().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
 }
-
 function checkTPSL(coin, price) {
   serverState.activeTrades = serverState.activeTrades.filter(trade => {
     if (coinOf(trade.par) !== coin) return true;
     const hitSL = trade.tipo === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
-    const hitTP = trade.tipo === 'LONG'
-      ? price >= (trade.tp2 || trade.tp1)
-      : price <= (trade.tp2 || trade.tp1);
+    const hitTP = trade.tipo === 'LONG' ? price >= (trade.tp2||trade.tp1) : price <= (trade.tp2||trade.tp1);
     if (hitSL || hitTP) {
-      const lev       = trade.leverage || 1;
-      const exitPrice = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
-      const pnl       = trade.tipo === 'LONG'
-        ? (exitPrice - trade.entrada) * trade.size * lev
-        : (trade.entrada - exitPrice) * trade.size * lev;
-      serverState.closedTrades.unshift({
-        ...trade, result: hitTP ? 'WIN' : 'LOSS', pnl,
-        closedAt: nowFull(), closedByServer: true,
-      });
-      console.log(`${trade.par} cerrada TP/SL: PnL ${pnl.toFixed(2)}`);
+      const lev  = trade.leverage || 1;
+      const exit = hitTP ? (trade.tp2||trade.tp1) : trade.stopLoss;
+      const pnl  = trade.tipo === 'LONG'
+        ? (exit - trade.entrada) * trade.size * lev
+        : (trade.entrada - exit) * trade.size * lev;
+      serverState.closedTrades.unshift({ ...trade, result: hitTP?'WIN':'LOSS', pnl, closedAt: nowFull(), closedByServer: true });
       return false;
     }
     return true;
@@ -197,201 +144,169 @@ function checkTPSL(coin, price) {
 }
 
 /* ══════════════════════════════════════════════════════════
-   BITUNIX API INTEGRATION — CORREGIDA
+   BITUNIX API — ENDPOINTS CORRECTOS (snake_case)
+   Fuente: https://openapidoc.bitunix.com
    ══════════════════════════════════════════════════════════ */
 const BITUNIX_BASE = 'https://fapi.bitunix.com';
 
 function sha256(str) {
   return crypto.createHash('sha256').update(str, 'utf8').digest('hex');
 }
-
 function generateNonce() {
-  // Bitunix espera nonce de exactamente 32 chars alfanuméricos
-  return crypto.randomBytes(16).toString('hex');
+  return crypto.randomBytes(16).toString('hex'); // 32 chars hex
 }
 
 /**
- * Firma Bitunix:
- * 1. queryParams → ordenar por ASCII, concatenar "k1v1k2v2" (sin =, sin &)
- * 2. bodyStr → JSON sin espacios, o "" si no hay body
- * 3. digest = SHA256(nonce + timestamp + apiKey + queryParams + body)
- * 4. sign   = SHA256(digest + secretKey)
+ * Firma Bitunix — doble SHA-256
+ * queryParams: clave-valor ordenados por clave ASCII asc, sin = ni &
+ *              Ejemplo: {symbol:'BTCUSDT', marginCoin:'USDT'} → "marginCoinUSDTsymbolBTCUSDT"
+ * body:        JSON sin espacios
+ * digest = SHA256(nonce + timestamp + apiKey + queryParamsStr + bodyStr)
+ * sign   = SHA256(digest + secretKey)
  */
 function bitunixSign(apiKey, secretKey, nonce, timestamp, queryParamsObj, bodyStr) {
   const qp = Object.keys(queryParamsObj || {})
     .sort()
     .map(k => `${k}${queryParamsObj[k]}`)
     .join('');
-
-  // El body NO debe tener espacios en blanco
-  const body = bodyStr ? bodyStr.replace(/\s+/g, '') : '';
-
+  const body   = bodyStr || '';
   const digest = sha256(`${nonce}${timestamp}${apiKey}${qp}${body}`);
-  const sign   = sha256(`${digest}${secretKey}`);
-  return sign;
+  return sha256(`${digest}${secretKey}`);
 }
 
-/**
- * Llamada autenticada a Bitunix.
- *
- * FIX: Usamos timestamp en milisegundos (requerido por Bitunix).
- * FIX: Content-Type solo en requests con body (POST).
- * FIX: marginCoin=USDT incluido por defecto en endpoints de cuenta.
- */
-async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null, forceKey = null) {
-  const tradeKey  = process.env.BITUNIX_API_KEY;
-  const tradeSec  = process.env.BITUNIX_SECRET;
-  const readKey   = process.env.BITUNIX_READ_KEY   || tradeKey;
-  const readSec   = process.env.BITUNIX_READ_SECRET || tradeSec;
-
-  if (!tradeKey || !tradeSec) {
-    throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados.');
-  }
-
-  const isReadOnly = method === 'GET';
-  let apiKey, secretKey;
-  if (forceKey === 'read' || (isReadOnly && forceKey !== 'trade')) {
-    apiKey = readKey; secretKey = readSec;
-  } else {
-    apiKey = tradeKey; secretKey = tradeSec;
-  }
+async function bitunixRequest(method, endpoint, queryParams = {}, bodyObj = null) {
+  const apiKey    = process.env.BITUNIX_API_KEY;
+  const secretKey = process.env.BITUNIX_SECRET;
+  if (!apiKey || !secretKey) throw new Error('BITUNIX_API_KEY o BITUNIX_SECRET no configurados en Railway.');
 
   const nonce     = generateNonce();
-  const timestamp = Date.now().toString(); // Bitunix usa milisegundos
+  const timestamp = Date.now().toString(); // milisegundos UTC
+  const bodyStr   = bodyObj ? JSON.stringify(bodyObj) : '';
 
-  // Para la firma usamos los valores RAW (no URL-encoded)
-  const bodyStr = bodyObj ? JSON.stringify(bodyObj).replace(/\s+/g, '') : '';
-  const sign    = bitunixSign(apiKey, secretKey, nonce, timestamp, queryParams, bodyStr);
+  // Para la firma: body sin espacios
+  const bodyForSign = bodyStr.replace(/\s+/g, '');
+  const sign        = bitunixSign(apiKey, secretKey, nonce, timestamp, queryParams, bodyForSign);
 
-  // Para la URL sí hacemos encodeURIComponent
+  // Query string para la URL (URL-encoded)
   const qs = Object.keys(queryParams).length
-    ? '?' + Object.keys(queryParams).sort().map(k => `${k}=${encodeURIComponent(queryParams[k])}`).join('&')
+    ? '?' + Object.keys(queryParams).sort()
+        .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(queryParams[k])}`)
+        .join('&')
     : '';
 
-  const url = BITUNIX_BASE + endpoint + qs;
-
   const headers = {
-    'api-key':   apiKey,
-    'nonce':     nonce,
-    'timestamp': timestamp,
-    'sign':      sign,
+    'Content-Type': 'application/json',
+    'api-key':      apiKey,
+    'nonce':        nonce,
+    'timestamp':    timestamp,
+    'sign':         sign,
+    'language':     'en-US',
   };
-  // FIX: solo añadir Content-Type si hay body
-  if (bodyObj) headers['Content-Type'] = 'application/json';
 
   const options = { method, headers };
-  if (bodyObj) options.body = bodyStr;
+  if (bodyObj) options.body = bodyForSign; // enviar exactamente el mismo string que se firmó
+
+  const url = BITUNIX_BASE + endpoint + qs;
+  console.log(`[Bitunix] ${method} ${endpoint}${qs}`);
 
   const res  = await fetch(url, options);
-  const data = await res.json();
+  const text = await res.text();
 
-  if (!res.ok || (data.code !== undefined && data.code !== 0)) {
-    const msg = data?.msg || data?.message || JSON.stringify(data);
-    throw new Error(`Bitunix API error [${data?.code}]: ${msg}`);
+  let data;
+  try { data = JSON.parse(text); }
+  catch { throw new Error(`Respuesta no-JSON [HTTP ${res.status}]: ${text.slice(0,300)}`); }
+
+  if (data.code !== 0) {
+    throw new Error(`Bitunix error [${data.code}]: ${data.msg || JSON.stringify(data)}`);
   }
-
   return data;
 }
 
-/* ── Debug endpoint (diagnóstico completo) ────────────────── */
+/* ── Debug endpoint ──────────────────────────────────────── */
 app.get('/api/bitunix/debug', requireAuth, async (req, res) => {
+  const apiKey    = process.env.BITUNIX_API_KEY;
+  const secretKey = process.env.BITUNIX_SECRET;
+
+  if (!apiKey || !secretKey)
+    return res.json({ ok: false, error: 'Variables BITUNIX_API_KEY y BITUNIX_SECRET no configuradas.' });
+
   const results = {};
-  const tradeKey = process.env.BITUNIX_API_KEY;
-  const tradeSec = process.env.BITUNIX_SECRET;
-  const readKey  = process.env.BITUNIX_READ_KEY   || tradeKey;
-  const readSec  = process.env.BITUNIX_READ_SECRET || tradeSec;
 
-  if (!tradeKey || !tradeSec) {
-    return res.json({ ok: false, error: 'API keys no configuradas en variables de entorno' });
-  }
-
-  async function tryEndpoint(label, key, sec, method, path, params, body) {
-    const nonce = generateNonce();
-    const ts    = Date.now().toString();
+  async function tryEp(label, method, path, params, body) {
+    const nonce   = generateNonce();
+    const ts      = Date.now().toString();
     const bodyStr = body ? JSON.stringify(body).replace(/\s+/g,'') : '';
-    const sign  = bitunixSign(key, sec, nonce, ts, params, bodyStr);
-    const qs    = Object.keys(params).length
-      ? '?' + Object.keys(params).sort().map(k=>`${k}=${encodeURIComponent(params[k])}`).join('&')
+    const sign    = bitunixSign(apiKey, secretKey, nonce, ts, params, bodyStr);
+    const qs      = Object.keys(params).length
+      ? '?' + Object.keys(params).sort().map(k=>`${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`).join('&')
       : '';
-    const headers = { 'api-key':key,'nonce':nonce,'timestamp':ts,'sign':sign };
-    if (body) headers['Content-Type'] = 'application/json';
     try {
       const r = await fetch(BITUNIX_BASE + path + qs, {
-        method, headers,
+        method,
+        headers: { 'Content-Type':'application/json','api-key':apiKey,'nonce':nonce,'timestamp':ts,'sign':sign,'language':'en-US' },
         ...(body ? { body: bodyStr } : {}),
       });
-      const d = await r.json();
-      results[label] = { httpStatus: r.status, code: d.code, msg: d.msg, data: d.data, ok: d.code === 0 };
+      const text = await r.text();
+      let d; try { d = JSON.parse(text); } catch { d = { raw: text.slice(0,300) }; }
+      results[label] = { httpStatus: r.status, code: d.code, msg: d.msg, ok: d.code === 0, dataPreview: JSON.stringify(d.data).slice(0,200) };
     } catch(e) {
       results[label] = { error: e.message };
     }
   }
 
-  // Test endpoints de cuenta con ambas keys
-  await tryEndpoint('account_read',  readKey, readSec, 'GET', '/api/v1/futures/account/singleAccount', { marginCoin:'USDT' });
-  await tryEndpoint('account_trade', tradeKey, tradeSec, 'GET', '/api/v1/futures/account/singleAccount', { marginCoin:'USDT' });
-  await tryEndpoint('positions_read', readKey, readSec, 'GET', '/api/v1/futures/position/getPendingPositions', {});
-  await tryEndpoint('history_orders', readKey, readSec, 'GET', '/api/v1/futures/trade/getHistoryOrders', { pageSize:'5', page:'1' });
+  // Probar los 3 endpoints principales con URLs CORRECTAS
+  await tryEp('account',        'GET', '/api/v1/futures/account', { marginCoin: 'USDT' });
+  await tryEp('positions',      'GET', '/api/v1/futures/position/get_pending_positions', {});
+  await tryEp('history_orders', 'GET', '/api/v1/futures/trade/get_history_orders', { pageSize:'5', page:'1' });
 
   results['_config'] = {
-    sameKey: readKey === tradeKey,
-    tradeKeyPrefix: tradeKey?.slice(0,8) + '...',
-    readKeyPrefix:  readKey?.slice(0,8) + '...',
+    keyPrefix:    apiKey.slice(0,8) + '...',
     timestamp_ms: Date.now(),
-    timestamp_s:  Math.floor(Date.now()/1000),
+    nodeVersion:  process.version,
   };
 
   res.json({ ok: true, results });
 });
 
-/* ── GET saldo de futuros ─────────────────────────────────── */
+/* ── Cuenta ──────────────────────────────────────────────── */
+// URL CORRECTA: GET /api/v1/futures/account?marginCoin=USDT
+// Respuesta: data es un ARRAY → usar [0]
 app.get('/api/bitunix/account', requireAuth, async (req, res) => {
-  // FIX: Usar directamente el endpoint correcto con marginCoin=USDT
-  // que es el requerido por Bitunix para futuros USDT
-  const endpoints = [
-    { path: '/api/v1/futures/account/singleAccount', params: { marginCoin: 'USDT' } },
-    { path: '/api/v1/futures/account/singleAccount', params: {} },
-    { path: '/api/v1/futures/account/getAccount',    params: { marginCoin: 'USDT' } },
-  ];
+  try {
+    const data   = await bitunixRequest('GET', '/api/v1/futures/account', { marginCoin: 'USDT' });
+    const rawArr = data.data;
+    const raw    = Array.isArray(rawArr) ? rawArr[0] : rawArr;
+    if (!raw) return res.status(500).json({ ok: false, error: 'Respuesta vacía de Bitunix' });
 
-  for (const ep of endpoints) {
-    try {
-      const data = await bitunixRequest('GET', ep.path, ep.params);
-      if (data.code === 0) {
-        // Normalizar los campos del account para que el frontend
-        // siempre reciba los mismos nombres de campo
-        const raw = data.data || {};
-        const account = {
-          // Campos normalizados que el frontend lee
-          available:      raw.available      ?? raw.availableBalance ?? raw.availAmt ?? raw.freeBalance ?? null,
-          equity:         raw.equity         ?? raw.totalEquity      ?? raw.marginBalance ?? null,
-          balance:        raw.balance        ?? raw.walletBalance    ?? raw.totalBalance   ?? null,
-          unrealizedPnl:  raw.unrealizedPnl  ?? raw.crossUnPnl      ?? raw.unPnl          ?? null,
-          // Guardar campos originales también
-          ...raw,
-        };
-        console.log(`[Bitunix account OK] endpoint: ${ep.path}`, JSON.stringify(account));
-        return res.json({ ok: true, account });
-      }
-    } catch (err) {
-      console.warn(`[Bitunix account] ${ep.path} → ${err.message}`);
-    }
+    const account = {
+      available:              raw.available              ?? null,
+      frozen:                 raw.frozen                 ?? null,
+      margin:                 raw.margin                 ?? null,
+      transfer:               raw.transfer               ?? null,
+      crossUnrealizedPNL:     raw.crossUnrealizedPNL     ?? null,
+      isolationUnrealizedPNL: raw.isolationUnrealizedPNL ?? null,
+      unrealizedPnl:          raw.crossUnrealizedPNL     ?? raw.isolationUnrealizedPNL ?? null,
+      bonus:                  raw.bonus                  ?? null,
+      positionMode:           raw.positionMode           ?? null,
+      marginCoin:             raw.marginCoin             ?? 'USDT',
+      equity:                 raw.available              ?? null,
+      balance:                raw.available              ?? null,
+    };
+
+    console.log('[Bitunix account OK] available:', account.available);
+    res.json({ ok: true, account });
+  } catch (err) {
+    console.error('Bitunix account error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
   }
-
-  res.status(500).json({
-    ok: false,
-    error: 'No se pudo obtener el saldo. Verifica:\n1. Que las API keys estén correctamente configuradas\n2. Que tengan permiso de LECTURA en futuros\n3. Que la IP de Railway esté en la whitelist de Bitunix'
-  });
 });
 
-/* ── GET posiciones abiertas ──────────────────────────────── */
+/* ── Posiciones abiertas ─────────────────────────────────── */
+// URL CORRECTA: GET /api/v1/futures/position/get_pending_positions
 app.get('/api/bitunix/positions', requireAuth, async (req, res) => {
   try {
-    const data = await bitunixRequest('GET', '/api/v1/futures/position/getPendingPositions', {});
-    // Bitunix puede devolver la lista directamente o en data.resultList
-    const positions = Array.isArray(data.data)
-      ? data.data
-      : (data.data?.resultList || data.data?.list || []);
+    const data      = await bitunixRequest('GET', '/api/v1/futures/position/get_pending_positions', {});
+    const positions = Array.isArray(data.data) ? data.data : [];
     res.json({ ok: true, positions });
   } catch (err) {
     console.error('Bitunix positions error:', err.message);
@@ -399,89 +314,79 @@ app.get('/api/bitunix/positions', requireAuth, async (req, res) => {
   }
 });
 
-/* ── POST colocar orden ───────────────────────────────────── */
+/* ── Colocar orden ───────────────────────────────────────── */
+// URL CORRECTA: POST /api/v1/futures/trade/place_order
+// change_leverage: POST /api/v1/futures/account/change_leverage (leverage es number, no string)
 app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
   try {
     const { symbol, qty, side, leverage, orderType, price, tpPrice, slPrice, clientOrderId } = req.body;
-
-    if (!symbol || !qty || !side) {
+    if (!symbol || !qty || !side)
       return res.status(400).json({ ok: false, error: 'symbol, qty y side son obligatorios' });
-    }
 
-    // 1. Configurar apalancamiento
-    // FIX: usar positionType (1=LONG si BUY, 2=SHORT si SELL)
-    const positionType = side === 'BUY' ? 1 : 2;
+    // 1. Cambiar apalancamiento
     try {
-      await bitunixRequest('POST', '/api/v1/futures/account/changeLeverage', {}, {
+      await bitunixRequest('POST', '/api/v1/futures/account/change_leverage', {}, {
         symbol,
-        leverage:     String(leverage || 1),
-        positionType,   // 1 = LONG, 2 = SHORT
-        marginCoin:  'USDT',
+        leverage:   Number(leverage || 1),
+        marginCoin: 'USDT',
       });
-    } catch (levErr) {
-      console.warn('changeLeverage (puede que ya esté configurado):', levErr.message);
+    } catch (e) {
+      console.warn('change_leverage (no fatal):', e.message);
     }
 
-    // 2. Colocar orden
+    // 2. Colocar orden con TP/SL incluidos directamente
     const orderBody = {
       symbol,
-      qty:        String(qty),
-      side,                            // BUY | SELL
-      tradeSide:  'OPEN',
-      orderType:  orderType || 'MARKET',
+      qty:       String(qty),
+      side,
+      tradeSide: 'OPEN',
+      orderType: orderType || 'MARKET',
       reduceOnly: false,
-      clientId:   clientOrderId || `cp_${Date.now()}`,
-      marginCoin: 'USDT',
+      clientId:  clientOrderId || `cp_${Date.now()}`,
     };
+
     if (orderType === 'LIMIT' && price) orderBody.price = String(price);
 
-    const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/placeOrder', {}, orderBody);
-    const orderId   = orderData.data?.orderId;
-
-    // 3. TP/SL
-    // FIX: usar positionSide (LONG/SHORT) para el endpoint de TP/SL
-    let tpslResult = null;
-    if ((tpPrice || slPrice) && orderId) {
-      try {
-        const positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
-        const tpslBody = {
-          symbol,
-          positionSide,              // FIX: campo correcto para este endpoint
-          marginCoin: 'USDT',
-        };
-        if (tpPrice) {
-          tpslBody.tpTriggerPrice = String(tpPrice);
-          tpslBody.tpOrderType    = 'MARKET';  // cierre a mercado al tocar TP
-        }
-        if (slPrice) {
-          tpslBody.slTriggerPrice = String(slPrice);
-          tpslBody.slOrderType    = 'MARKET';  // cierre a mercado al tocar SL
-        }
-        tpslResult = await bitunixRequest('POST', '/api/v1/futures/tpsl/placePositionTpSlOrder', {}, tpslBody);
-      } catch (tpslErr) {
-        console.warn('TP/SL placement error:', tpslErr.message);
-      }
+    if (tpPrice) {
+      orderBody.tpPrice     = String(tpPrice);
+      orderBody.tpStopType  = 'LAST_PRICE';
+      orderBody.tpOrderType = 'MARKET';
+    }
+    if (slPrice) {
+      orderBody.slPrice     = String(slPrice);
+      orderBody.slStopType  = 'LAST_PRICE';
+      orderBody.slOrderType = 'MARKET';
     }
 
-    res.json({ ok: true, orderId, tpsl: tpslResult?.data || null });
+    const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, orderBody);
+    const orderId   = orderData.data?.orderId;
+    console.log(`[Bitunix order OK] ${symbol} ${side} qty=${qty} orderId=${orderId}`);
+    res.json({ ok: true, orderId });
   } catch (err) {
     console.error('Bitunix place-order error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/* ── POST cerrar posición ─────────────────────────────────── */
+/* ── Cerrar posición (flash close) ──────────────────────── */
+// URL CORRECTA: POST /api/v1/futures/trade/flash_close_position
+// Requiere positionId (no symbol+side)
 app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
   try {
-    const { symbol, side } = req.body;
-    if (!symbol) return res.status(400).json({ ok: false, error: 'symbol es obligatorio' });
+    const { positionId, symbol } = req.body;
 
-    // FIX: flashClosePosition espera positionSide (LONG|SHORT), no BUY|SELL
-    // El campo side del trade en el frontend ya es LONG|SHORT
-    const body = { symbol, marginCoin: 'USDT' };
-    if (side) body.side = side; // LONG | SHORT
+    if (!positionId) {
+      if (!symbol) return res.status(400).json({ ok: false, error: 'Necesito positionId o symbol' });
+      // Buscar positionId en posiciones abiertas
+      const posData   = await bitunixRequest('GET', '/api/v1/futures/position/get_pending_positions', {});
+      const positions = Array.isArray(posData.data) ? posData.data : [];
+      const pos       = positions.find(p => p.symbol === symbol);
+      if (!pos) return res.status(404).json({ ok: false, error: `No hay posición abierta para ${symbol}` });
+      const data = await bitunixRequest('POST', '/api/v1/futures/trade/flash_close_position', {}, { positionId: pos.positionId });
+      return res.json({ ok: true, data: data.data });
+    }
 
-    const data = await bitunixRequest('POST', '/api/v1/futures/trade/flashClosePosition', {}, body);
+    const data = await bitunixRequest('POST', '/api/v1/futures/trade/flash_close_position', {}, { positionId });
     res.json({ ok: true, data: data.data });
   } catch (err) {
     console.error('Bitunix close-position error:', err.message);
@@ -489,59 +394,48 @@ app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
   }
 });
 
-/* ── GET historial órdenes ────────────────────────────────── */
+/* ── Historial de órdenes ────────────────────────────────── */
+// URL CORRECTA: GET /api/v1/futures/trade/get_history_orders
 app.get('/api/bitunix/history', requireAuth, async (req, res) => {
   try {
-    const data = await bitunixRequest('GET', '/api/v1/futures/trade/getHistoryOrders', {
-      pageSize: '20',
-      page:     '1',
-    });
-    const orders = data.data?.resultList || data.data?.list || data.data || [];
-    res.json({ ok: true, orders: Array.isArray(orders) ? orders : [] });
+    const data   = await bitunixRequest('GET', '/api/v1/futures/trade/get_history_orders', { pageSize: '20', page: '1' });
+    const orders = Array.isArray(data.data?.resultList) ? data.data.resultList
+                 : Array.isArray(data.data?.list)       ? data.data.list
+                 : Array.isArray(data.data)             ? data.data
+                 : [];
+    res.json({ ok: true, orders });
   } catch (err) {
     console.error('Bitunix history error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-/* ── Estado de configuración Bitunix ──────────────────────── */
+/* ── Estado de configuración ────────────────────────────── */
 app.get('/api/bitunix/status', requireAuth, (req, res) => {
-  const hasTradeKey = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
-  const hasReadKey  = !!(process.env.BITUNIX_READ_KEY && process.env.BITUNIX_READ_SECRET);
-  res.json({
-    configured: hasTradeKey,
-    hasTradeKey,
-    hasReadKey,
-    canRead: hasTradeKey || hasReadKey,
-  });
+  const configured = !!(process.env.BITUNIX_API_KEY && process.env.BITUNIX_SECRET);
+  res.json({ configured, hasTradeKey: configured, canRead: configured });
 });
 
 /* ══════════════════════════════════════════════════════════
-   API TRADES (interno)
+   API TRADES (TP/SL server-side)
    ══════════════════════════════════════════════════════════ */
 function isValidTrade(t) {
-  return (
-    t && typeof t.id === 'string' &&
-    typeof t.par      === 'string' &&
+  return t && typeof t.id === 'string' && typeof t.par === 'string' &&
     (t.tipo === 'LONG' || t.tipo === 'SHORT') &&
     typeof t.stopLoss === 'number' && isFinite(t.stopLoss) &&
     typeof t.tp1      === 'number' && isFinite(t.tp1) &&
-    typeof t.riskUSD  === 'number' && isFinite(t.riskUSD)
-  );
+    typeof t.riskUSD  === 'number' && isFinite(t.riskUSD);
 }
 
 app.post('/api/trades/sync', requireAuth, (req, res) => {
   const { activeTrades } = req.body;
   if (!Array.isArray(activeTrades)) return res.status(400).json({ error: 'activeTrades inválido' });
-  const validTrades = activeTrades.filter(isValidTrade);
-  const rejected    = activeTrades.length - validTrades.length;
-  const existingIds = new Set(serverState.activeTrades.map(t => t.id));
-  for (const trade of validTrades) {
-    if (!existingIds.has(trade.id)) serverState.activeTrades.push(trade);
-  }
-  const frontendIds = new Set(validTrades.map(t => t.id));
-  serverState.activeTrades = serverState.activeTrades.filter(t => frontendIds.has(t.id));
-  res.json({ ok: true, watching: serverState.activeTrades.length, rejected });
+  const valid    = activeTrades.filter(isValidTrade);
+  const existing = new Set(serverState.activeTrades.map(t => t.id));
+  for (const t of valid) if (!existing.has(t.id)) serverState.activeTrades.push(t);
+  const ids = new Set(valid.map(t => t.id));
+  serverState.activeTrades = serverState.activeTrades.filter(t => ids.has(t.id));
+  res.json({ ok: true, watching: serverState.activeTrades.length });
 });
 
 app.get('/api/trades/closed-by-server', requireAuth, (req, res) => {
@@ -552,12 +446,10 @@ app.post('/api/trades/confirm-closed', requireAuth, (req, res) => {
   const { ids } = req.body;
   if (!Array.isArray(ids)) return res.status(400).json({ error: 'ids inválido' });
   serverState.closedTrades = serverState.closedTrades.filter(t => !ids.includes(t.id));
-  res.json({ ok: true, remaining: serverState.closedTrades.length });
+  res.json({ ok: true });
 });
 
-app.get('/api/prices', requireAuth, (req, res) => {
-  res.json(serverState.prices);
-});
+app.get('/api/prices', requireAuth, (req, res) => res.json(serverState.prices));
 
 /* ══════════════════════════════════════════════════════════
    PROXY CLAUDE API
@@ -566,40 +458,29 @@ app.post('/api/claude', requireAuth, rateLimit, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY no configurada.' });
   const { model, max_tokens, system, messages } = req.body;
-  if (!messages || !Array.isArray(messages)) return res.status(400).json({ error: 'messages inválido.' });
+  if (!messages || !Array.isArray(messages))
+    return res.status(400).json({ error: 'messages inválido.' });
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model:      model      || 'claude-sonnet-4-20250514',
-        max_tokens: max_tokens || 4000,
-        system,
-        messages,
-      }),
+      headers: { 'Content-Type':'application/json', 'x-api-key':apiKey, 'anthropic-version':'2023-06-01' },
+      body: JSON.stringify({ model: model || 'claude-sonnet-4-20250514', max_tokens: max_tokens || 4000, system, messages }),
     });
     const data = await response.json();
     if (!response.ok) return res.status(response.status).json({ error: data?.error?.message || 'Error Anthropic.' });
     res.json(data);
   } catch (err) {
-    console.error('Error proxy Claude:', err.message);
-    res.status(500).json({ error: 'Error interno del servidor.' });
+    res.status(500).json({ error: 'Error interno: ' + err.message });
   }
 });
 
-/* ══════════════════════════════════════════════════════════
-   FALLBACK
-   ══════════════════════════════════════════════════════════ */
+/* ── Fallback ────────────────────────────────────────────── */
 app.get('*', (req, res) => {
   if (!isAuthenticated(req)) return res.redirect('/login');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(`CryptoPlan IA corriendo en puerto ${PORT}`);
+  console.log(`CryptoPlan IA en puerto ${PORT}`);
   connectBinanceWS();
 });
