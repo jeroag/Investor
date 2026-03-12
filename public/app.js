@@ -2991,7 +2991,7 @@ function renderCapital() {
   const riskColor = p.risk_pct <= 1 ? 'var(--green)' : p.risk_pct <= 3 ? 'var(--yellow)' : 'var(--red)';
   const levColor  = lev === 1 ? 'var(--green)' : lev <= 5 ? 'var(--yellow)' : 'var(--red)';
   const barW    = Math.min(p.risk_pct / 10 * 100, 100);
-  const levOptions = [1, 2, 3, 5, 10, 20];
+  const levOptions = [1, 2, 3, 5, 10, 20, 25, 50, 75];
 
   root.innerHTML = `
     <div class="stl">◈ Capital y Gestión de Riesgo</div>
@@ -3018,6 +3018,8 @@ function renderCapital() {
       <div style="font-size:10px;color:var(--muted);margin-bottom:14px;padding:8px;background:rgba(0,0,0,.2);border-radius:6px;line-height:1.6">
         ${lev === 1
           ? '✓ Sin apalancamiento. Riesgo máximo = capital en riesgo por operación.'
+          : lev >= 50
+          ? `<span style="color:var(--red)">⚠️ ${lev}x — LEVERAGE EXTREMO. Un movimiento del ${(100/lev).toFixed(1)}% en tu contra liquida el margen. Solo para setups con SL muy ajustado y alta convicción.</span>`
           : `⚡ ${lev}x — Las ganancias <b style="color:var(--green)">y pérdidas</b> se multiplican por ${lev}. Usa con precaución.`}
       </div>
 
