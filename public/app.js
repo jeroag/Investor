@@ -1965,23 +1965,8 @@ async function acceptAlertById(id) {
 }
 
 /* ── Ticker ──────────────────────────────────────────────────────────────── */
-function renderTicker() {
-  const ticker = qs('#ticker');
-  if (!ticker) return;
-  const coins = ['BTC','ETH','SOL','XRP'];
-  ticker.innerHTML = coins.map((c, i) => {
-    const p    = state.prices[c];
-    const prev = state.prevPrices[c];
-    const up   = p && prev && p > prev;
-    const dn   = p && prev && p < prev;
-    return `
-      ${i > 0 ? '<span class="ticker-sep">·</span>' : ''}
-      <span class="ticker-coin">${c}</span>
-      <span class="ticker-price ${up?'up':dn?'dn':''}">${p ? fmtP(p, c) : '...'}</span>
-      ${up ? '<span class="ticker-arrow" style="color:var(--green)">▲</span>' : ''}
-      ${dn ? '<span class="ticker-arrow" style="color:var(--red)">▼</span>' : ''}`;
-  }).join('');
-}
+function renderTicker() { /* ticker eliminado del header */ }
+
 
 /* ── Calcula el desglose de dinero de una propuesta antes de aceptar ─────── */
 function calcProposalMoney(proposal) {
@@ -2825,13 +2810,17 @@ function renderStrategy() {
   const root = qs('#sec-strat');
   if (!root) return;
   const { strategy } = state;
+  const canAdapt = state.closedTrades.length >= 3;
 
   let html = `
-    <div class="stl">◈ Estrategia Adaptada por IA</div>
-    <div class="al al-b">🧠 La IA analiza tu historial real. Necesitas al menos 3 operaciones cerradas.</div>`;
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div class="stl" style="margin-bottom:0">◈ Estrategia Adaptada por IA</div>
+      ${canAdapt ? `<button class="btn btny" style="font-size:11px;padding:7px 14px" onclick="onAdaptStrategy()">🧠 Adaptar estrategia</button>` : ''}
+    </div>
+    <div class="al al-b" style="margin-bottom:13px">🧠 La IA analiza tu historial real. Necesitas al menos 3 operaciones cerradas.</div>`;
 
   if (!strategy) {
-    html += `<div class="empty"><div class="ei">🧠</div><div class="et">Cierra al menos 3 operaciones<br>y presiona <b style="color:var(--yellow)">ADAPTAR</b> en el header.</div></div>`;
+    html += `<div class="empty"><div class="ei">🧠</div><div class="et">Cierra al menos 3 operaciones<br>y presiona <b style="color:var(--yellow)">Adaptar estrategia</b> arriba.</div></div>`;
   } else {
     const ea = strategy.estrategiaAdaptada || {};
     html += `
@@ -3090,16 +3079,7 @@ function saveCapital() {
 }
 
 /* ── Render: Storage panel ───────────────────────────────────────────────── */
-function renderStoragePanel() {
-  const p = qs('#storage-info');
-  if (p) {
-    p.innerHTML = `
-      <div class="storage-panel-title">💾 DATOS GUARDADOS</div>
-      <p>${state.activeTrades.length} activas · ${state.closedTrades.length} cerradas</p>
-      <p>${state.alerts.length} alertas</p>
-      <button class="btn btnr" style="font-size:9px;padding:4px 8px;width:100%;letter-spacing:.5px;margin-top:8px" onclick="resetAll()">🗑 Resetear todo</button>`;
-  }
-}
+function renderStoragePanel() { /* eliminado — panel de datos internos quitado */ }
 
 function resetAll() {
   if (!confirm('¿Borrar todos los datos guardados? Esta acción no se puede deshacer.')) return;
@@ -3117,12 +3097,17 @@ function resetAll() {
   state.aiHistory     = [];
   stopScanner();
   renderAll();
-  renderStoragePanel();
   showToast('Todos los datos han sido borrados.');
 }
 
+
+
 /* ── Navigation ──────────────────────────────────────────────────────────── */
 function setTab(id) {
+  // Redirigir tabs antiguos a los nuevos fusionados
+  if (id === 'perf' || id === 'backtest') id = 'historial';
+  if (id === 'profile' || id === 'capital') id = 'config';
+
   state.currentTab = id;
   qsa('.nb').forEach(b => b.classList.toggle('on', b.dataset.tab === id));
   qsa('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + id));
@@ -3130,12 +3115,10 @@ function setTab(id) {
   const renders = {
     ops:      renderOps,
     alerts:   renderAlerts,
-    perf:     renderPerf,
+    historial:renderHistorial,
     mkt:      renderMkt,
     strat:    renderStrategy,
-    profile:  renderProfile,
-    capital:  renderCapital,
-    backtest: renderBacktest,
+    config:   renderConfig,
     goals:    renderGoals,
   };
   if (renders[id]) renders[id]();
@@ -3421,41 +3404,59 @@ async function onGenerate() {
 
 async function onAdaptStrategy() {
   if (state.closedTrades.length < 3) { showToast('Necesitas al menos 3 ops cerradas', true); return; }
-  const btn = qs('#btn-adapt');
-  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> ANALIZANDO...'; }
+  // Buscar el botón dentro del panel de estrategia
+  const btn = qs('#sec-strat button');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analizando...'; }
   try {
     state.strategy = await aiAdaptStrategy();
     saveKey('strategy', state.strategy);
-    setTab('strat');
+    renderStrategy(); // re-render en el mismo panel
     showToast('🧠 Estrategia adaptada con tu historial real.');
   } catch (e) {
     showToast('Error IA: ' + e.message, true);
   }
-  if (btn) {
-    btn.disabled = false;
-    btn.innerHTML = '🧠 ADAPTAR';
-    btn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
-  }
+  if (btn) { btn.disabled = false; btn.innerHTML = '🧠 Adaptar estrategia'; }
 }
 
 /* ── Full render ─────────────────────────────────────────────────────────── */
+/* ── Wrapper: Historial (Rendimiento + Backtesting fusionados) ───────────── */
+function renderHistorial() {
+  const root = qs('#sec-historial');
+  if (!root) return;
+  // Inyectar sub-divs con IDs originales — renderPerf y renderBacktest los encontrarán
+  root.innerHTML = `
+    <div id="sec-perf"     style="display:block"></div>
+    <div id="sec-backtest" style="display:block;margin-top:8px"></div>`;
+  renderPerf();
+  renderBacktest();
+}
+
+/* ── Wrapper: Configuración (Perfil + Capital fusionados) ───────────────── */
+function renderConfig() {
+  const root = qs('#sec-config');
+  if (!root) return;
+  // Inyectar sub-divs con IDs originales — renderProfile y renderCapital los encontrarán
+  root.innerHTML = `
+    <div id="sec-profile" style="display:block"></div>
+    <div id="sec-capital" style="display:block;margin-top:8px"></div>`;
+  renderProfile();
+  renderCapital();
+}
+
+
 function renderAll() {
   renderStoragePanel();
   renderBalanceWidget();
   updateAlertBadge();
-  const adaptBtn = qs('#btn-adapt');
-  if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
 
   const id = state.currentTab;
-  if (id === 'ops')      renderOps();
-  if (id === 'alerts')   renderAlerts();
-  if (id === 'perf')     renderPerf();
-  if (id === 'mkt')      renderMkt();
-  if (id === 'strat')    renderStrategy();
-  if (id === 'profile')  renderProfile();
-  if (id === 'capital')  renderCapital();
-  if (id === 'backtest') renderBacktest();
-  if (id === 'goals')    renderGoals();
+  if (id === 'ops')       renderOps();
+  if (id === 'alerts')    renderAlerts();
+  if (id === 'historial') renderHistorial();
+  if (id === 'mkt')       renderMkt();
+  if (id === 'strat')     renderStrategy();
+  if (id === 'config')    renderConfig();
+  if (id === 'goals')     renderGoals();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -3916,199 +3917,8 @@ function submitGoal() {
   if (qs('#goal-date'))  qs('#goal-date').value   = '';
 }
 
-/* ══════════════════════════════════════════════════════════
-   ONBOARDING WIZARD
-   ══════════════════════════════════════════════════════════ */
-let onboardStep = 0;
-const ONBOARD_STEPS = [
-  {
-    title: 'Bienvenido a CryptoPlan AI 🎉',
-    desc:  'Tu asistente de trading con análisis técnico real. En 3 pasos lo dejamos listo para ti.',
-    fields: null,
-    cta:   'Empezar →',
-  },
-  {
-    title: 'Tu perfil de riesgo',
-    desc:  'Esto ayuda a la IA a calibrar las propuestas según tu estilo.',
-    fields: 'profile',
-    cta:   'Siguiente →',
-  },
-  {
-    title: 'Tu capital de trading',
-    desc:  'Introduce cuánto capital tienes disponible para operar. Puedes cambiarlo en cualquier momento.',
-    fields: 'capital',
-    cta:   'Siguiente →',
-  },
-  {
-    title: '¡Todo listo! 🚀',
-    desc:  'La IA ya tiene tu perfil. Activa el escáner o pulsa "Analizar" para tu primera propuesta.',
-    fields: null,
-    cta:   'Empezar a operar',
-  },
-];
 
-function showOnboarding() {
-  if (state.onboarded) return;
-  onboardStep = 0;
-  renderOnboardStep();
-}
 
-function renderOnboardStep() {
-  const existing = qs('#onboard-overlay');
-  if (existing) existing.remove();
-
-  const step = ONBOARD_STEPS[onboardStep];
-  const total = ONBOARD_STEPS.length;
-  const pct   = ((onboardStep + 1) / total) * 100;
-
-  const overlay = el('div', '');
-  overlay.id = 'onboard-overlay';
-  overlay.className = 'onboard-overlay';
-  overlay.innerHTML = `
-    <div class="onboard-card">
-      <div class="onboard-progress">
-        <div class="onboard-bar" style="width:${pct}%"></div>
-      </div>
-      <div style="padding:28px 28px 20px">
-        <div style="font-size:10px;color:var(--muted);letter-spacing:1px;margin-bottom:8px">PASO ${onboardStep+1} DE ${total}</div>
-        <div style="font-family:var(--serif);font-size:20px;font-weight:600;margin-bottom:8px">${step.title}</div>
-        <div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:22px">${step.desc}</div>
-
-        ${step.fields === 'profile' ? `
-          <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:22px">
-            <div>
-              <div class="lbl">Estilo de trading</div>
-              <select class="inp" id="ob-style" style="font-size:12px">
-                <option value="scalping">Scalping (minutos)</option>
-                <option value="daytrading">Day Trading (horas)</option>
-                <option value="swing" selected>Swing (días)</option>
-                <option value="position">Position (semanas)</option>
-              </select>
-            </div>
-            <div>
-              <div class="lbl">Tolerancia al riesgo</div>
-              <select class="inp" id="ob-risk" style="font-size:12px">
-                <option value="conservador">Conservador — prefiero capital seguro</option>
-                <option value="moderado" selected>Moderado — equilibrio riesgo/beneficio</option>
-                <option value="agresivo">Agresivo — acepto mayor riesgo</option>
-              </select>
-            </div>
-          </div>` : ''}
-
-        ${step.fields === 'capital' ? `
-          <div style="display:flex;flex-direction:column;gap:12px;margin-bottom:22px">
-            <div>
-              <div class="lbl">Capital disponible ($)</div>
-              <input class="inp" type="number" id="ob-capital" value="${state.profile.capital}" step="any" style="font-family:var(--serif);font-size:20px;font-weight:600;text-align:center"/>
-            </div>
-            <div>
-              <div class="lbl">Riesgo por operación (%)</div>
-              <div style="display:flex;gap:8px">
-                ${[1,2,3,5].map(v => `<button class="btn${state.profile.risk_pct===v?' btng':''}" id="ob-rp-${v}" onclick="setObRisk(${v})" style="flex:1;justify-content:center;font-size:12px">${v}%</button>`).join('')}
-              </div>
-              <div style="font-size:10px;color:var(--muted);margin-top:5px">Riesgo recomendado para principiantes: 1-2%</div>
-            </div>
-          </div>` : ''}
-
-        <div style="display:flex;gap:10px;align-items:center">
-          ${onboardStep > 0 ? `<button class="btn" style="font-size:12px;padding:9px 16px" onclick="onboardBack()">← Atrás</button>` : ''}
-          <button class="btn-main" style="flex:1;justify-content:center;font-size:13px;padding:12px" onclick="onboardNext()">${step.cta}</button>
-        </div>
-      </div>
-    </div>`;
-  document.body.appendChild(overlay);
-}
-
-function setObRisk(v) {
-  state.profile.risk_pct = v;
-  [1,2,3,5].forEach(n => {
-    const b = qs(`#ob-rp-${n}`);
-    if (b) b.className = 'btn' + (n===v?' btng':'');
-  });
-}
-
-function onboardNext() {
-  const step = ONBOARD_STEPS[onboardStep];
-  if (step.fields === 'profile') {
-    state.profile.style            = qs('#ob-style')?.value || 'swing';
-    state.profile.risk_tolerance   = qs('#ob-risk')?.value  || 'moderado';
-    saveKey('profile', state.profile);
-  }
-  if (step.fields === 'capital') {
-    state.profile.capital  = parseFloat(qs('#ob-capital')?.value) || 1000;
-    saveKey('profile', state.profile);
-  }
-  onboardStep++;
-  if (onboardStep >= ONBOARD_STEPS.length) {
-    state.onboarded = true;
-    saveKey('onboarded', true);
-    qs('#onboard-overlay')?.remove();
-    showToast('✓ Perfil configurado. ¡Listo para operar!');
-    renderAll();
-    return;
-  }
-  renderOnboardStep();
-}
-
-function onboardBack() {
-  if (onboardStep > 0) { onboardStep--; renderOnboardStep(); }
-}
-
-async function showBitunixDebug() {
-  const existing = qs('#bitunix-debug-modal');
-  if (existing) { existing.remove(); return; }
-
-  const modal = el('div', '');
-  modal.id = 'bitunix-debug-modal';
-  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(4px);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease';
-  modal.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:540px;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg)">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:var(--surface)">
-        <div style="font-family:var(--serif);font-size:15px;font-weight:600">🔍 Bitunix Debug</div>
-        <button onclick="qs('#bitunix-debug-modal').remove()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--muted);line-height:1">×</button>
-      </div>
-      <div style="padding:20px;text-align:center;color:var(--muted)"><span class="spinner"></span> Probando endpoints...</div>
-    </div>`;
-  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
-  document.body.appendChild(modal);
-
-  let debugData = {};
-  try {
-    const res = await authFetch('/api/bitunix/debug');
-    debugData = await res.json();
-  } catch (e) {
-    debugData = { error: e.message };
-  }
-
-  const content = qs('#bitunix-debug-modal div > div:last-child');
-  if (!content) return;
-
-  const results = debugData.results || {};
-  const rows = Object.entries(results).map(([label, r]) => {
-    const ok = r.code === 0 && r.data != null;
-    const color = ok ? 'var(--green)' : 'var(--red)';
-    const icon  = ok ? '✅' : '❌';
-    const detail = ok
-      ? `<pre style="font-size:9px;background:var(--s2);border-radius:6px;padding:8px;overflow-x:auto;margin-top:6px;white-space:pre-wrap">${JSON.stringify(r.data, null, 2).slice(0, 500)}</pre>`
-      : `<div style="font-size:10px;color:var(--red);margin-top:4px">${r.error || `code ${r.code}: ${r.msg || ''}`}</div>`;
-    return `
-      <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
-        <div style="display:flex;align-items:center;gap:8px">
-          <span>${icon}</span>
-          <span style="font-size:12px;font-weight:600;color:${color}">${label}</span>
-        </div>
-        ${detail}
-      </div>`;
-  }).join('');
-
-  content.innerHTML = `
-    <div style="padding:16px 20px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:14px">
-        Probando endpoints de Bitunix con distintos parámetros — el ✅ verde indica cuál funciona:
-      </div>
-      ${rows || `<div style="color:var(--red)">${debugData.error || 'Error desconocido'}</div>`}
-    </div>`;
-}
 
 function showBitunixSetup() {
   const existing = qs('#bitunix-setup-modal');
@@ -4165,19 +3975,14 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   qs('#btn-gen')            ?.addEventListener('click', onGenerate);
-  qs('#btn-adapt')          ?.addEventListener('click', onAdaptStrategy);
   qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
 
   initMarketMeta(state.watchedCoins);
   connectWS();
 
   setTab('ops');
-  renderStoragePanel();
   renderBalanceWidget();
   updateAlertBadge();
-
-  const adaptBtn = qs('#btn-adapt');
-  if (adaptBtn) adaptBtn.style.display = state.closedTrades.length >= 3 ? '' : 'none';
 
   // Datos de mercado + calendario — diferidos para que el UI cargue primero
   setTimeout(() => {
@@ -4230,7 +4035,7 @@ Object.assign(window, {
   submitGoal, deleteGoal,
   onboardNext, onboardBack, setObRisk,
   refreshCalendar,
-  showBitunixSetup, showBitunixDebug, refreshBitunixData,
+  showBitunixSetup, refreshBitunixData,
   doLogout,
   resetAll, renderAll,
   exportTradesCSV,

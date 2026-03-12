@@ -25,7 +25,6 @@
         </svg>
       </button>
       <div class="logo">Crypto<b>Plan</b> <small>AI</small></div>
-      <div id="ticker"></div>
     </div>
     <div class="hdr-right">
       <div class="ws-status">
@@ -33,11 +32,8 @@
         <span id="ws-label" style="color:var(--yellow)">CONECTANDO...</span>
       </div>
       <button id="scanner-toggle-hdr" class="scanner-btn off">📡 Escáner</button>
-      <button id="btn-adapt" class="btn btny" style="font-size:10px;padding:7px 12px;display:none">🧠 Adaptar</button>
       <button id="btn-gen" class="btn-main" disabled><span>⚡</span> Analizar</button>
-      <!-- Dark mode toggle -->
       <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro/claro">🌙</button>
-      <!-- Logout -->
       <button onclick="doLogout()" title="Cerrar sesión" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px" onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">🔒 Salir</button>
     </div>
   </header>
@@ -51,7 +47,6 @@
   "></div>
 
   <div class="layout">
-    <!-- Backdrop -->
     <div class="side-backdrop" id="side-backdrop"></div>
 
     <!-- Sidebar -->
@@ -59,33 +54,31 @@
       <div class="ns">Trading</div>
       <button class="nb on" data-tab="ops">📊 Operaciones</button>
       <button class="nb" data-tab="alerts">🔔 Alertas IA <span class="nb-badge" id="alert-badge" style="display:none">0</span></button>
-      <button class="nb" data-tab="perf">📈 Rendimiento</button>
       <button class="nb" data-tab="mkt">🌐 Mercado</button>
-      <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
+
       <div class="ns">Análisis</div>
-      <button class="nb" data-tab="backtest">🔬 Backtesting</button>
+      <button class="nb" data-tab="historial">📈 Historial</button>
+      <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
       <button class="nb" data-tab="goals">🎯 Objetivos</button>
-      <div class="ns">Configuración</div>
-      <button class="nb" data-tab="profile">👤 Mi Perfil</button>
-      <button class="nb" data-tab="capital">💰 Capital</button>
+
+      <div class="ns">Ajustes</div>
+      <button class="nb" data-tab="config">⚙️ Configuración</button>
+
       <div class="scanner-mini" id="scanner-mini" style="display:none">
         <div class="scanner-mini-title"><span class="scanner-mini-dot"></span> Escáner activo</div>
         <div style="color:var(--muted)" id="scanner-mini-time"></div>
       </div>
-      <div id="storage-info" class="storage-panel"></div>
     </nav>
 
     <!-- Main content -->
     <main class="cnt" style="height:calc(100vh - 54px - 49px)">
       <div id="sec-ops"       class="sec on"></div>
       <div id="sec-alerts"    class="sec"></div>
-      <div id="sec-perf"      class="sec"></div>
       <div id="sec-mkt"       class="sec"></div>
+      <div id="sec-historial" class="sec"></div>
       <div id="sec-strat"     class="sec"></div>
-      <div id="sec-backtest"  class="sec"></div>
       <div id="sec-goals"     class="sec"></div>
-      <div id="sec-profile"   class="sec"></div>
-      <div id="sec-capital"   class="sec"></div>
+      <div id="sec-config"    class="sec"></div>
     </main>
   </div>
 
