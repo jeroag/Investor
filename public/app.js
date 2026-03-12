@@ -1686,6 +1686,30 @@ function renderTicker() {
   }).join('');
 }
 
+/* ── Calcula el desglose de dinero de una propuesta antes de aceptar ─────── */
+function calcProposalMoney(proposal) {
+  const { profile, prices } = state;
+  const capital   = profile.capital  || 1000;
+  const riskPct   = profile.risk_pct || 2;
+  const leverage  = profile.leverage || 1;
+  const coin      = coinOf(proposal.par);
+  const entry     = prices[coin] || proposal.entrada;
+  const riskUSD   = capital * riskPct / 100;
+  const size      = calcSize(riskUSD, entry, proposal.stopLoss, leverage);
+  const notional  = size * entry;              // valor total de la posición
+  const margin    = notional / leverage;       // dinero real bloqueado (margen)
+  const maxWin    = riskUSD * parseFloat(proposal.rr || 1);
+  const capitalPct = (margin / capital * 100); // % del capital usado
+
+  // Avisos
+  const warnings = [];
+  if (margin > capital * 0.5) warnings.push('⚠️ Posición >50% del capital');
+  if (margin > capital)       warnings.push('🚨 Margen supera el capital disponible');
+  if (leverage > 10)          warnings.push('⚠️ Apalancamiento muy alto');
+
+  return { riskUSD, size, notional, margin, maxWin, capitalPct, leverage, riskPct, warnings };
+}
+
 /* ── Render: Ops ─────────────────────────────────────────────────────────── */
 function renderOps() {
   const root = qs('#sec-ops');
@@ -1708,9 +1732,17 @@ function renderOps() {
   if (state.pending.length > 0) {
     html += `<div class="stl">◈ Propuestas IA — Tu aprobación requerida</div>`;
     state.pending.forEach((p, i) => {
-      const coin = coinOf(p.par);
-      const live = state.prices[coin];
-      const lc   = p.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+      const coin  = coinOf(p.par);
+      const live  = state.prices[coin];
+      const lc    = p.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+      const money = calcProposalMoney(p);
+
+      const warningsHtml = money.warnings.length
+        ? `<div style="margin-top:6px">${money.warnings.map(w =>
+            `<div style="font-size:10px;color:var(--red);padding:2px 0">${w}</div>`
+          ).join('')}</div>`
+        : '';
+
       html += `
         <div class="proposal">
           <div class="proposal-hdr">
@@ -1729,6 +1761,31 @@ function renderOps() {
               ${p.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(p.tp2, coin)}</span>` : ''}
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${p.rr}</span>
             </div>
+
+            <!-- BLOQUE DE DINERO -->
+            <div style="margin-top:10px;padding:10px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border)">
+              <div style="font-size:9px;color:var(--muted);letter-spacing:.6px;margin-bottom:8px">💰 RESUMEN FINANCIERO — capital $${state.profile.capital.toLocaleString()}</div>
+              <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px 14px">
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Riesgo máximo</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--red)">-$${money.riskUSD.toFixed(2)} <span style="font-size:9px;font-weight:400;color:var(--muted)">(${money.riskPct}%)</span></div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Ganancia potencial</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--green)">+$${money.maxWin.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Margen utilizado</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--text)">$${money.margin.toFixed(2)} <span style="font-size:9px;font-weight:400;color:var(--muted)">(${money.capitalPct.toFixed(1)}% capital)</span></div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Tamaño posición${money.leverage > 1 ? ` (${money.leverage}x)` : ''}</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--accent)">$${money.notional.toFixed(2)}</div>
+                </div>
+              </div>
+              ${warningsHtml}
+            </div>
+
             ${p.confluence_score ? `
             <div style="margin-top:8px;padding:7px 10px;background:var(--s2);border-radius:7px;border-left:3px solid ${p.confluence_score>=65?'var(--green)':p.confluence_score<=35?'var(--red)':'var(--yellow)'}">
               <div style="display:flex;justify-content:space-between;margin-bottom:3px">
@@ -1982,6 +2039,10 @@ function renderAlerts() {
       const lc      = a.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
 
       if (isPending) {
+        const money = calcProposalMoney(a);
+        const warningsHtml = money.warnings.length
+          ? money.warnings.map(w => `<div style="font-size:10px;color:var(--red);padding:2px 0">${w}</div>`).join('')
+          : '';
         html += `
           <div class="alert-card">
             <div class="alert-card-body">
@@ -2001,6 +2062,31 @@ function renderAlerts() {
                 ${a.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(a.tp2, coin)}</span>` : ''}
                 <span style="font-size:10px;color:var(--yellow)">R:R 1:${a.rr}</span>
               </div>
+
+              <!-- BLOQUE DE DINERO -->
+              <div style="margin-bottom:8px;padding:8px 12px;background:var(--s2);border-radius:8px;border:1px solid var(--border)">
+                <div style="font-size:9px;color:var(--muted);letter-spacing:.6px;margin-bottom:6px">💰 RESUMEN FINANCIERO — capital $${state.profile.capital.toLocaleString()}</div>
+                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:4px 14px">
+                  <div>
+                    <div style="font-size:9px;color:var(--muted)">Riesgo máximo</div>
+                    <div style="font-size:12px;font-weight:700;color:var(--red)">-$${money.riskUSD.toFixed(2)} <span style="font-size:9px;font-weight:400;color:var(--muted)">(${money.riskPct}%)</span></div>
+                  </div>
+                  <div>
+                    <div style="font-size:9px;color:var(--muted)">Ganancia potencial</div>
+                    <div style="font-size:12px;font-weight:700;color:var(--green)">+$${money.maxWin.toFixed(2)}</div>
+                  </div>
+                  <div>
+                    <div style="font-size:9px;color:var(--muted)">Margen utilizado</div>
+                    <div style="font-size:12px;font-weight:700;color:var(--text)">$${money.margin.toFixed(2)} <span style="font-size:9px;font-weight:400;color:var(--muted)">(${money.capitalPct.toFixed(1)}%)</span></div>
+                  </div>
+                  <div>
+                    <div style="font-size:9px;color:var(--muted)">Posición total${money.leverage > 1 ? ` (${money.leverage}x)` : ''}</div>
+                    <div style="font-size:12px;font-weight:700;color:var(--accent)">$${money.notional.toFixed(2)}</div>
+                  </div>
+                </div>
+                ${warningsHtml}
+              </div>
+
               <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-bottom:6px">${a.razon}</div>
               ${a.contexto_mercado ? `<div style="font-size:10px;color:var(--muted);background:rgba(0,0,0,.2);padding:6px 8px;border-radius:5px">${a.contexto_mercado}</div>` : ''}
             </div>
