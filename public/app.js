@@ -1330,9 +1330,7 @@ function renderBalanceWidget() {
   const badgeBg    = bitunix.configured ? (hasRealData ? 'rgba(130,173,143,.15)' : 'rgba(200,170,80,.15)') : 'var(--s2)';
   const badgeBorder= bitunix.configured ? (hasRealData ? 'rgba(130,173,143,.3)' : 'rgba(200,170,80,.3)') : 'var(--border)';
   const badgeLabel = bitunix.configured ? (hasRealData ? '🔗 Bitunix Live' : '⚠️ Sin datos') : '🔌 Conectar Bitunix';
-  const badgeClick = bitunix.configured && !hasRealData
-    ? `onclick="showBitunixDebug()"`
-    : (!bitunix.configured ? `onclick="showBitunixSetup()"` : '');
+  const badgeClick = !bitunix.configured ? `onclick="showBitunixSetup()"` : '';
 
   const bitunixBadge = `<span style="font-size:9px;padding:2px 7px;border-radius:4px;background:${badgeBg};border:1px solid ${badgeBorder};color:${badgeColor};margin-left:8px;cursor:${badgeClick ? 'pointer' : 'default'}" ${badgeClick}>${badgeLabel}</span>`;
 
@@ -1382,8 +1380,7 @@ function renderBalanceWidget() {
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        ${bitunix.configured ? `<button onclick="refreshBitunixData()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">↻ Sync</button>
-        <button onclick="showBitunixDebug()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">🔍 Debug</button>` : ''}
+        ${bitunix.configured ? `<button onclick="refreshBitunixData()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">↻ Sync</button>` : ''}
         <span style="font-size:9px;color:var(--muted)">Capital: $${capital.toLocaleString('en')}</span>
         <button onclick="toggleBalanceEdit()" style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:10px;color:var(--muted);cursor:pointer">✏ Editar</button>
       </div>
@@ -2910,14 +2907,7 @@ function renderProfile() {
       <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.6">
         Recibe alertas instantáneas en Telegram cuando la IA detecta una oportunidad, cuando un trade llega al TP/SL, o cuando se activa el breakeven — aunque tengas el navegador cerrado.
       </div>
-      <div style="font-size:10px;color:var(--muted);padding:8px 12px;background:var(--s2);border-radius:7px;margin-bottom:12px;line-height:1.6">
-        <b style="color:var(--accent)">Cómo configurar:</b><br>
-        1. Habla con <b>@BotFather</b> en Telegram → /newbot → copia el token<br>
-        2. Habla con <b>@userinfobot</b> → copia tu Chat ID<br>
-        3. En Railway añade: <code>TELEGRAM_BOT_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code>
-      </div>
-      <div id="telegram-status-msg" style="font-size:11px;margin-bottom:10px;color:var(--muted)">Comprobando...</div>
-      <button class="btn btng" style="font-size:11px;padding:7px 16px" onclick="testTelegram()">📨 Enviar mensaje de prueba</button>
+      <div id="telegram-status-msg" style="font-size:11px;color:var(--muted)">Comprobando...</div>
     </div>`;
 
   // Comprobar estado de Telegram
