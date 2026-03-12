@@ -505,6 +505,47 @@ async function pollServerClosedTrades() {
   }
 }
 
+/* ── WebSocket del servidor: push de TP/SL en tiempo real ───────────────── */
+// En lugar de polling cada 10s, el servidor notifica al instante via WS
+let serverWs, serverWsRetry;
+
+function connectServerWS() {
+  clearTimeout(serverWsRetry);
+  const token    = getAuthToken();
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const url      = `${protocol}//${location.host}/ws${token ? '?token=' + token : ''}`;
+  try { serverWs = new WebSocket(url); } catch { return; }
+
+  serverWs.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'TRADE_CLOSED') handleServerTradeClosed(msg.trade);
+    } catch {}
+  };
+  serverWs.onclose = () => { serverWsRetry = setTimeout(connectServerWS, 8000); };
+  serverWs.onerror = () => {};
+}
+
+function handleServerTradeClosed(closed) {
+  if (state.closedTrades.some(t => t.id === closed.id)) return; // ya cerrado localmente
+  const idx = state.activeTrades.findIndex(t => t.id === closed.id);
+  if (idx !== -1) state.activeTrades.splice(idx, 1);
+  state.closedTrades.unshift(closed);
+  saveKey('activeTrades', state.activeTrades);
+  saveKey('closedTrades', state.closedTrades);
+  showToast(
+    closed.result === 'WIN'
+      ? `✓ ${closed.par} cerrada en TP! +$${closed.pnl?.toFixed(2)}`
+      : `✕ ${closed.par} SL alcanzado. -$${Math.abs(closed.pnl || 0).toFixed(2)}`,
+    closed.result !== 'WIN'
+  );
+  authFetch('/api/trades/confirm-closed', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [closed.id] }),
+  }).catch(() => {});
+  renderAll();
+}
+
 /* ── Binance WebSocket ───────────────────────────────────────────────────── */
 let ws, wsRetryTimer;
 
@@ -2177,9 +2218,36 @@ function renderPerf() {
 
     <!-- Historial -->
     <div class="card">
-      <div class="stl">Historial Cerradas</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="stl" style="margin:0">Historial Cerradas</div>
+        ${closedTrades.length > 0 ? `
+        <button onclick="exportTradesCSV()" style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 12px;font-size:11px;color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:5px;transition:all .2s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">
+          ⬇ Exportar CSV
+        </button>` : ''}
+      </div>
       ${histRows}
     </div>`;
+}
+
+/* ── PRIORIDAD 6 — Exportar historial como CSV ───────────────────────────── */
+async function exportTradesCSV() {
+  try {
+    showToast('Generando CSV...');
+    const res = await authFetch('/api/trades/export-csv');
+    if (!res.ok) { showToast('Sin trades para exportar.', true); return; }
+    const blob     = await res.blob();
+    const url      = URL.createObjectURL(blob);
+    const a        = document.createElement('a');
+    a.href         = url;
+    a.download     = `cryptoplan-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast('✓ CSV descargado');
+  } catch (e) {
+    showToast('Error exportando: ' + e.message, true);
+  }
 }
 
 /* ── TradingView chart modal ─────────────────────────────────────────────── */
@@ -3548,7 +3616,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   syncTradesToServer();
-  setInterval(pollServerClosedTrades, 15000);
+  connectServerWS();   // WS push: reemplaza polling para TRADE_CLOSED
+  setInterval(pollServerClosedTrades, 30000); // fallback por si WS se desconecta
 
   // Onboarding: mostrar solo si es la primera vez
   if (!state.onboarded) {
@@ -3577,4 +3646,5 @@ Object.assign(window, {
   showBitunixSetup, showBitunixDebug, refreshBitunixData,
   doLogout,
   resetAll, renderAll,
+  exportTradesCSV,
 });
