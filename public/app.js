@@ -1094,7 +1094,11 @@ async function placeBitunixOrder(trade) {
     return null;
   }
 
-  showToast(`📡 Enviando orden ${symbol} ${side} ${qty} a Bitunix...`);
+  // TP1 = cierre real en Bitunix (orden automática en el exchange)
+  // TP2 = objetivo visual en la app — cuando se alcance TP1 ya estarás fuera
+  const tpPrice = trade.tp1 || null;
+
+  showToast(`📡 Enviando orden ${symbol} ${side} qty=${qty} TP=${tpPrice} SL=${trade.stopLoss}...`);
 
   try {
     const res  = await authFetch('/api/bitunix/place-order', {
@@ -1106,7 +1110,7 @@ async function placeBitunixOrder(trade) {
         side,
         leverage,
         orderType:     'MARKET',
-        tpPrice:       trade.tp2 || trade.tp1 || null,
+        tpPrice:       tpPrice,
         slPrice:       trade.stopLoss || null,
         clientOrderId: trade.id,
       }),
@@ -1116,9 +1120,8 @@ async function placeBitunixOrder(trade) {
       trade.bitunixOrderId = data.orderId;
       trade.bitunixSymbol  = symbol;
       trade.bitunixQty     = qty;
-      showToast(`✅ Orden ejecutada en Bitunix — ID ${data.orderId}`);
+      showToast(`✅ Orden ejecutada — TP1 ${fmtP(tpPrice, coinOf(trade.par))} · SL ${fmtP(trade.stopLoss, coinOf(trade.par))} · ID ${data.orderId}`);
       saveKey('activeTrades', state.activeTrades);
-      // Sincronizar posiciones tras unos segundos
       setTimeout(syncBitunixPositions, 3000);
     } else {
       showToast(`❌ Error Bitunix: ${data.error}`, true);
@@ -1909,8 +1912,8 @@ function renderOps() {
             <div class="op-levels">
               <span class="lv lv-e">E: ${fmtP(p.entrada, coin)}</span>
               <span class="lv lv-s">SL: ${fmtP(p.stopLoss, coin)}</span>
-              <span class="lv lv-t">TP1: ${fmtP(p.tp1, coin)}</span>
-              ${p.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(p.tp2, coin)}</span>` : ''}
+              <span class="lv lv-t">TP1 🎯: ${fmtP(p.tp1, coin)}</span>
+              ${p.tp2 ? `<span class="lv lv-t" style="opacity:.55" title="Objetivo visual — no se ejecuta automáticamente en Bitunix">TP2: ${fmtP(p.tp2, coin)}</span>` : ''}
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${p.rr}</span>
             </div>
 
@@ -2004,8 +2007,8 @@ function renderOps() {
             <div class="op-levels">
               <span class="lv lv-e">E: ${fmtP(o.entrada, coin)}</span>
               <span class="lv lv-s">SL: ${fmtP(o.stopLoss, coin)}</span>
-              <span class="lv lv-t">TP1: ${fmtP(o.tp1, coin)}</span>
-              ${o.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(o.tp2, coin)}</span>` : ''}
+              <span class="lv lv-t">TP1 🎯: ${fmtP(o.tp1, coin)}</span>
+              ${o.tp2 ? `<span class="lv lv-t" style="opacity:.55" title="Objetivo visual — no se ejecuta automáticamente en Bitunix">TP2: ${fmtP(o.tp2, coin)}</span>` : ''}
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${o.rr}</span>
             </div>
             <div class="op-reason">${o.razon}</div>
@@ -2210,8 +2213,8 @@ function renderAlerts() {
               <div class="op-levels" style="margin-bottom:6px">
                 <span class="lv lv-e">E: ${fmtP(a.entrada, coin)}</span>
                 <span class="lv lv-s">SL: ${fmtP(a.stopLoss, coin)}</span>
-                <span class="lv lv-t">TP1: ${fmtP(a.tp1, coin)}</span>
-                ${a.tp2 ? `<span class="lv lv-t">TP2: ${fmtP(a.tp2, coin)}</span>` : ''}
+                <span class="lv lv-t">TP1 🎯: ${fmtP(a.tp1, coin)}</span>
+                ${a.tp2 ? `<span class="lv lv-t" style="opacity:.55" title="Objetivo visual — no se ejecuta en Bitunix automáticamente">TP2: ${fmtP(a.tp2, coin)}</span>` : ''}
                 <span style="font-size:10px;color:var(--yellow)">R:R 1:${a.rr}</span>
               </div>
 
