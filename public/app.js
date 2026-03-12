@@ -1170,7 +1170,9 @@ function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
   return dist > 0 ? riskUSD / (dist * leverage) : 0.001;
 }
 
-function acceptProposal(proposal) {
+// Construye el objeto trade SIN guardarlo todavía en el estado.
+// Si Bitunix está configurado, solo se confirma tras su aprobación.
+function buildTrade(proposal) {
   const { profile, prices } = state;
   const riskUSD   = profile.capital * profile.risk_pct / 100;
   const leverage  = profile.leverage || 1;
@@ -1178,7 +1180,7 @@ function acceptProposal(proposal) {
   const realEntry = prices[coin] || proposal.entrada;
   const size      = calcSize(riskUSD, realEntry, proposal.stopLoss, leverage);
 
-  const trade = {
+  return {
     id: uid(),
     par:       proposal.par,
     tipo:      proposal.tipo,
@@ -1197,17 +1199,47 @@ function acceptProposal(proposal) {
     pnl: 0, pnlPct: 0,
     createdAt: nowFull(),
   };
+}
 
+// Confirma el trade en el estado local — solo se llama si Bitunix acepta (o no está configurado)
+function commitTrade(trade) {
   state.activeTrades.unshift(trade);
   saveKey('activeTrades', state.activeTrades);
   syncTradesToServer();
-  showToast(`✓ ${proposal.par} ejecutada al precio real: ${fmtP(realEntry, coin)}`);
+  const coin = coinOf(trade.par);
+  showToast(`✓ ${trade.par} activa — entrada ${fmtP(trade.entrada, coin)}`);
+}
+
+// Mantener compatibilidad con llamadas antiguas (sin Bitunix configurado)
+function acceptProposal(proposal) {
+  const trade = buildTrade(proposal);
+  commitTrade(trade);
   return trade;
 }
 
-function acceptAlert(alert) {
-  const trade = acceptProposal(alert);
-  state.alerts = state.alerts.map(a => a.id === alert.id ? { ...a, status: 'accepted' } : a);
+async function acceptAlert(alert) {
+  const trade = buildTrade(alert);
+
+  if (bitunix.configured) {
+    // Si Bitunix está conectado, la orden debe aprobarse primero
+    const result = await placeBitunixOrder(trade);
+    if (!result || !result.ok) {
+      // Bitunix rechazó — NO añadir el trade
+      showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);
+      // Marcar la alerta como rechazada para no perderla
+      state.alerts = state.alerts.map(a =>
+        a.id === alert.id ? { ...a, status: 'rejected_bitunix' } : a
+      );
+      saveKey('alerts', state.alerts);
+      renderAlerts();
+      return null;
+    }
+  }
+
+  commitTrade(trade);
+  state.alerts = state.alerts.map(a =>
+    a.id === alert.id ? { ...a, status: 'accepted' } : a
+  );
   saveKey('alerts', state.alerts);
   setTab('ops');
   return trade;
@@ -1616,7 +1648,7 @@ function showScreenNotif(alert) {
       <div class="notif-reason">${alert.razon}</div>
       <div style="display:flex;gap:8px">
         <button class="btn btng" style="font-size:10px;padding:7px 14px;flex:1" onclick="setTab('alerts');qs('#screen-notif').remove()">Ver en Alertas</button>
-        <button class="btn btng" style="font-size:10px;padding:7px 14px;flex:1" onclick="acceptAlertById('${alert.id}');qs('#screen-notif').remove()">✓ Ejecutar ya</button>
+        <button class="btn btng" style="font-size:10px;padding:7px 14px;flex:1" onclick="acceptAlertById('${alert.id}');qs('#screen-notif').remove()">${bitunix.configured ? '📡 Ejecutar en Bitunix' : '✓ Simular ya'}</button>
       </div>
     </div>`;
   document.body.appendChild(div);
@@ -1627,9 +1659,12 @@ function urgencyClass(u) {
   return u === 'ALTA' ? 'tr' : u === 'MEDIA' ? 'ty' : 'tb';
 }
 
-function acceptAlertById(id) {
+async function acceptAlertById(id) {
   const alert = state.alerts.find(a => a.id === id);
-  if (alert) { acceptAlert(alert); renderAll(); }
+  if (alert) {
+    const trade = await acceptAlert(alert);
+    if (trade) renderAll();
+  }
 }
 
 /* ── Ticker ──────────────────────────────────────────────────────────────── */
@@ -1706,7 +1741,7 @@ function renderOps() {
             <div style="font-size:10px;color:var(--muted);line-height:1.5;margin-top:8px;margin-bottom:10px">${p.razon}</div>
           </div>
           <div class="proposal-actions">
-            <button class="btn btng" style="font-size:10px;padding:7px 16px" onclick="onAcceptProposal(${i})">✓ ACEPTAR Y EJECUTAR</button>
+            <button class="btn btng" style="font-size:10px;padding:7px 16px" onclick="onAcceptProposal(${i})">${bitunix.configured ? '📡 EJECUTAR EN BITUNIX' : '✓ ACEPTAR Y SIMULAR'}</button>
             <button class="btn btnr" style="font-size:10px;padding:7px 12px" onclick="onRejectProposal(${i})">✕ Rechazar</button>
           </div>
         </div>`;
@@ -1970,7 +2005,7 @@ function renderAlerts() {
               ${a.contexto_mercado ? `<div style="font-size:10px;color:var(--muted);background:rgba(0,0,0,.2);padding:6px 8px;border-radius:5px">${a.contexto_mercado}</div>` : ''}
             </div>
             <div class="alert-card-actions">
-              <button class="btn btng" style="font-size:10px;padding:7px 16px" onclick="acceptAlertById('${a.id}');renderAll()">✓ ACEPTAR Y EJECUTAR</button>
+              <button class="btn btng" style="font-size:10px;padding:7px 16px" onclick="acceptAlertById('${a.id}')">${bitunix.configured ? '📡 EJECUTAR EN BITUNIX' : '✓ ACEPTAR Y SIMULAR'}</button>
               <button class="btn btnr" style="font-size:10px;padding:7px 12px" onclick="rejectAlert('${a.id}')">✕ Rechazar</button>
             </div>
           </div>`;
@@ -2790,16 +2825,23 @@ function saveTradeNotes(id) {
 }
 
 /* ── Proposal handlers ───────────────────────────────────────────────────── */
-function onAcceptProposal(i) {
+async function onAcceptProposal(i) {
   const p = state.pending[i];
   if (!p) return;
-  const trade = acceptProposal(p);
+
+  const trade = buildTrade(p);
+
+  if (bitunix.configured) {
+    const result = await placeBitunixOrder(trade);
+    if (!result || !result.ok) {
+      showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);
+      return; // No añadir al estado
+    }
+  }
+
+  commitTrade(trade);
   state.pending.splice(i, 1);
   renderAll();
-  // Ejecutar en Bitunix si está conectado
-  if (bitunix.configured && trade) {
-    placeBitunixOrder(trade);
-  }
 }
 function onRejectProposal(i) {
   state.pending.splice(i, 1);
