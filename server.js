@@ -770,14 +770,20 @@ app.get('/api/scanner/alerts', requireAuth, (req, res) => {
 async function sendTelegram(text) {
   const token  = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
+  if (!token || !chatId) return { ok: false, error: 'Variables no configuradas' };
   try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+    const res  = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
     });
-  } catch (e) { console.warn('[Telegram] Error:', e.message); }
+    const data = await res.json();
+    if (!data.ok) console.warn(`[Telegram] Error API: ${data.error_code} — ${data.description}`);
+    return data;
+  } catch (e) {
+    console.warn('[Telegram] Error de red:', e.message);
+    return { ok: false, error: e.message };
+  }
 }
 
 function notifyTradeOpened(trade) {
@@ -821,9 +827,26 @@ function notifyBreakeven(trade) {
 app.post('/api/telegram/test', requireAuth, async (req, res) => {
   const token  = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return res.json({ ok:false, error:'Configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en Railway' });
-  await sendTelegram('✅ <b>CryptoPlan IA</b> — Notificaciones Telegram funcionando.');
-  res.json({ ok:true });
+  if (!token) return res.json({ ok:false, error:'Falta TELEGRAM_BOT_TOKEN en Railway' });
+  if (!chatId) return res.json({ ok:false, error:'Falta TELEGRAM_CHAT_ID en Railway' });
+  try {
+    // Verificar token con getMe
+    const meRes  = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const meData = await meRes.json();
+    if (!meData.ok) return res.json({ ok:false, error:`Token inválido: ${meData.description}` });
+
+    // Enviar mensaje real
+    const result = await sendTelegram('✅ <b>CryptoPlan IA</b> — Notificaciones Telegram funcionando correctamente.');
+    if (!result.ok) {
+      const hint = result.description && result.description.includes('chat not found')
+        ? 'Chat ID incorrecto o no has iniciado el bot con /start'
+        : (result.description || 'Error desconocido de Telegram');
+      return res.json({ ok:false, error: hint });
+    }
+    res.json({ ok:true, botName: meData.result && meData.result.username });
+  } catch (e) {
+    res.json({ ok:false, error:'Error de red: ' + e.message });
+  }
 });
 
 app.get('/api/telegram/status', requireAuth, (req, res) => {

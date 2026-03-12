@@ -2954,18 +2954,25 @@ function saveProfile() {
 }
 
 async function testTelegram() {
-  const btn = qs('#telegram-config-panel button');
-  if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
+  const btn       = qs('#telegram-config-panel button');
+  const statusEl  = qs('#telegram-status-msg');
+  if (btn) { btn.disabled = true; btn.textContent = 'Verificando...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--muted)">Conectando con Telegram...</span>';
   try {
     const res  = await authFetch('/api/telegram/test', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
-      showToast('✅ Mensaje de prueba enviado — revisa Telegram');
+      const botStr = data.botName ? ` (@${data.botName})` : '';
+      showToast(`✅ Telegram funcionando${botStr} — revisa tu chat`);
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--green)">✓ Telegram activo${botStr}</span>`;
     } else {
-      showToast('❌ ' + (data.error || 'Error enviando mensaje'), true);
+      const errMsg = data.error || 'Error desconocido';
+      showToast('❌ Telegram: ' + errMsg, true);
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">✗ ${errMsg}</span>`;
     }
   } catch (e) {
-    showToast('❌ Error: ' + e.message, true);
+    showToast('❌ Error de red: ' + e.message, true);
+    if (statusEl) statusEl.innerHTML = `<span style="color:var(--red)">✗ Error de red</span>`;
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = '📨 Enviar mensaje de prueba'; }
   }
