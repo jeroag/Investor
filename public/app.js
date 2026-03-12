@@ -2146,6 +2146,7 @@ function renderOps() {
           <button class="btn btng" style="font-size:10px;padding:6px 12px" onclick="closeTradeAtMarket('${o.id}')">✓ Cerrar</button>
           <button class="btn btny" style="font-size:10px;padding:6px 10px" onclick="openEditTrade('${o.id}')">✏ Editar</button>
           <button class="btn" style="font-size:10px;padding:6px 10px" onclick="toggleTradeNotes('${o.id}')">📝 Notas</button>
+          <button class="btn" id="chart-btn-${o.id}" style="font-size:10px;padding:6px 10px" onclick="toggleTradeChart('${o.id}')">📊 Gráfico</button>
           <button class="btn btnr" style="font-size:10px;padding:6px 10px" onclick="cancelTrade('${o.id}');renderOps()">✕ Cancelar</button>
         </div>
         <div id="notes-panel-${o.id}" style="display:none;padding:10px 15px;border-top:1px solid var(--border);background:var(--s2)">
@@ -2153,6 +2154,24 @@ function renderOps() {
             placeholder="Añade notas a esta operación..."
             style="margin-bottom:7px;font-size:12px">${o.notes || ''}</textarea>
           <button class="btn btng" style="font-size:10px;padding:5px 12px" onclick="saveTradeNotes('${o.id}')">✓ Guardar nota</button>
+        </div>
+        <div id="chart-panel-${o.id}" style="display:none;border-top:1px solid var(--border);background:var(--surface);overflow:hidden;border-radius:0 0 var(--radius) var(--radius)">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 14px;background:var(--s2);border-bottom:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-size:11px;font-weight:600;color:var(--text);font-family:var(--display)">${o.par}</span>
+              <span style="font-size:9px;color:var(--muted)">Entrada <b style="color:var(--accent);font-family:var(--mono)">${fmtP(o.entrada, coinOf(o.par))}</b> · SL <b style="color:var(--red);font-family:var(--mono)">${fmtP(o.stopLoss, coinOf(o.par))}</b> · TP1 <b style="color:var(--green);font-family:var(--mono)">${fmtP(o.tp1, coinOf(o.par))}</b></span>
+            </div>
+            <div style="display:flex;gap:4px">
+              ${['1h','4h','1d'].map(tf => `<button id="chart-tf-${o.id}-${tf}" onclick="reloadTradeChart('${o.id}','${tf}')" style="font-size:9px;padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:${tf==='4h'?'var(--accent)':'var(--s2)'};cursor:pointer;color:${tf==='4h'?'#fff':'var(--muted)'};transition:all .15s">${tf.toUpperCase()}</button>`).join('')}
+            </div>
+          </div>
+          <div id="chart-canvas-${o.id}" style="height:280px;width:100%;position:relative"></div>
+          <div style="padding:5px 14px;background:var(--s2);border-top:1px solid var(--border);display:flex;gap:12px;font-size:9px;color:var(--muted)">
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:14px;height:2px;background:var(--accent);display:inline-block;border-radius:1px"></span>Entrada</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:14px;height:2px;background:var(--red);display:inline-block;border-radius:1px;opacity:.8"></span>Stop Loss</span>
+            <span style="display:flex;align-items:center;gap:3px"><span style="width:14px;height:2px;background:var(--green);display:inline-block;border-radius:1px"></span>Take Profit</span>
+            <span style="margin-left:auto;color:var(--muted)">Datos: Binance · TZ UTC</span>
+          </div>
         </div>
       </div>`;
   });
@@ -2687,6 +2706,165 @@ function openChart(coin) {
   document.addEventListener('keydown', onKey);
   // Cerrar al click en backdrop
   modal.querySelector('div').addEventListener('click', (e) => { if (e.target === e.currentTarget) modal.remove(); });
+}
+
+/* ── Gráfico inline por trade (Lightweight Charts + Binance OHLCV) ────────── */
+const _tradeChartInstances = {};
+
+function toggleTradeChart(tradeId) {
+  const panel = qs(`#chart-panel-${tradeId}`);
+  const btn   = qs(`#chart-btn-${tradeId}`);
+  if (!panel) return;
+
+  const isOpen = panel.style.display !== 'none';
+  if (isOpen) {
+    panel.style.display = 'none';
+    if (btn) { btn.style.background = ''; btn.style.color = ''; }
+    if (_tradeChartInstances[tradeId]) {
+      try { _tradeChartInstances[tradeId].remove(); } catch {}
+      delete _tradeChartInstances[tradeId];
+    }
+  } else {
+    panel.style.display = 'block';
+    if (btn) { btn.style.background = 'var(--accent)'; btn.style.color = '#fff'; }
+    loadTradeChart(tradeId, '4h');
+  }
+}
+
+function reloadTradeChart(tradeId, interval) {
+  if (_tradeChartInstances[tradeId]) {
+    try { _tradeChartInstances[tradeId].remove(); } catch {}
+    delete _tradeChartInstances[tradeId];
+  }
+  // Actualizar estilo de botones de timeframe
+  ['1h','4h','1d'].forEach(tf => {
+    const tfBtn = qs(`#chart-tf-${tradeId}-${tf}`);
+    if (!tfBtn) return;
+    const active = tf === interval;
+    tfBtn.style.background   = active ? 'var(--accent)' : 'var(--s2)';
+    tfBtn.style.color        = active ? '#fff' : 'var(--muted)';
+    tfBtn.style.borderColor  = active ? 'var(--accent)' : 'var(--border)';
+  });
+  loadTradeChart(tradeId, interval);
+}
+
+async function loadTradeChart(tradeId, interval) {
+  const trade = state.activeTrades.find(t => t.id === tradeId);
+  if (!trade) return;
+
+  const container = qs(`#chart-canvas-${tradeId}`);
+  if (!container) return;
+
+  const coin   = coinOf(trade.par);
+  const symbol = coin + 'USDT';
+
+  // Loading state
+  container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;gap:8px;color:var(--muted);font-size:12px"><span class="spinner"></span>Cargando velas...</div>`;
+
+  try {
+    // Fetch OHLCV desde Binance REST
+    const limit = interval === '1d' ? 90 : 120;
+    const resp  = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const raw = await resp.json();
+
+    const candles = raw.map(k => ({
+      time:  Math.floor(k[0] / 1000),
+      open:  parseFloat(k[1]),
+      high:  parseFloat(k[2]),
+      low:   parseFloat(k[3]),
+      close: parseFloat(k[4]),
+    }));
+
+    container.innerHTML = '';
+
+    const isDark = state.darkMode;
+    const bg     = isDark ? '#0B0D11' : '#FAFAF8';
+    const grid   = isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.06)';
+    const txt    = isDark ? '#9CA3AF' : '#6B7280';
+
+    const chart = LightweightCharts.createChart(container, {
+      width:  container.clientWidth || 600,
+      height: 280,
+      layout: {
+        background:  { color: bg },
+        textColor:   txt,
+        fontSize:    11,
+      },
+      grid: {
+        vertLines: { color: grid },
+        horzLines: { color: grid },
+      },
+      crosshair:       { mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.1, bottom: 0.1 } },
+      timeScale:       { borderVisible: false, timeVisible: true, secondsVisible: false },
+      handleScroll:    true,
+      handleScale:     true,
+    });
+
+    const series = chart.addCandlestickSeries({
+      upColor:        '#22c55e',
+      downColor:      '#ef4444',
+      borderUpColor:  '#22c55e',
+      borderDownColor:'#ef4444',
+      wickUpColor:    '#4ade80',
+      wickDownColor:  '#f87171',
+    });
+
+    series.setData(candles);
+
+    // ── Líneas de nivel ──────────────────────────────────────────────────
+    series.createPriceLine({
+      price:     trade.entrada,
+      color:     '#00C8FF',
+      lineWidth: 2,
+      lineStyle: LightweightCharts.LineStyle.Solid,
+      title:     `▶ Entrada`,
+    });
+
+    series.createPriceLine({
+      price:     trade.stopLoss,
+      color:     '#FF3B58',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      title:     `✕ SL`,
+    });
+
+    series.createPriceLine({
+      price:     trade.tp1,
+      color:     '#00D17A',
+      lineWidth: 1,
+      lineStyle: LightweightCharts.LineStyle.Dashed,
+      title:     `★ TP1`,
+    });
+
+    if (trade.tp2) {
+      series.createPriceLine({
+        price:     trade.tp2,
+        color:     '#00D17A',
+        lineWidth: 1,
+        lineStyle: LightweightCharts.LineStyle.Dotted,
+        title:     `★ TP2`,
+      });
+    }
+
+    // Ajustar al contenido y luego al precio actual
+    chart.timeScale().fitContent();
+
+    // Responsive resize
+    const ro = new ResizeObserver(() => {
+      if (container.clientWidth > 0) chart.applyOptions({ width: container.clientWidth });
+    });
+    ro.observe(container);
+
+    // Guardar instancia con cleanup
+    const origRemove = chart.remove.bind(chart);
+    chart.remove = () => { try { ro.disconnect(); origRemove(); } catch {} };
+    _tradeChartInstances[tradeId] = chart;
+
+  } catch (err) {
+    container.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--red);font-size:12px">⚠ Error al cargar gráfico: ${err.message}</div>`;
+  }
 }
 
 /* ── Render: Market ──────────────────────────────────────────────────────── */
@@ -4027,6 +4205,7 @@ Object.assign(window, {
   setProfileField, toggleCoin, saveProfile,
   saveCapital, updateCapCalc, setLeverage,
   toggleWatchedCoin, openChart,
+  toggleTradeChart, reloadTradeChart,
   submitPriceAlert, deletePriceAlert,
   toggleScanLog, toggleBalanceEdit, saveQuickCapital,
   // Nuevas funciones
