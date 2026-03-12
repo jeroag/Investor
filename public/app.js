@@ -53,6 +53,112 @@ const COIN_NAMES = {
   UNI:   'Uniswap',    ATOM: 'Cosmos',
 };
 
+// Cantidades mínimas de Bitunix Futures por moneda (en unidades base)
+// Fuente: documentación Bitunix — se usan para filtrar qué monedas son ejecutables
+const BITUNIX_MIN_QTY = {
+  BTC:   0.001,   // ~$83  a $83k
+  ETH:   0.01,    // ~$18  a $1800
+  SOL:   0.1,     // ~$13  a $130
+  XRP:   1,       // ~$2.4 a $2.4
+  BNB:   0.01,    // ~$6   a $600
+  DOGE:  10,      // ~$1.7 a $0.17
+  AVAX:  0.1,     // ~$2   a $20
+  ADA:   1,       // ~$0.4 a $0.4
+  MATIC: 1,       // ~$0.5 a $0.5
+  DOT:   0.1,     // ~$0.4 a $4
+  LINK:  0.1,     // ~$1.4 a $14
+  LTC:   0.01,    // ~$0.9 a $90
+  UNI:   0.1,     // ~$0.6 a $6
+  ATOM:  0.1,     // ~$0.5 a $5
+};
+
+/**
+ * Calcula qué monedas son ejecutables en Bitunix dado el capital y configuración actual.
+ * Devuelve un array de objetos con info de cada moneda factible.
+ *
+ * Lógica: con el capital, riesgo y leverage, ¿la qty calculada supera el mínimo de Bitunix?
+ * Se asume un SL típico del 2% del precio de entrada (conservador).
+ */
+function buildFeasibleCoins() {
+  const { profile, prices, watchedCoins } = state;
+  const capital  = profile.capital  || 0;
+  const riskPct  = profile.risk_pct || 2;
+  const leverage = profile.leverage || 1;
+  const riskUSD  = capital * riskPct / 100;
+
+  const feasible   = [];
+  const infeasible = [];
+
+  const coinsToCheck = watchedCoins.length ? watchedCoins : ALL_COINS;
+
+  coinsToCheck.forEach(coin => {
+    const price  = prices[coin];
+    const minQty = BITUNIX_MIN_QTY[coin] ?? 1;
+    if (!price || price <= 0) return;
+
+    // SL típico = 2% del precio (ajustado a la volatilidad por tipo de moneda)
+    const slPct   = coin === 'BTC' ? 0.02 : coin === 'ETH' ? 0.025 : 0.03;
+    const slDist  = price * slPct;
+    const qty     = riskUSD / (slDist * leverage);
+    const minNotional = minQty * price;
+    const myNotional  = qty * price;
+    const margin      = myNotional / leverage;
+
+    if (qty >= minQty) {
+      feasible.push({
+        coin,
+        price,
+        qty:       parseFloat(qty.toFixed(4)),
+        minQty,
+        margin:    parseFloat(margin.toFixed(2)),
+        notional:  parseFloat(myNotional.toFixed(2)),
+        marginPct: parseFloat((margin / capital * 100).toFixed(1)),
+      });
+    } else {
+      // Calcular cuánto capital mínimo necesitaría
+      const minCapitalNeeded = (minQty * slDist * leverage) / (riskPct / 100);
+      infeasible.push({ coin, price, minQty, minNotional: parseFloat(minNotional.toFixed(2)), minCapitalNeeded: parseFloat(minCapitalNeeded.toFixed(2)) });
+    }
+  });
+
+  return { feasible, infeasible, riskUSD, capital, leverage };
+}
+
+/**
+ * Genera el bloque de texto para inyectar en el prompt de IA,
+ * informando qué monedas puede y no puede operar con su capital.
+ */
+function buildFeasibleCoinsContext() {
+  if (!bitunix.configured) return ''; // Sin Bitunix no aplicamos restricción
+
+  const { feasible, infeasible, riskUSD, capital, leverage } = buildFeasibleCoins();
+
+  if (feasible.length === 0) {
+    return `\n⛔ RESTRICCIÓN CRÍTICA DE CAPITAL:\nCon $${capital} de capital, ${riskUSD.toFixed(2)}$ de riesgo/op y ${leverage}x leverage, NINGUNA moneda disponible cumple el mínimo de Bitunix. No generes propuestas. Informa al usuario que necesita más capital o mayor leverage.`;
+  }
+
+  const feasibleList = feasible
+    .map(f => `${f.coin} (precio $${f.price.toLocaleString()}, margen necesario ~$${f.margin}, posición ~$${f.notional})`)
+    .join(', ');
+
+  const infeasibleList = infeasible.length
+    ? infeasible.map(f => `${f.coin} (mín. $${f.minCapitalNeeded} capital)`).join(', ')
+    : 'ninguna';
+
+  return `
+━━━ RESTRICCIÓN DE CAPITAL — BITUNIX MÍNIMOS ━━━
+Capital: $${capital} | Riesgo/op: $${riskUSD.toFixed(2)} | Leverage: ${leverage}x
+
+✅ MONEDAS EJECUTABLES (qty supera mínimo Bitunix):
+${feasibleList}
+
+❌ MONEDAS NO EJECUTABLES (capital insuficiente para el mínimo):
+${infeasibleList}
+
+⚠️ REGLA ABSOLUTA: Solo propón trades de las monedas EJECUTABLES. Ignorar esta regla causará que la orden sea rechazada por el exchange.`;
+}
+
+
 const DEFAULT_WATCHED_COINS = ['BTC','ETH','SOL','XRP','BNB','DOGE'];
 
 function buildWsUrl(coins) {
@@ -726,13 +832,14 @@ async function aiGenerateProposals() {
   const { profile, strategy } = state;
   const techCtx      = buildTechContext();
   const tradeHistory = buildTradeHistory();
+  const feasibleCtx  = buildFeasibleCoinsContext();
 
   const raw = await callClaude(
     `Eres un analista técnico senior de criptomonedas. Genera 2-3 propuestas de trading de ALTA CALIDAD basadas en los datos técnicos REALES adjuntos.
 
 ━━━ PERFIL DEL TRADER ━━━
 Estilo: ${profile.style} | Riesgo: ${profile.risk_tolerance}
-Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}% = $${(profile.capital*profile.risk_pct/100).toFixed(0)}
+Capital: $${profile.capital} | Riesgo/op: ${profile.risk_pct}% = $${(profile.capital*profile.risk_pct/100).toFixed(2)}
 Apalancamiento: ${profile.leverage||1}x | Monedas preferidas: ${profile.preferred_coins.join(', ')||'BTC, ETH'}
 Estrategia activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado||'swing'} en ${strategy?.estrategiaAdaptada?.timeframe||'4H'}
 Notas del trader: ${profile.notes||'ninguna'}
@@ -742,19 +849,20 @@ ${tradeHistory}
 
 ━━━ CALENDARIO ECONÓMICO (próx. 48h) ━━━
 ${buildCalendarContext()}
-
+${feasibleCtx}
 ━━━ DATOS TÉCNICOS REALES BINANCE ━━━
 ${techCtx}
 
 ━━━ REGLAS DE ANÁLISIS (SEGUIR ESTRICTAMENTE) ━━━
-1. CONFLUENCIA MÍNIMA: Solo propón setups con ≥3 señales alineadas (RSI+EMA+MACD+BB+patrón+volumen)
-2. TENDENCIA MACRO: Si la tendencia 1D es BAJISTA, solo SHORT o no operar. Si ALCISTA, preferir LONG.
-3. EMA FILTER: No entrar LONG si precio < EMA200 en 4H. No entrar SHORT si precio > EMA200.
-4. SL BASADO EN ATR: El SL DEBE ser al menos 1.5×ATR desde la entrada, y estar al otro lado del soporte/resistencia más cercano.
-5. TP EN NIVELES REALES: TP1 = siguiente resistencia/soporte real. TP2 = siguiente nivel macro.
-6. R:R MÍNIMO 2.0: Rechaza setups con R:R menor a 2. Con apalancamiento > 3x exige R:R ≥ 2.5.
-7. VOLUMEN: Si el volumen es BAJO en el setup, reduce la confianza al menos 10 puntos.
-8. NO REPETIR: Si tienes historial de conversación, no proponer el mismo par en la misma dirección.
+1. CAPITAL PRIMERO: Si existe la sección "RESTRICCIÓN DE CAPITAL", SOLO propón monedas de la lista EJECUTABLES. Es la regla más importante.
+2. CONFLUENCIA MÍNIMA: Solo propón setups con ≥3 señales alineadas (RSI+EMA+MACD+BB+patrón+volumen)
+3. TENDENCIA MACRO: Si la tendencia 1D es BAJISTA, solo SHORT o no operar. Si ALCISTA, preferir LONG.
+4. EMA FILTER: No entrar LONG si precio < EMA200 en 4H. No entrar SHORT si precio > EMA200.
+5. SL BASADO EN ATR: El SL DEBE ser al menos 1.5×ATR desde la entrada, y estar al otro lado del soporte/resistencia más cercano.
+6. TP EN NIVELES REALES: TP1 = siguiente resistencia/soporte real. TP2 = siguiente nivel macro.
+7. R:R MÍNIMO 2.0: Rechaza setups con R:R menor a 2. Con apalancamiento > 3x exige R:R ≥ 2.5.
+8. VOLUMEN: Si el volumen es BAJO en el setup, reduce la confianza al menos 10 puntos.
+9. NO REPETIR: Si tienes historial de conversación, no proponer el mismo par en la misma dirección.
 
 Responde SOLO JSON sin markdown:
 {
@@ -788,6 +896,7 @@ async function aiScanMarket() {
   const techCtx      = buildTechContext();
   const tradeHistory = buildTradeHistory();
   const recentAlerts = alerts.slice(0, 5).map(a => `${a.par} ${a.tipo} entrada=${a.entrada} (${a.timestamp})`).join(' | ');
+  const feasibleCtx  = buildFeasibleCoinsContext();
 
   const raw = await callClaude(
     `Eres un escáner de mercado automático. Analiza los datos técnicos AHORA y decide si existe una oportunidad de trading de ALTA CALIDAD.
@@ -802,15 +911,16 @@ Calendario económico: ${buildCalendarContext()}
 Estrategia activa: ${strategy?.estrategiaAdaptada?.estiloRecomendado||'swing'} ${strategy?.estrategiaAdaptada?.timeframe||'4H'}
 Alertas recientes (NO duplicar mismo par+dirección): ${recentAlerts||'ninguna'}
 Posiciones abiertas: ${activeTrades.length}
-
+${feasibleCtx}
 ━━━ CRITERIOS ESTRICTOS PARA hay_oportunidad=true ━━━
 Todos deben cumplirse:
-1. CONFLUENCIA ≥60%: Al menos 3 señales alineadas entre RSI, EMA, MACD, BB, patrón de vela y volumen
-2. TENDENCIA MACRO: El trade va en dirección de la tendencia 1D
-3. R:R ≥ 2.0: Usando ATR y niveles reales de soporte/resistencia
-4. Sin alerta reciente del mismo par y dirección en las últimas alertas
-5. Volumen confirma (ratio ≥ 0.8× media)
-6. EMA200 del lado correcto (LONG = precio > EMA200, SHORT = precio < EMA200)
+1. CAPITAL: La moneda debe estar en la lista EJECUTABLES (si existe esa sección). Es el criterio más importante.
+2. CONFLUENCIA ≥60%: Al menos 3 señales alineadas entre RSI, EMA, MACD, BB, patrón de vela y volumen
+3. TENDENCIA MACRO: El trade va en dirección de la tendencia 1D
+4. R:R ≥ 2.0: Usando ATR y niveles reales de soporte/resistencia
+5. Sin alerta reciente del mismo par y dirección en las últimas alertas
+6. Volumen confirma (ratio ≥ 0.8× media)
+7. EMA200 del lado correcto (LONG = precio > EMA200, SHORT = precio < EMA200)
 
 Si no se cumplen TODOS: hay_oportunidad=false
 
@@ -1160,7 +1270,22 @@ function renderBalanceWidget() {
       <input class="inp" type="number" id="balance-input" value="${capital}" step="any" style="width:120px;padding:5px 8px;font-size:12px"/>
       <button class="btn btng" style="padding:5px 12px;font-size:11px" onclick="saveQuickCapital()">✓ Guardar</button>
       <button onclick="toggleBalanceEdit()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1">×</button>
-    </div>`;
+    </div>
+    ${bitunix.configured ? (() => {
+      const { feasible, infeasible } = buildFeasibleCoins();
+      if (!feasible.length && !infeasible.length) return '';
+      const fChips = feasible.map(f =>
+        `<span title="Margen ~$${f.margin} · Posición ~$${f.notional}" style="font-size:9px;padding:2px 6px;border-radius:3px;background:rgba(0,209,122,.1);border:1px solid rgba(0,209,122,.25);color:var(--green)">${f.coin}</span>`
+      ).join('');
+      const iChips = infeasible.slice(0,4).map(f =>
+        `<span title="Capital mínimo ~$${f.minCapitalNeeded}" style="font-size:9px;padding:2px 6px;border-radius:3px;background:rgba(255,59,88,.08);border:1px solid rgba(255,59,88,.2);color:var(--muted);text-decoration:line-through">${f.coin}</span>`
+      ).join('');
+      return `<div style="margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span style="font-size:9px;color:var(--muted);letter-spacing:.4px">EJECUTABLES:</span>
+        ${fChips || '<span style="font-size:9px;color:var(--red)">ninguna — aumenta capital o leverage</span>'}
+        ${iChips ? `<span style="font-size:9px;color:var(--subtle)">|</span>${iChips}` : ''}
+      </div>`;
+    })() : ''}`;
 }
 function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
   // Con apalancamiento: la posición efectiva se multiplica, pero el riesgo en USD no cambia.
@@ -1172,6 +1297,29 @@ function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
 
 // Construye el objeto trade SIN guardarlo todavía en el estado.
 // Si Bitunix está configurado, solo se confirma tras su aprobación.
+/**
+ * Valida si una propuesta es ejecutable con el capital actual.
+ * Devuelve null si es OK, o un string con el mensaje de error.
+ */
+function checkTradeExecutability(proposal) {
+  if (!bitunix.configured) return null; // sin Bitunix no bloqueamos
+
+  const coin     = coinOf(proposal.par);
+  const price    = state.prices[coin] || proposal.entrada;
+  const minQty   = BITUNIX_MIN_QTY[coin];
+  if (!minQty) return null; // moneda desconocida, dejar pasar
+
+  const riskUSD  = state.profile.capital * state.profile.risk_pct / 100;
+  const leverage = state.profile.leverage || 1;
+  const size     = calcSize(riskUSD, price, proposal.stopLoss, leverage);
+
+  if (size < minQty) {
+    const minCapital = (minQty * Math.abs(price - proposal.stopLoss) * leverage) / (state.profile.risk_pct / 100);
+    return `❌ ${coin} rechazado: qty calculada ${size.toFixed(5)} < mínimo Bitunix ${minQty}.\nNecesitas ~$${minCapital.toFixed(0)} de capital o aumentar el leverage.`;
+  }
+  return null;
+}
+
 function buildTrade(proposal) {
   const { profile, prices } = state;
   const riskUSD   = profile.capital * profile.risk_pct / 100;
@@ -1218,6 +1366,10 @@ function acceptProposal(proposal) {
 }
 
 async function acceptAlert(alert) {
+  // Guard: verificar ejecutabilidad antes de intentar nada
+  const execError = checkTradeExecutability(alert);
+  if (execError) { showToast(execError, true); return null; }
+
   const trade = buildTrade(alert);
 
   if (bitunix.configured) {
@@ -2915,13 +3067,17 @@ async function onAcceptProposal(i) {
   const p = state.pending[i];
   if (!p) return;
 
+  // Guard: verificar ejecutabilidad antes de intentar nada
+  const execError = checkTradeExecutability(p);
+  if (execError) { showToast(execError, true); return; }
+
   const trade = buildTrade(p);
 
   if (bitunix.configured) {
     const result = await placeBitunixOrder(trade);
     if (!result || !result.ok) {
       showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);
-      return; // No añadir al estado
+      return;
     }
   }
 
