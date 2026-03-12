@@ -625,12 +625,89 @@ function connectServerWS() {
   serverWs.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'TRADE_CLOSED') handleServerTradeClosed(msg.trade);
+      if (msg.type === 'TRADE_CLOSED')   handleServerTradeClosed(msg.trade);
+      if (msg.type === 'SCANNER_ALERT')  handleServerScannerAlert(msg.alert);
     } catch {}
   };
   serverWs.onclose = () => { serverWsRetry = setTimeout(connectServerWS, 8000); };
   serverWs.onerror = () => {};
 }
+
+function handleServerScannerAlert(alert) {
+  // Evitar duplicados
+  if (state.alerts.some(a => a.id === alert.id)) return;
+  // Añadir a la lista de alertas con status pending
+  state.alerts.unshift({ ...alert, status: 'pending' });
+  if (state.alerts.length > 30) state.alerts.pop();
+  saveKey('alerts', state.alerts);
+  // Notificación visual inmediata
+  showScreenNotif(alert);
+  renderAlerts();
+  // Actualizar badge del tab
+  updateScannerBadge();
+}
+
+/* ── Control del escáner server-side desde el frontend ─────────────────── */
+async function startServerScanner() {
+  try {
+    const res = await authFetch('/api/scanner/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: state.profile }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      state.scannerActive = true;
+      saveKey('scannerActive', true);
+      showToast(`🔍 Escáner SERVER activo — cada ${data.intervalMin} min (24/7)`);
+      updateScannerBadge();
+    }
+  } catch (e) {
+    showToast('Error iniciando escáner: ' + e.message, true);
+  }
+}
+
+async function stopServerScanner() {
+  try {
+    await authFetch('/api/scanner/stop', { method: 'POST' });
+    state.scannerActive = false;
+    saveKey('scannerActive', false);
+    showToast('⏹ Escáner detenido');
+    updateScannerBadge();
+  } catch {}
+}
+
+async function checkServerScannerStatus() {
+  if (!state.scannerActive) return;
+  try {
+    const res  = await authFetch('/api/scanner/status');
+    const data = await res.json();
+    if (data.ok) {
+      // Sincronizar estado
+      state.scannerActive = data.enabled;
+    }
+  } catch {}
+}
+
+function updateScannerBadge() {
+  const btn = document.getElementById('scanner-toggle-btn');
+  if (!btn) return;
+  btn.textContent  = state.scannerActive ? '⏹ DETENER ESCÁNER' : '▶ ESCÁNER 24/7';
+  btn.style.background = state.scannerActive ? 'rgba(255,59,88,.2)' : '';
+  btn.style.borderColor = state.scannerActive ? 'rgba(255,59,88,.5)' : '';
+  btn.style.color = state.scannerActive ? 'var(--red)' : '';
+}
+
+async function toggleServerScanner() {
+  if (state.scannerActive) {
+    await stopServerScanner();
+  } else {
+    await startServerScanner();
+  }
+  // Re-render del panel de alertas para reflejar el estado
+  if (state.currentTab === 'alerts') renderAlerts();
+}
+
 
 function handleServerTradeClosed(closed) {
   if (state.closedTrades.some(t => t.id === closed.id)) return; // ya cerrado localmente
@@ -1014,17 +1091,34 @@ async function fetchBitunixAccount() {
       console.log('[Bitunix account campos]', Object.keys(data.account));
       console.log('[Bitunix account valores]', data.account);
 
-      // Intentar todos los posibles nombres de campo para el capital disponible
-      const available = parseFloat(
-        data.account.available     ??
-        data.account.availableBalance ??
-        data.account.availAmt      ??
-        data.account.freeBalance   ??
-        data.account.free          ?? 0
+      // Leer equity real (incluye PnL no realizado = valor real de la cuenta)
+      const equity = parseFloat(
+        data.account.equity          ??
+        data.account.totalEquity     ??
+        data.account.walletBalance   ??
+        data.account.totalBalance    ??
+        data.account.balance         ?? 0
       );
-      if (available > 0) {
-        state.profile.capital = parseFloat(available.toFixed(2));
+      // Fallback: saldo disponible si no hay equity
+      const available = parseFloat(
+        data.account.available        ??
+        data.account.availableBalance ??
+        data.account.availAmt         ??
+        data.account.freeBalance      ??
+        data.account.free             ?? 0
+      );
+
+      // Preferir equity sobre available para cálculos de riesgo más precisos
+      const realCapital = equity > 0 ? equity : available;
+      if (realCapital > 0) {
+        const prev = state.profile.capital;
+        state.profile.capital = parseFloat(realCapital.toFixed(2));
         saveKey('profile', state.profile);
+        // Notificar si el capital cambió significativamente (>1%)
+        if (prev > 0 && Math.abs(realCapital - prev) / prev > 0.01) {
+          const diff = realCapital - prev;
+          showToast(`💼 Capital actualizado: $${realCapital.toFixed(2)} (${diff >= 0 ? '+' : ''}$${diff.toFixed(2)})`, false);
+        }
       }
     } else {
       console.warn('[Bitunix account] respuesta sin datos:', data);
@@ -1155,6 +1249,32 @@ async function flashCloseBitunix(trade) {
     return null;
   }
 }
+
+/* Actualiza el SL de una posición abierta en Bitunix (para breakeven) */
+async function updateBitunixSL(trade) {
+  try {
+    const res  = await authFetch('/api/bitunix/update-sl', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol:   trade.bitunixSymbol || (coinOf(trade.par) + 'USDT'),
+        side:     trade.tipo === 'LONG' ? 'LONG' : 'SHORT',
+        slPrice:  trade.stopLoss,
+      }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      console.log(`[Breakeven] SL actualizado en Bitunix → ${trade.stopLoss}`);
+    } else {
+      console.warn('[Breakeven] Error actualizando SL en Bitunix:', data.error);
+    }
+    return data;
+  } catch (e) {
+    console.warn('[Breakeven] updateBitunixSL error:', e.message);
+    return null;
+  }
+}
+
 
 /* ── Widget de saldo ─────────────────────────────────────────────────────── */
 function calcEquity() {
@@ -1369,19 +1489,18 @@ function acceptProposal(proposal) {
 }
 
 async function acceptAlert(alert) {
-  // Guard: verificar ejecutabilidad antes de intentar nada
   const execError = checkTradeExecutability(alert);
   if (execError) { showToast(execError, true); return null; }
 
   const trade = buildTrade(alert);
 
   if (bitunix.configured) {
-    // Si Bitunix está conectado, la orden debe aprobarse primero
+    const confirmed = await showTradeConfirmModal(trade);
+    if (!confirmed) return null;
+
     const result = await placeBitunixOrder(trade);
     if (!result || !result.ok) {
-      // Bitunix rechazó — NO añadir el trade
       showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);
-      // Marcar la alerta como rechazada para no perderla
       state.alerts = state.alerts.map(a =>
         a.id === alert.id ? { ...a, status: 'rejected_bitunix' } : a
       );
@@ -1416,6 +1535,12 @@ function closeTrade(tradeId, result, pnlOverride) {
   saveKey('activeTrades', state.activeTrades);
   saveKey('closedTrades', state.closedTrades);
   syncTradesToServer();
+
+  // Resincronizar capital real desde Bitunix tras cerrar un trade
+  if (bitunix.configured) {
+    setTimeout(() => fetchBitunixAccount().then(() => renderBalanceWidget()), 4000);
+  }
+
   return closed;
 }
 
@@ -1434,27 +1559,45 @@ function checkTPSL() {
     const price = state.prices[coin];
     if (!price) return true;
 
-    const hitSL = trade.tipo === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
-    const hitTP = trade.tipo === 'LONG'
-      ? price >= (trade.tp2 || trade.tp1)
-      : price <= (trade.tp2 || trade.tp1);
+    const hitSL  = trade.tipo === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
+    // Si hay TP2, TP1 es solo para breakeven — el cierre real es en TP2
+    const closeTarget = trade.tp2 || trade.tp1;
+    const hitTP  = trade.tipo === 'LONG' ? price >= closeTarget : price <= closeTarget;
+    // TP1 como nivel de breakeven (solo cuando hay TP2)
+    const hitTP1 = trade.tp2 && !trade.breakevenSet && (
+      trade.tipo === 'LONG' ? price >= trade.tp1 : price <= trade.tp1
+    );
+
+    // ── BREAKEVEN AUTOMÁTICO al llegar a TP1 (si hay TP2) ──────────────
+    if (hitTP1) {
+      trade.stopLoss    = trade.entrada;  // SL → entrada (breakeven)
+      trade.breakevenSet = true;
+      changed = true;
+      showToast(`🔒 ${trade.par} — SL movido a breakeven ($${fmtP(trade.entrada, coin)})`);
+      // Intentar actualizar SL en Bitunix si está configurado
+      if (bitunix.configured && trade.bitunixSymbol) {
+        updateBitunixSL(trade).catch(() => {});
+      }
+      saveKey('activeTrades', state.activeTrades);
+    }
 
     if (hitSL || hitTP) {
       state.autoClosedIds.add(trade.id);
-      const result = hitTP ? 'WIN' : 'LOSS';
+      const result = hitTP ? 'WIN' : (trade.breakevenSet ? 'BREAKEVEN' : 'LOSS');
       const lev    = trade.leverage || 1;
-      const exitPrice = hitTP ? (trade.tp2 || trade.tp1) : trade.stopLoss;
+      const exitPrice = hitTP ? closeTarget : trade.stopLoss;
       const pnl    = trade.tipo === 'LONG'
         ? (exitPrice - trade.entrada) * trade.size * lev
         : (trade.entrada - exitPrice) * trade.size * lev;
       const closed = { ...trade, result, pnl, closedAt: nowFull() };
       state.closedTrades.unshift(closed);
-      showToast(
-        result === 'WIN'
-          ? `✓ ${trade.par} cerrada en TP! ${fmtUSD(pnl)}`
-          : `✕ ${trade.par} SL alcanzado. ${fmtUSD(pnl)}`,
-        result !== 'WIN'
-      );
+      if (result === 'WIN') {
+        showToast(`✓ ${trade.par} cerrada en TP! ${fmtUSD(pnl)}`);
+      } else if (result === 'BREAKEVEN') {
+        showToast(`↔ ${trade.par} cerrada en breakeven. Sin pérdida.`);
+      } else {
+        showToast(`✕ ${trade.par} SL alcanzado. ${fmtUSD(pnl)}`, true);
+      }
       changed = true;
       return false;
     }
@@ -1725,7 +1868,8 @@ function stopScanner() {
 }
 
 function toggleScanner() {
-  state.scannerOn ? stopScanner() : startScanner();
+  // Delegamos al escáner server-side (24/7)
+  toggleServerScanner();
 }
 
 function updateScannerUI() {
@@ -1733,24 +1877,25 @@ function updateScannerUI() {
   const scanHdr = qs('#scanner-toggle-hdr');
   const mini    = qs('#scanner-mini');
   const sweep   = qs('#scanner-sweep');
+  const isOn    = state.scannerActive || state.scannerOn;
 
   if (scanBtn) {
-    scanBtn.className = 'scanner-btn ' + (state.scannerOn ? 'on' : 'off');
+    scanBtn.className = 'scanner-btn ' + (isOn ? 'on' : 'off');
     scanBtn.innerHTML = state.scanning
       ? `<span class="spinner-p"></span> ESCANEANDO...`
-      : state.scannerOn ? '⏹ DETENER' : '▶ ACTIVAR';
+      : isOn ? '⏹ DETENER' : '▶ ACTIVAR';
   }
   if (scanHdr) {
-    scanHdr.className = 'scanner-btn ' + (state.scannerOn ? 'on' : 'off');
-    scanHdr.innerHTML = state.scanning
-      ? `<span class="spinner-p"></span> ESCÁNER ON`
-      : state.scannerOn ? '📡 ESCÁNER ON' : '📡 ESCÁNER OFF';
+    scanHdr.className = 'scanner-btn ' + (isOn ? 'on' : 'off');
+    scanHdr.innerHTML = isOn ? '📡 ESCÁNER ON (24/7)' : '📡 ESCÁNER OFF';
   }
-  if (mini) mini.style.display = state.scannerOn ? 'block' : 'none';
-  if (sweep) sweep.style.display = state.scannerOn ? 'block' : 'none';
+  if (mini) mini.style.display = isOn ? 'block' : 'none';
+  if (sweep) sweep.style.display = isOn ? 'block' : 'none';
 
   const miniTime = qs('#scanner-mini-time');
   if (miniTime && state.lastScan) miniTime.textContent = 'Último: ' + state.lastScan;
+
+  updateScannerBadge();
 }
 
 /* ── Notifications ───────────────────────────────────────────────────────── */
@@ -2757,7 +2902,34 @@ function renderProfile() {
       <div class="lbl">Notas para la IA</div>
       <textarea id="profile-notes" class="inp" placeholder="Ej: Solo opero tendencias alcistas..." style="height:64px;resize:none;margin-bottom:12px">${p.notes}</textarea>
       <button class="btn btng" onclick="saveProfile()">✓ Guardar perfil</button>
+    </div>
+
+    <!-- TELEGRAM -->
+    <div class="stl" style="margin-top:18px">◈ Notificaciones Telegram</div>
+    <div class="card" id="telegram-config-panel">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.6">
+        Recibe alertas instantáneas en Telegram cuando la IA detecta una oportunidad, cuando un trade llega al TP/SL, o cuando se activa el breakeven — aunque tengas el navegador cerrado.
+      </div>
+      <div style="font-size:10px;color:var(--muted);padding:8px 12px;background:var(--s2);border-radius:7px;margin-bottom:12px;line-height:1.6">
+        <b style="color:var(--accent)">Cómo configurar:</b><br>
+        1. Habla con <b>@BotFather</b> en Telegram → /newbot → copia el token<br>
+        2. Habla con <b>@userinfobot</b> → copia tu Chat ID<br>
+        3. En Railway añade: <code>TELEGRAM_BOT_TOKEN</code> y <code>TELEGRAM_CHAT_ID</code>
+      </div>
+      <div id="telegram-status-msg" style="font-size:11px;margin-bottom:10px;color:var(--muted)">Comprobando...</div>
+      <button class="btn btng" style="font-size:11px;padding:7px 16px" onclick="testTelegram()">📨 Enviar mensaje de prueba</button>
     </div>`;
+
+  // Comprobar estado de Telegram
+  authFetch('/api/telegram/status').then(r => r.json()).then(data => {
+    const el = qs('#telegram-status-msg');
+    if (!el) return;
+    if (data.configured) {
+      el.innerHTML = `<span style="color:var(--green)">✓ Telegram configurado y activo</span>`;
+    } else {
+      el.innerHTML = `<span style="color:var(--yellow)">⚠️ Sin configurar — añade las variables en Railway</span>`;
+    }
+  }).catch(() => {});
 }
 
 function setProfileField(key, value) {
@@ -2780,6 +2952,25 @@ function saveProfile() {
   saveKey('profile', state.profile);
   showToast('✓ Perfil guardado');
 }
+
+async function testTelegram() {
+  const btn = qs('#telegram-config-panel button');
+  if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
+  try {
+    const res  = await authFetch('/api/telegram/test', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      showToast('✅ Mensaje de prueba enviado — revisa Telegram');
+    } else {
+      showToast('❌ ' + (data.error || 'Error enviando mensaje'), true);
+    }
+  } catch (e) {
+    showToast('❌ Error: ' + e.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📨 Enviar mensaje de prueba'; }
+  }
+}
+
 
 /* ── Render: Capital ─────────────────────────────────────────────────────── */
 function renderCapital() {
@@ -3066,17 +3257,127 @@ function saveTradeNotes(id) {
 }
 
 /* ── Proposal handlers ───────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════
+   MODAL DE CONFIRMACIÓN DE TRADE
+   ═══════════════════════════════════════════════════════════ */
+
+/**
+ * Muestra un modal de confirmación antes de ejecutar en Bitunix.
+ * Devuelve una Promise que resuelve true (confirmar) o false (cancelar).
+ */
+function showTradeConfirmModal(trade) {
+  return new Promise(resolve => {
+    const existing = document.getElementById('trade-confirm-modal');
+    if (existing) existing.remove();
+
+    const coin    = coinOf(trade.par);
+    const lc      = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const money   = calcProposalMoney(trade);
+    const tpLabel = trade.tp2 ? `TP1 🎯 ${fmtP(trade.tp1, coin)} → TP2 ${fmtP(trade.tp2, coin)}` : `TP1 🎯 ${fmtP(trade.tp1, coin)}`;
+
+    const div = document.createElement('div');
+    div.id = 'trade-confirm-modal';
+    div.innerHTML = `
+      <div style="position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);overflow:hidden">
+
+          <!-- Header -->
+          <div style="padding:16px 20px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
+            <div style="width:34px;height:34px;border-radius:8px;background:rgba(255,200,0,.1);border:1px solid rgba(255,200,0,.3);display:flex;align-items:center;justify-content:center;font-size:16px">⚠️</div>
+            <div>
+              <div style="font-weight:700;font-size:14px;color:var(--text)">Confirmar orden en Bitunix</div>
+              <div style="font-size:10px;color:var(--muted)">Esta acción enviará una orden real a tu cuenta</div>
+            </div>
+          </div>
+
+          <!-- Trade summary -->
+          <div style="padding:16px 20px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+              <span style="font-family:var(--display);font-size:18px;font-weight:800;color:#fff">${trade.par}</span>
+              <span style="font-size:11px;padding:3px 9px;border-radius:4px;border:1px solid ${lc}50;color:${lc};font-weight:600">${trade.tipo}</span>
+              ${trade.leverage > 1 ? `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:var(--yellow)">${trade.leverage}x</span>` : ''}
+            </div>
+
+            <!-- Niveles -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+              <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--accent)">
+                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">ENTRADA (mercado)</div>
+                <div style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(trade.entrada, coin)}</div>
+              </div>
+              <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--red)">
+                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">STOP LOSS</div>
+                <div style="font-size:13px;font-weight:700;color:var(--red)">${fmtP(trade.stopLoss, coin)}</div>
+              </div>
+              <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--green);grid-column:span 2">
+                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">TAKE PROFIT (Bitunix cierra aquí)</div>
+                <div style="font-size:13px;font-weight:700;color:var(--green)">${tpLabel}</div>
+              </div>
+            </div>
+
+            <!-- Dinero -->
+            <div style="padding:10px 14px;background:rgba(0,0,0,.25);border-radius:8px;border:1px solid var(--border);margin-bottom:14px">
+              <div style="font-size:9px;color:var(--muted);letter-spacing:.5px;margin-bottom:8px">💰 RESUMEN FINANCIERO</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Riesgo máximo</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--red)">-$${money.riskUSD.toFixed(2)} <span style="font-size:9px;color:var(--muted)">(${money.riskPct}%)</span></div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Ganancia potencial</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--green)">+$${money.maxWin.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Margen utilizado</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--text)">$${money.margin.toFixed(2)} <span style="font-size:9px;color:var(--muted)">(${money.capitalPct.toFixed(1)}%)</span></div>
+                </div>
+                <div>
+                  <div style="font-size:9px;color:var(--muted)">Posición total</div>
+                  <div style="font-size:13px;font-weight:700;color:var(--accent)">$${money.notional.toFixed(2)}</div>
+                </div>
+              </div>
+            </div>
+
+            ${money.warnings.length ? `<div style="margin-bottom:12px">${money.warnings.map(w=>`<div style="font-size:11px;color:var(--red);padding:4px 0">${w}</div>`).join('')}</div>` : ''}
+
+            <!-- Aviso legal -->
+            <div style="font-size:10px;color:var(--muted);padding:8px 12px;background:rgba(255,200,0,.05);border:1px solid rgba(255,200,0,.15);border-radius:6px;margin-bottom:14px;line-height:1.5">
+              ⚠️ Esta orden se ejecutará <b style="color:var(--yellow)">inmediatamente al precio de mercado</b>. El precio de entrada puede diferir ligeramente del mostrado.
+            </div>
+
+            <!-- Botones -->
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+              <button id="confirm-cancel-btn" class="btn" style="padding:10px;font-size:12px;font-weight:600">✕ Cancelar</button>
+              <button id="confirm-execute-btn" class="btn btng" style="padding:10px;font-size:12px;font-weight:600">📡 Ejecutar ahora</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    document.body.appendChild(div);
+
+    const close = (result) => { div.remove(); resolve(result); };
+    document.getElementById('confirm-cancel-btn').onclick  = () => close(false);
+    document.getElementById('confirm-execute-btn').onclick = () => close(true);
+    // Click fuera del modal = cancelar
+    div.querySelector('div[style*="inset:0"]').addEventListener('click', e => {
+      if (e.target === e.currentTarget) close(false);
+    });
+  });
+}
+
 async function onAcceptProposal(i) {
   const p = state.pending[i];
   if (!p) return;
 
-  // Guard: verificar ejecutabilidad antes de intentar nada
   const execError = checkTradeExecutability(p);
   if (execError) { showToast(execError, true); return; }
 
   const trade = buildTrade(p);
 
   if (bitunix.configured) {
+    const confirmed = await showTradeConfirmModal(trade);
+    if (!confirmed) return;
+
     const result = await placeBitunixOrder(trade);
     if (!result || !result.ok) {
       showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);

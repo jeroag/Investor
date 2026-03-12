@@ -303,6 +303,7 @@ function checkTPSL(coin, price) {
 
       // Push inmediato — PRIORIDAD 5 (antes era solo polling cada 10s)
       broadcast({ type: 'TRADE_CLOSED', trade: closed });
+      notifyTradeClosed(closed, closed.result, pnl);
       console.log(`[TP/SL] ${trade.par} ${closed.result} PnL:$${pnl.toFixed(2)}`);
       return false;
     }
@@ -455,6 +456,8 @@ app.post('/api/bitunix/place-order', requireAuth, async (req, res) => {
     const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, orderBody);
     const orderId   = orderData.data?.orderId;
     console.log(`[Bitunix order OK] ${symbol} ${side} qty=${qty} orderId=${orderId}`);
+    // Notificar apertura por Telegram
+    notifyTradeOpened({ par: symbol.replace('USDT','/USDT'), tipo: side==='BUY'?'LONG':'SHORT', leverage: leverage||1, entrada: price||'mercado', stopLoss: slPrice||'—', tp1: tpPrice||'—', tp2: null, riskUSD: 0, rr: '—' });
     res.json({ ok:true, orderId });
   } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
 });
@@ -474,6 +477,27 @@ app.post('/api/bitunix/close-position', requireAuth, async (req, res) => {
     }
     const data = await bitunixRequest('POST', '/api/v1/futures/trade/flash_close_position', {}, { positionId });
     res.json({ ok:true, data:data.data });
+  } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+/* ── Actualizar SL de posición abierta (para breakeven) ─────────────────── */
+app.post('/api/bitunix/update-sl', requireAuth, async (req, res) => {
+  try {
+    const { symbol, side, slPrice } = req.body;
+    if (!symbol || !slPrice) return res.status(400).json({ ok:false, error:'symbol y slPrice requeridos' });
+
+    // Obtener posición abierta para ese símbolo
+    const posData   = await bitunixRequest('GET', '/api/v1/futures/position/get_pending_positions', {});
+    const positions = Array.isArray(posData.data) ? posData.data : [];
+    const pos       = positions.find(p => p.symbol === symbol && (!side || p.side === side || p.positionSide === side));
+    if (!pos) return res.status(404).json({ ok:false, error:`Sin posición abierta para ${symbol}` });
+
+    // Actualizar SL en Bitunix
+    const data = await bitunixRequest('POST', '/api/v1/futures/trade/set_risk_limit', {}, {
+      positionId: pos.positionId,
+      stopLoss:   String(slPrice),
+    });
+    res.json({ ok:true, data: data.data });
   } catch (err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
@@ -584,7 +608,228 @@ app.post('/api/claude', requireAuth, rateLimit, async (req, res) => {
   } catch (err) { res.status(500).json({ error:'Error interno: '+err.message }); }
 });
 
-/* ── Fallback ────────────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════
+   ESCÁNER DE MERCADO SERVER-SIDE (24/7, sin navegador)
+   ══════════════════════════════════════════════════════════ */
+const scannerState = {
+  enabled:       false,
+  intervalMin:   15,           // minutos entre escaneos
+  lastScan:      0,
+  lastAlert:     null,
+  pendingAlerts: [],           // alertas detectadas esperando que el usuario las vea
+  timer:         null,
+};
+
+function buildServerTechContext() {
+  const prices = serverState.prices;
+  const coins  = Object.keys(prices);
+  if (!coins.length) return 'Sin datos de precio disponibles.';
+  return coins.map(coin => {
+    const p = prices[coin];
+    return `${coin}/USDT: $${p.toFixed ? p.toFixed(4) : p}`;
+  }).join(' | ');
+}
+
+async function runServerScan(profile) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const techCtx    = buildServerTechContext();
+  const recent     = scannerState.pendingAlerts.slice(-3)
+    .map(a => `${a.par} ${a.tipo} @${a.entrada}`).join(' | ') || 'ninguna';
+  const capital    = profile?.capital    || 100;
+  const leverage   = profile?.leverage   || 1;
+  const riskPct    = profile?.risk_pct   || 2;
+  const style      = profile?.style      || 'swing';
+
+  const prompt = `Eres un escáner de mercado automático 24/7. Analiza los precios actuales y decide si hay una oportunidad de trading clara.
+
+━━━ PRECIOS EN TIEMPO REAL ━━━
+${techCtx}
+
+━━━ PERFIL ━━━
+Capital: $${capital} | Riesgo/op: ${riskPct}% = $${(capital * riskPct / 100).toFixed(2)} | Leverage: ${leverage}x | Estilo: ${style}
+
+━━━ ALERTAS RECIENTES (no duplicar) ━━━
+${recent}
+
+━━━ CRITERIOS (todos deben cumplirse) ━━━
+1. Movimiento significativo: precio en zona clave (soporte/resistencia, ruptura, oversold/overbought)
+2. R:R estimado ≥ 2.0 usando niveles técnicos básicos
+3. No duplicar par+dirección de alertas recientes
+4. Solo monedas con precio disponible en los datos
+
+Responde SOLO JSON:
+{"hay_oportunidad":true,"urgencia":"ALTA","par":"XRP/USDT","tipo":"LONG","setup":"descripcion breve","entrada":2.35,"stopLoss":2.18,"tp1":2.68,"tp2":2.90,"rr":"2.1","confianza":75,"signals_aligned":["señal1","señal2"],"razon":"explicacion concisa max 2 lineas","contexto_mercado":"resumen mercado"}
+Si no hay oportunidad: {"hay_oportunidad":false,"razon":"motivo"}`;
+
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type':     'application/json',
+        'x-api-key':        apiKey,
+        'anthropic-version':'2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: 800,
+        system:     'Eres escáner técnico de criptomonedas. Responde SOLO JSON válido sin markdown.',
+        messages:   [{ role: 'user', content: prompt }],
+      }),
+    });
+    const data = await response.json();
+    const text = data?.content?.[0]?.text || '';
+    const clean = text.replace(/```json|```/g, '').trim();
+    return JSON.parse(clean);
+  } catch (e) {
+    console.error('[Scanner] Error llamando a Claude:', e.message);
+    return null;
+  }
+}
+
+function startServerScanner(profile) {
+  if (scannerState.timer) clearInterval(scannerState.timer);
+  scannerState.enabled  = true;
+  scannerState.intervalMin = profile?.scan_interval || 15;
+
+  const doScan = async () => {
+    if (!scannerState.enabled) return;
+    console.log(`[Scanner] Escaneo iniciado — ${new Date().toLocaleTimeString('es-ES')}`);
+    scannerState.lastScan = Date.now();
+    const result = await runServerScan(profile);
+    if (!result) return;
+
+    if (result.hay_oportunidad) {
+      const alert = {
+        ...result,
+        id:        `srv_${Date.now()}`,
+        timestamp: new Date().toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' }),
+        source:    'server',
+        status:    'pending',
+      };
+      scannerState.lastAlert = alert;
+      scannerState.pendingAlerts.unshift(alert);
+      if (scannerState.pendingAlerts.length > 20) scannerState.pendingAlerts.pop();
+
+      // Push inmediato al cliente via WebSocket
+      broadcast({ type: 'SCANNER_ALERT', alert });
+      notifyScannerAlert(alert);
+      console.log(`[Scanner] 🚨 Oportunidad: ${alert.par} ${alert.tipo} entrada=${alert.entrada}`);
+    } else {
+      console.log(`[Scanner] Sin oportunidad — ${result.razon}`);
+    }
+  };
+
+  doScan(); // primer escaneo inmediato
+  scannerState.timer = setInterval(doScan, scannerState.intervalMin * 60 * 1000);
+  console.log(`[Scanner] ✓ Activo — escaneo cada ${scannerState.intervalMin} min`);
+}
+
+function stopServerScanner() {
+  if (scannerState.timer) clearInterval(scannerState.timer);
+  scannerState.timer   = null;
+  scannerState.enabled = false;
+  console.log('[Scanner] ✗ Detenido');
+}
+
+/* Endpoints de control del escáner */
+app.post('/api/scanner/start', requireAuth, (req, res) => {
+  const { profile } = req.body || {};
+  startServerScanner(profile);
+  res.json({ ok: true, intervalMin: scannerState.intervalMin });
+});
+
+app.post('/api/scanner/stop', requireAuth, (req, res) => {
+  stopServerScanner();
+  res.json({ ok: true });
+});
+
+app.get('/api/scanner/status', requireAuth, (req, res) => {
+  res.json({
+    ok:          true,
+    enabled:     scannerState.enabled,
+    intervalMin: scannerState.intervalMin,
+    lastScan:    scannerState.lastScan,
+    pendingCount:scannerState.pendingAlerts.filter(a => a.status === 'pending').length,
+    lastAlert:   scannerState.lastAlert,
+  });
+});
+
+app.get('/api/scanner/alerts', requireAuth, (req, res) => {
+  res.json({ ok: true, alerts: scannerState.pendingAlerts });
+});
+
+
+/* ══════════════════════════════════════════════════════════
+   TELEGRAM NOTIFICACIONES
+   Variables necesarias en Railway:
+   TELEGRAM_BOT_TOKEN → token del bot (de @BotFather)
+   TELEGRAM_CHAT_ID   → tu chat ID (de @userinfobot)
+   ══════════════════════════════════════════════════════════ */
+async function sendTelegram(text) {
+  const token  = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return;
+  try {
+    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+    });
+  } catch (e) { console.warn('[Telegram] Error:', e.message); }
+}
+
+function notifyTradeOpened(trade) {
+  const dir = trade.tipo === 'LONG' ? '🟢 LONG' : '🔴 SHORT';
+  const lev = trade.leverage > 1 ? ` ${trade.leverage}x` : '';
+  sendTelegram(
+    `⚡ <b>TRADE ABIERTO</b>\n${dir}${lev} <b>${trade.par}</b>\n` +
+    `Entrada: <code>${trade.entrada}</code>\nSL: <code>${trade.stopLoss}</code> | TP1: <code>${trade.tp1}</code>` +
+    (trade.tp2 ? ` | TP2: <code>${trade.tp2}</code>` : '') +
+    `\nRiesgo: $${(trade.riskUSD||0).toFixed(2)} | R:R 1:${trade.rr}`
+  );
+}
+
+function notifyTradeClosed(trade, result, pnl) {
+  const emoji  = result === 'WIN' ? '✅' : result === 'BREAKEVEN' ? '↔️' : '❌';
+  const label  = result === 'WIN' ? 'GANADA' : result === 'BREAKEVEN' ? 'BREAKEVEN' : 'PÉRDIDA';
+  const pnlStr = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+  sendTelegram(`${emoji} <b>TRADE ${label}</b>\n<b>${trade.par}</b> ${trade.tipo}\nP&L: <b>${pnlStr}</b>`);
+}
+
+function notifyScannerAlert(alert) {
+  const dir    = alert.tipo === 'LONG' ? '🟢' : '🔴';
+  const urgent = alert.urgencia === 'ALTA' ? '🔥' : '⚡';
+  const appUrl = process.env.APP_URL || 'tu app de Railway';
+  sendTelegram(
+    `${urgent} <b>OPORTUNIDAD DETECTADA</b>\n` +
+    `${dir} <b>${alert.par} ${alert.tipo}</b> — ${alert.confianza}% confianza\n` +
+    `Entrada: <code>${alert.entrada}</code> | SL: <code>${alert.stopLoss}</code> | TP1: <code>${alert.tp1}</code>\n` +
+    `${alert.razon}\n<i>Abre la app para ejecutar → ${appUrl}</i>`
+  );
+}
+
+function notifyBreakeven(trade) {
+  sendTelegram(
+    `🔒 <b>BREAKEVEN</b> — ${trade.par} ${trade.tipo}\n` +
+    `SL movido a entrada: <code>${trade.entrada}</code>\n` +
+    `<i>El trade ya no puede perder dinero.</i>`
+  );
+}
+
+app.post('/api/telegram/test', requireAuth, async (req, res) => {
+  const token  = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  if (!token || !chatId) return res.json({ ok:false, error:'Configura TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID en Railway' });
+  await sendTelegram('✅ <b>CryptoPlan IA</b> — Notificaciones Telegram funcionando.');
+  res.json({ ok:true });
+});
+
+app.get('/api/telegram/status', requireAuth, (req, res) => {
+  res.json({ ok:true, configured: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) });
+});
+
 app.get('*', (req, res) => {
   if (!isAuthenticated(req)) return res.redirect('/login');
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
