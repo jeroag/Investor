@@ -3412,8 +3412,21 @@ function renderCapital() {
         </table>
       </div>
     </div>
+
+    <!-- Widget: Comisiones Bitunix -->
+    <div class="card" style="padding:0;overflow:hidden;margin-top:0">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div class="stl" style="margin:0">💸 Comisiones Bitunix por operación</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Maker 0.02% · Taker 0.06% · Comisión = tamaño_posición × fee · La posición = capital × leverage</div>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="fee-table" style="width:100%;border-collapse:collapse;min-width:700px;font-size:11px">
+        </table>
+      </div>
+    </div>
     </div>`;
   renderLevTable();
+  renderFeeTable();
 }
 
 
@@ -3463,6 +3476,61 @@ function renderLevTable() {
   html += '</tbody>';
   tbl.innerHTML = html;
 }
+
+function renderFeeTable() {
+  const tbl = qs('#fee-table');
+  if (!tbl) return;
+
+  const LEVERAGES  = [1, 2, 3, 5, 10, 20, 25, 50, 75];
+  const MAKER_FEE  = 0.0002;  // 0.02%
+  const TAKER_FEE  = 0.0006;  // 0.06%
+  const capital    = state.profile?.capital || 1000;
+
+  // Header
+  let html = '<thead><tr style="background:var(--s2)">';
+  html += '<th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap">Capital · Tipo</th>';
+  LEVERAGES.forEach(l => {
+    html += `<th style="padding:8px 6px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);text-align:center">${l}x</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  // Rows: para el capital actual del usuario, maker y taker
+  [
+    { label: 'Maker (0.02%)', fee: MAKER_FEE, color: 'var(--green)' },
+    { label: 'Taker (0.06%)', fee: TAKER_FEE, color: 'var(--yellow)' },
+  ].forEach(({ label, fee, color }) => {
+    html += `<tr style="border-bottom:1px solid var(--border)">`;
+    html += `<td style="padding:7px 12px;white-space:nowrap;font-weight:600;color:${color}">${label}</td>`;
+    LEVERAGES.forEach(lev => {
+      const posSize   = capital * lev;
+      const comision  = posSize * fee;
+      // ida + vuelta (apertura + cierre)
+      const roundTrip = comision * 2;
+      html += `<td style="padding:7px 6px;text-align:center;color:var(--muted)">`;
+      html += `<span style="font-size:10px;color:var(--subtle)">×1 </span>$${comision.toFixed(3)}`;
+      html += `<br><span style="font-size:10px;color:var(--subtle)">×2 $${roundTrip.toFixed(3)}</span>`;
+      html += `</td>`;
+    });
+    html += '</tr>';
+  });
+
+  // Fila extra: break-even mínimo (cuánto debe moverse el precio solo para cubrir comisiones taker)
+  html += `<tr style="border-bottom:1px solid var(--border);background:var(--s2)">`;
+  html += `<td style="padding:7px 12px;white-space:nowrap;font-weight:600;color:var(--muted);font-size:10px">Break-even mín.<br><span style="font-weight:400">% para cubrir fees (×2 taker)</span></td>`;
+  LEVERAGES.forEach(lev => {
+    const bePct = (TAKER_FEE * 2 * 100).toFixed(3);
+    const bePctLev = (TAKER_FEE * 2 / lev * 100).toFixed(4);
+    html += `<td style="padding:7px 6px;text-align:center;font-size:11px;color:var(--muted)">`;
+    html += `<b style="color:var(--text)">${bePct}%</b>`;
+    html += `<br><span style="font-size:10px;color:var(--subtle)">${bePctLev}% capital</span>`;
+    html += `</td>`;
+  });
+  html += '</tr>';
+
+  html += '</tbody>';
+  tbl.innerHTML = html;
+}
+
 
 function updateCapCalc() {
   const cap  = parseFloat(qs('#cap-input')?.value)  || 1000;
