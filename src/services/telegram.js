@@ -93,13 +93,17 @@ async function handleTelegramUpdate(update) {
   const allowedIds = [
     String(config.telegramChatId),
     process.env.TELEGRAM_CHAT_ID_2 || '',
+    process.env.TELEGRAM_GROUP_ID  || '',
   ].filter(Boolean);
   if (!allowedIds.includes(String(msg.chat?.id))) {
     console.warn(`[Telegram] Mensaje rechazado de chatId=${msg.chat?.id}`);
     return null;
   }
 
-  const text = msg.text.trim().toLowerCase();
+  // En grupos el comando puede venir como /estado@Myap_C_bot — limpiar la mención
+  const rawText = msg.text.trim().toLowerCase().replace(/@\S+/, '').trim();
+
+  const text = rawText;
 
   if (text.startsWith('/estado') || text.startsWith('/status')) {
     return buildEstadoMsg();
