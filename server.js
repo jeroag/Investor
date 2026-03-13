@@ -17,7 +17,7 @@ const { securityMiddleware }   = require('./src/middleware/security');
 const { requireAuth, restoreSessions, scheduleSessionCleanup } = require('./src/middleware/auth');
 
 const db           = require('./src/db/supabase');
-const { serverState } = require('./src/state');
+const { serverState, scannerState } = require('./src/state');
 const ws           = require('./src/websocket');
 
 const binance  = require('./src/services/binance');
@@ -75,11 +75,20 @@ app.get('*', (req, res) => {
 async function bootstrap() {
   // Restaurar estado desde Supabase
   console.log('\n🔄  Restaurando estado desde Supabase…');
-  [serverState.activeTrades, serverState.closedTrades] = await Promise.all([
-    db.loadActiveTrades(),
-    db.loadClosedTrades(),
-  ]);
-  console.log(`✓ Trades activos: ${serverState.activeTrades.length} | Cerrados: ${serverState.closedTrades.length}`);
+  try {
+    const [activeTrades, closedTrades, recentAlerts] = await Promise.all([
+      db.loadActiveTrades(),
+      db.loadClosedTrades(),
+      db.loadRecentAlerts(50),
+    ]);
+    serverState.activeTrades = activeTrades;
+    serverState.closedTrades = closedTrades;
+    scannerState.pendingAlerts = recentAlerts;
+    console.log(`✓ Trades activos: ${serverState.activeTrades.length} | Cerrados: ${serverState.closedTrades.length} | Alertas: ${recentAlerts.length}`);
+  } catch (dbErr) {
+    console.error('⚠️  Supabase no disponible al arrancar — continuando sin datos persistidos:', dbErr.message);
+    console.error('   La app funcionará en modo degradado (datos en memoria solamente).');
+  }
 
   // Restaurar sesiones
   await restoreSessions();

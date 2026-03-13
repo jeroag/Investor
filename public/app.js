@@ -406,6 +406,10 @@ async function fetchMarketMeta() {
 
       const { tag, cls } = rsiTag(rsi4h);
 
+      const last1d    = k1d.length >= 1 ? k1d[k1d.length - 1] : null;
+      const open24h   = last1d ? parseFloat(last1d[1]) : null;
+      const change24h = (open24h && open24h > 0) ? ((price - open24h) / open24h * 100) : null;
+
       MARKET_META[coin] = {
         tag, cls,
         rsi:     rsi4h ?? '—',
@@ -419,6 +423,7 @@ async function fetchMarketMeta() {
         macd:    macd ? { macd:+macd.macd.toFixed(4), signal: macd.signal?+macd.signal.toFixed(4):null, hist: macd.hist?+macd.hist.toFixed(4):null } : null,
         bb:      bb   ? { price, upper:+bb.upper.toFixed(2), mid:+bb.mid.toFixed(2), lower:+bb.lower.toFixed(2), width:+bb.width.toFixed(1) } : null,
         atr:     atr  ? +atr.toFixed(4) : null,
+        change24h: change24h != null ? +change24h.toFixed(2) : null,
         vol, patterns, macroTrend,
       };
       MARKET_META[coin].confluence = calcConfluence(MARKET_META[coin]);
@@ -461,6 +466,7 @@ const state = {
   pending:      [],
   aiMsg:        null,
   currentTab:   'ops',
+  histPage:      0,
   scannerOn:    false,
   scanning:     false,
   lastScan:     null,
@@ -747,6 +753,10 @@ function connectWS() {
     const price = parseFloat(d.c);
     state.prevPrices[coin] = state.prices[coin] || price;
     state.prices[coin] = price;
+    if (state.currentTab === 'dash') {
+      clearTimeout(window._dashRefreshTimer);
+      window._dashRefreshTimer = setTimeout(renderDash, 3000);
+    }
     onPriceUpdate(coin, price);
   };
 
@@ -1512,7 +1522,7 @@ async function acceptAlert(alert) {
     a.id === alert.id ? { ...a, status: 'accepted' } : a
   );
   saveKey('alerts', state.alerts);
-  setTab('ops');
+  setTab('dash');
   return trade;
 }
 
@@ -2014,6 +2024,161 @@ function calcProposalMoney(proposal) {
 }
 
 /* ── Render: Ops ─────────────────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════
+   DASHBOARD DE INICIO
+   ══════════════════════════════════════════════════════════════════ */
+function renderDashboard() {
+  const root = qs('#sec-dashboard');
+  if (!root) return;
+
+  const { closedTrades, activeTrades, prices, profile, alerts, scannerOn, lastScan } = state;
+  const now  = Date.now();
+  const day  = 86_400_000;
+  const week = 7 * day;
+
+  // P&L activo
+  const activePnl = activeTrades.reduce((acc, t) => {
+    const p = prices[coinOf(t.par)] || t.entrada;
+    return acc + (t.tipo === 'LONG' ? p - t.entrada : t.entrada - p) * (t.size||0) * (t.leverage||1);
+  }, 0);
+
+  // Stats globales
+  const totalClosed = closedTrades.length;
+  const totalWins   = closedTrades.filter(t => t.result === 'WIN').length;
+  const totalPnl    = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const winRate     = totalClosed > 0 ? (totalWins / totalClosed * 100).toFixed(0) : '—';
+
+  // Stats 7 días
+  const weekTrades  = closedTrades.filter(t => (now - new Date(t.closedAt||0).getTime()) < week);
+  const weekPnl     = weekTrades.reduce((a, t) => a + (t.pnl||0), 0);
+  const weekWins    = weekTrades.filter(t => t.result === 'WIN').length;
+  const weekWR      = weekTrades.length > 0 ? (weekWins / weekTrades.length * 100).toFixed(0) : '—';
+
+  // Última alerta
+  const lastAlert   = alerts[0];
+
+  // Trades activos con P&L
+  const activeCards = activeTrades.map(t => {
+    const coin  = coinOf(t.par);
+    const price = prices[coin] || t.entrada;
+    const pnl   = (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size||0) * (t.leverage||1);
+    const dir   = t.tipo === 'LONG' ? '🟢' : '🔴';
+    const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span>${dir}</span>
+          <div>
+            <div style="font-weight:600;font-size:13px">${t.par}</div>
+            <div style="font-size:10px;color:var(--muted)">E: ${fmtP(t.entrada, coin)} · SL: ${fmtP(t.stopLoss, coin)}</div>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:var(--serif);font-weight:700;color:${pnlColor}">${fmtUSD(pnl)}</div>
+          <div style="font-size:10px;color:var(--muted)">${t.leverage||1}x leverage</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  // BTC dominance / precio de referencia
+  const btcPrice = prices['BTC'];
+  const ethPrice = prices['ETH'];
+  const btcMeta  = MARKET_META['BTC'];
+  const ethMeta  = MARKET_META['ETH'];
+
+  const mkRef = (coin, meta, price) => {
+    if (!price) return '';
+    const chg = meta?.change24h;
+    const chgStr = chg != null ? `<span style="color:${chg>=0?'var(--green)':'var(--red)'};font-size:11px">${chg>=0?'▲':' ▼'}${Math.abs(chg).toFixed(2)}%</span>` : '';
+    return `
+      <div style="text-align:center;padding:10px;background:var(--s2);border-radius:10px;flex:1">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">${coin}</div>
+        <div style="font-family:var(--serif);font-size:16px;font-weight:700">${fmtP(price, coin)}</div>
+        <div style="margin-top:2px">${chgStr}</div>
+        ${meta?.macroTrend ? `<div style="font-size:9px;color:${meta.macroTrend==='ALCISTA'?'var(--green)':meta.macroTrend==='BAJISTA'?'var(--red)':'var(--muted)'};margin-top:2px">${meta.macroTrend}</div>` : ''}
+      </div>`;
+  };
+
+  // Scanner status
+  const scannerStatus = scannerOn
+    ? `<span style="color:var(--green);font-size:11px">● ACTIVO</span>`
+    : `<span style="color:var(--muted);font-size:11px">○ INACTIVO</span>`;
+
+  root.innerHTML = `
+    <div class="stl">◈ Inicio Rápido</div>
+
+    <!-- Referencia de mercado -->
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      ${mkRef('BTC', btcMeta, btcPrice)}
+      ${mkRef('ETH', ethMeta, ethPrice)}
+      <div style="text-align:center;padding:10px;background:var(--s2);border-radius:10px;flex:1">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:3px">Escáner</div>
+        <div style="margin:4px 0">${scannerStatus}</div>
+        <div style="font-size:9px;color:var(--subtle)">${lastScan ? 'Último: ' + lastScan : 'Sin escanear'}</div>
+      </div>
+    </div>
+
+    <!-- KPIs rápidos -->
+    <div class="kpi-grid" style="margin-bottom:12px">
+      <div class="kpi">
+        <div class="kpi-lbl">P&L Total</div>
+        <div class="kpi-val" style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(totalPnl)}</div>
+        <div class="kpi-sub">${totalClosed} ops · WR ${winRate}%</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-lbl">P&L Activo</div>
+        <div class="kpi-val" style="color:${activePnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(activePnl)}</div>
+        <div class="kpi-sub">${activeTrades.length} posiciones</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-lbl">Esta semana</div>
+        <div class="kpi-val" style="color:${weekPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(weekPnl)}</div>
+        <div class="kpi-sub">${weekTrades.length} ops · WR ${weekWR}%</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-lbl">Capital</div>
+        <div class="kpi-val">$${profile.capital.toLocaleString()}</div>
+        <div class="kpi-sub">Riesgo ${profile.risk_pct}% · ${profile.leverage||1}x</div>
+      </div>
+    </div>
+
+    <!-- Posiciones activas -->
+    ${activeTrades.length > 0 ? `
+    <div class="card" style="margin-bottom:12px">
+      <div class="stl" style="margin-bottom:4px">Posiciones abiertas</div>
+      ${activeCards}
+    </div>` : `
+    <div class="card" style="margin-bottom:12px;text-align:center;padding:20px">
+      <div style="font-size:28px;margin-bottom:8px">📭</div>
+      <div style="color:var(--muted);font-size:13px">Sin posiciones abiertas</div>
+      <button class="btn btng" style="margin-top:12px;font-size:12px" onclick="onGenerate()">⚡ Analizar ahora</button>
+    </div>`}
+
+    <!-- Última alerta IA -->
+    ${lastAlert ? `
+    <div class="card" style="margin-bottom:12px">
+      <div class="stl" style="margin-bottom:4px">Última alerta IA</div>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span style="font-weight:600">${lastAlert.par}</span>
+          <span style="color:${lastAlert.tipo==='LONG'?'var(--green)':'var(--red)'};margin-left:6px">${lastAlert.tipo}</span>
+          <span style="font-size:11px;color:var(--muted);margin-left:8px">${lastAlert.timestamp||''}</span>
+        </div>
+        <span style="font-size:11px;color:var(--accent)">${lastAlert.confianza||0}% conf.</span>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${lastAlert.razon||''}</div>
+    </div>` : ''}
+
+    <!-- Accesos directos -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <button class="btn" style="justify-content:center;padding:10px;font-size:12px" onclick="setTab('mkt')">🌐 Ver mercado</button>
+      <button class="btn" style="justify-content:center;padding:10px;font-size:12px" onclick="setTab('historial')">📈 Historial</button>
+      <button class="btn" style="justify-content:center;padding:10px;font-size:12px" onclick="setTab('alerts')">🔔 Alertas IA</button>
+      <button class="btn" style="justify-content:center;padding:10px;font-size:12px" onclick="setTab('strat')">🧠 Estrategia</button>
+    </div>`;
+}
+
+
 function renderOps() {
   const root = qs('#sec-ops');
   if (!root) return;
@@ -2593,12 +2758,17 @@ function renderPerf() {
     });
   }
 
-  // Historial
+  // Historial — paginado 50 trades por página
+  const HIST_PER_PAGE = 50;
+  const totalPages    = Math.max(1, Math.ceil(closedTrades.length / HIST_PER_PAGE));
+  if (state.histPage >= totalPages) state.histPage = totalPages - 1;
+  const pageTrades    = closedTrades.slice(state.histPage * HIST_PER_PAGE, (state.histPage + 1) * HIST_PER_PAGE);
+
   let histRows = '';
   if (closedTrades.length === 0) {
     histRows = `<div class="empty" style="padding:16px"><div class="et">Sin operaciones cerradas.</div></div>`;
   } else {
-    closedTrades.forEach(t => {
+    pageTrades.forEach(t => {
       const coin = coinOf(t.par);
       histRows += `
         <div class="hist-row" style="flex-direction:column;align-items:flex-start;gap:4px;padding:10px 0">
@@ -2616,6 +2786,13 @@ function renderPerf() {
         </div>`;
     });
   }
+
+  const paginationHtml = totalPages > 1 ? `
+    <div style="display:flex;align-items:center;justify-content:space-between;padding-top:12px;border-top:1px solid var(--border)">
+      <button onclick="histPageNav(-1)" ${state.histPage===0?'disabled':''} style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 14px;font-size:11px;color:var(--muted);cursor:pointer;opacity:${state.histPage===0?'0.4':'1'}">← Anterior</button>
+      <span style="font-size:11px;color:var(--muted)">Pág. ${state.histPage+1}/${totalPages} · ${closedTrades.length} ops</span>
+      <button onclick="histPageNav(1)" ${state.histPage>=totalPages-1?'disabled':''} style="background:none;border:1px solid var(--border);border-radius:8px;padding:5px 14px;font-size:11px;color:var(--muted);cursor:pointer;opacity:${state.histPage>=totalPages-1?'0.4':'1'}">Siguiente →</button>
+    </div>` : '';
 
   root.innerHTML = `
     <div class="stl">◈ Rendimiento</div>
@@ -2674,6 +2851,7 @@ function renderPerf() {
         </div>` : ''}
       </div>
       ${histRows}
+      ${paginationHtml}
     </div>`;
 }
 
@@ -2714,7 +2892,7 @@ function loadChartJs() {
   });
 }
 
-async function showEquityCurve() {
+async function showEquityCurve(filterDays) {
   try {
     const res  = await authFetch('/api/trades/equity-curve');
     const data = await res.json();
@@ -2727,13 +2905,52 @@ async function showEquityCurve() {
     // Eliminar modal anterior
     document.getElementById('eq-modal')?.remove();
 
-    const { points, summary } = data;
+    // Filtrar por fecha si se especifica
+    const activeDays = filterDays || 0;
+    const cutoff = activeDays > 0 ? Date.now() - activeDays * 86_400_000 : 0;
+    let allPoints = data.points;
+    let filteredPoints = cutoff > 0
+      ? allPoints.filter(p => new Date(p.date || 0).getTime() >= cutoff)
+      : allPoints;
+
+    // Recalcular cumPnl para el rango filtrado
+    let cum = 0;
+    filteredPoints = filteredPoints.map(p => { cum += p.pnl; return { ...p, cumPnl: parseFloat(cum.toFixed(2)) }; });
+
+    const points = filteredPoints;
+    const wins   = points.filter(p => p.result === 'WIN').length;
+    const losses = points.length - wins;
+    const totalPnl = points.reduce((a, p) => a + (p.pnl || 0), 0);
+    const avgWin  = wins > 0 ? (points.filter(p => p.result === 'WIN').reduce((a, p) => a + p.pnl, 0) / wins).toFixed(2) : '0.00';
+    const avgLoss = losses > 0 ? Math.abs(points.filter(p => p.result !== 'WIN').reduce((a, p) => a + p.pnl, 0) / losses).toFixed(2) : '0.00';
+    let maxDD = 0, peak = 0;
+    points.forEach(p => { if (p.cumPnl > peak) peak = p.cumPnl; const dd = peak - p.cumPnl; if (dd > maxDD) maxDD = dd; });
+    const summary = {
+      total: points.length, wins, losses,
+      winRate: points.length > 0 ? ((wins / points.length) * 100).toFixed(0) : 0,
+      totalPnl: totalPnl.toFixed(2), avgWin, avgLoss,
+      maxDrawdown: maxDD.toFixed(2),
+    };
+
     const isDark = document.body.classList.contains('dark');
     const textColor  = isDark ? '#e1e1e1' : '#1a1a2e';
     const gridColor  = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)';
     const accent     = '#6c63ff';
     const winColor   = '#00c896';
     const lossColor  = '#ff4757';
+
+    const filterBtns = [
+      { label: 'Todo', days: 0 },
+      { label: '7d',   days: 7 },
+      { label: '30d',  days: 30 },
+      { label: '90d',  days: 90 },
+    ].map(f => `
+      <button onclick="showEquityCurve(${f.days})"
+        style="padding:4px 10px;border-radius:6px;font-size:11px;border:1px solid var(--border);cursor:pointer;
+               background:${activeDays === f.days ? 'var(--accent)' : 'var(--s2)'};
+               color:${activeDays === f.days ? '#fff' : 'var(--muted)'}">
+        ${f.label}
+      </button>`).join('');
 
     const modal = document.createElement('div');
     modal.id    = 'eq-modal';
@@ -2749,9 +2966,12 @@ async function showEquityCurve() {
           style="position:absolute;top:12px;right:12px;background:none;border:none;
                  font-size:22px;cursor:pointer;color:var(--muted);line-height:1">✕</button>
 
-        <h3 style="margin:0 0 4px;font-size:16px;font-weight:700">📈 Equity Curve</h3>
-        <p style="margin:0 0 20px;font-size:12px;color:var(--muted)">
-          Evolución acumulada del P&L de tus ${summary.total} trades cerrados
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px">
+          <h3 style="margin:0;font-size:16px;font-weight:700">📈 Equity Curve</h3>
+          <div style="display:flex;gap:6px">${filterBtns}</div>
+        </div>
+        <p style="margin:0 0 16px;font-size:12px;color:var(--muted)">
+          ${summary.total} trades · ${activeDays > 0 ? 'Últimos ' + activeDays + ' días' : 'Histórico completo'}
         </p>
 
         <!-- KPIs -->
@@ -3120,7 +3340,11 @@ function renderMkt() {
         <div style="font-size:20px;font-weight:600;font-family:var(--serif);margin-bottom:2px;transition:color .3s;color:${up?'var(--green)':dn?'var(--red)':'var(--text)'}" id="mkt-price-${coin}">
           ${p ? fmtP(p, coin) : '<span style="color:var(--muted);font-size:13px">...</span>'}
         </div>
-        <div style="font-size:10px;margin-bottom:8px;color:${up?'var(--green)':dn?'var(--red)':'var(--muted)'}" id="mkt-chg-${coin}">—</div>
+        <div style="font-size:11px;font-weight:600;margin-bottom:8px" id="mkt-chg-${coin}">
+          ${meta.change24h != null
+            ? `<span style="color:${meta.change24h>=0?'var(--green)':'var(--red)'}">${meta.change24h>=0?'▲ +':'▼ '}${Math.abs(meta.change24h).toFixed(2)}% 24h</span>`
+            : '<span style="color:var(--muted)">— 24h</span>'}
+        </div>
 
         <!-- Indicadores pills -->
         <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">
@@ -3178,10 +3402,7 @@ function updateMarketPrice(coin, price) {
 
   priceEl.textContent = fmtP(price, coin);
   priceEl.style.color = up ? 'var(--green)' : dn ? 'var(--red)' : 'var(--accent)';
-  if (chgEl) {
-    chgEl.textContent = chg !== 0 ? (up ? '▲ +' : '▼ ') + Math.abs(chg).toFixed(4) + '%' : '—';
-    chgEl.style.color = up ? 'var(--green)' : dn ? 'var(--red)' : 'var(--muted)';
-  }
+  // 24h change is managed by renderMkt, not overwritten by tick updates
   if (card) card.style.borderColor = up ? '#BCD9C5' : dn ? '#D9BCBC' : 'var(--border)';
 }
 
@@ -3612,16 +3833,195 @@ function resetAll() {
 
 
 /* ── Navigation ──────────────────────────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════
+   DASHBOARD DE INICIO
+   ═══════════════════════════════════════════════════════════════════ */
+function renderDash() {
+  const root = qs('#sec-dash');
+  if (!root) return;
+
+  const { closedTrades, activeTrades, prices, profile, scannerOn, alerts } = state;
+  const now  = Date.now();
+  const day  = 86_400_000;
+  const week = 7 * day;
+
+  // ── Métricas generales
+  const totalPnl   = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const totalWins  = closedTrades.filter(t => t.result === 'WIN').length;
+  const winRate    = closedTrades.length > 0 ? ((totalWins / closedTrades.length) * 100).toFixed(0) : '—';
+
+  // ── Hoy
+  const todayTrades = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < day);
+  const todayPnl    = todayTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const todayWins   = todayTrades.filter(t => t.result === 'WIN').length;
+
+  // ── Esta semana
+  const weekTrades  = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < week);
+  const weekPnl     = weekTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const weekWins    = weekTrades.filter(t => t.result === 'WIN').length;
+  const weekWR      = weekTrades.length > 0 ? ((weekWins / weekTrades.length) * 100).toFixed(0) : '—';
+
+  // ── P&L latente (trades abiertos)
+  const latentPnl = activeTrades.reduce((sum, t) => {
+    const price = prices[t.par?.split('/')[0]];
+    if (!price) return sum;
+    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1);
+  }, 0);
+
+  // ── Objetivo activo (primer goal pendiente)
+  const activeGoal = (state.goals || []).find(g => !g.completed);
+  const goalProgress = activeGoal ? Math.min((totalPnl / activeGoal.target) * 100, 100).toFixed(0) : null;
+
+  // ── Últimas 5 ops
+  const recentTrades = closedTrades.slice(0, 5);
+
+  // ── Precios top 4
+  const topCoins = state.watchedCoins.slice(0, 4);
+
+  const pnlColor  = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+  const fmtPnl    = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+  const scanBadge = scannerOn
+    ? '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;box-shadow:0 0 6px var(--green)"></span>ACTIVO'
+    : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:4px"></span>INACTIVO';
+
+  root.innerHTML = `
+    <div style="padding:0 0 24px">
+
+      <!-- Saludo -->
+      <div style="margin-bottom:18px">
+        <div style="font-family:var(--serif);font-size:20px;font-weight:700;color:var(--text)">
+          ${getGreeting()} 👋
+        </div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">
+          ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
+          &nbsp;·&nbsp; Escáner: ${scanBadge}
+          &nbsp;·&nbsp; ${activeTrades.length} trade${activeTrades.length !== 1 ? 's' : ''} abierto${activeTrades.length !== 1 ? 's' : ''}
+        </div>
+      </div>
+
+      <!-- KPIs principales -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
+        ${dashKpi('P&L Total', fmtPnl(totalPnl), pnlColor(totalPnl), '📊', closedTrades.length + ' trades')}
+        ${dashKpi('Win Rate', winRate + '%', winRate >= 50 ? 'var(--green)' : 'var(--red)', '🎯', totalWins + 'W / ' + (closedTrades.length - totalWins) + 'L')}
+        ${dashKpi('P&L Hoy', fmtPnl(todayPnl), pnlColor(todayPnl), '📅', todayTrades.length + ' ops · ' + todayWins + 'W')}
+        ${dashKpi('P&L Semana', fmtPnl(weekPnl), pnlColor(weekPnl), '📆', 'WR ' + weekWR + '% · ' + weekTrades.length + ' ops')}
+        ${dashKpi('P&L Latente', fmtPnl(latentPnl), pnlColor(latentPnl), '⏳', activeTrades.length + ' posiciones abiertas')}
+        ${dashKpi('Capital', '$' + (profile.capital || 0).toFixed(2), 'var(--accent)', '💰', 'Riesgo/op ' + profile.risk_pct + '% · ' + (profile.leverage || 1) + 'x')}
+      </div>
+
+      <!-- Objetivo activo -->
+      ${activeGoal ? `
+      <div class="card" style="margin-bottom:12px;cursor:pointer" onclick="setTab('goals')">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-size:12px;font-weight:600;color:var(--text)">🎯 Objetivo activo: ${activeGoal.name}</div>
+          <div style="font-size:12px;font-weight:700;color:var(--accent)">${goalProgress}%</div>
+        </div>
+        <div style="height:6px;background:var(--s2);border-radius:3px;overflow:hidden">
+          <div style="height:100%;width:${goalProgress}%;background:var(--accent);border-radius:3px;transition:width .5s"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:5px">
+          <span>Actual: ${fmtPnl(totalPnl)}</span>
+          <span>Meta: +$${activeGoal.target}</span>
+        </div>
+      </div>` : ''}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+
+        <!-- Precios rápidos -->
+        <div class="card">
+          <div class="stl" style="margin-bottom:10px">💰 Precios</div>
+          ${topCoins.map(coin => {
+            const p    = prices[coin];
+            const meta = MARKET_META[coin] || {};
+            const chg  = meta.change24h;
+            const fmt  = p ? (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6)) : '…';
+            const chgStr = chg != null
+              ? `<span style="font-size:10px;color:${chg>=0?'var(--green)':'var(--red)'}">${chg>=0?'▲ +':'▼ '}${Math.abs(chg).toFixed(2)}%</span>`
+              : '';
+            return `
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+                <span style="font-size:12px;font-weight:600;color:var(--text)">${coin}</span>
+                <div style="text-align:right">
+                  <div style="font-size:12px;font-family:var(--serif);font-weight:600">$${fmt}</div>
+                  ${chgStr}
+                </div>
+              </div>`;
+          }).join('')}
+          <button class="btn" style="width:100%;justify-content:center;font-size:10px;margin-top:10px;padding:5px" onclick="setTab('mkt')">
+            Ver mercado completo →
+          </button>
+        </div>
+
+        <!-- Últimos trades -->
+        <div class="card">
+          <div class="stl" style="margin-bottom:10px">🕒 Últimas operaciones</div>
+          ${recentTrades.length === 0
+            ? '<div style="font-size:11px;color:var(--muted);text-align:center;padding:20px 0">Sin operaciones cerradas</div>'
+            : recentTrades.map(t => {
+                const emoji = t.result === 'WIN' ? '✅' : '❌';
+                const pnl   = t.pnl != null ? (t.pnl >= 0 ? '+$' + t.pnl.toFixed(2) : '-$' + Math.abs(t.pnl).toFixed(2)) : '?';
+                return `
+                  <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
+                    <div>
+                      <span style="font-size:11px;font-weight:600;color:var(--text)">${emoji} ${t.par}</span>
+                      <span style="font-size:10px;color:var(--muted);margin-left:4px">${t.tipo}</span>
+                    </div>
+                    <span style="font-size:11px;font-weight:700;color:${t.pnl>=0?'var(--green)':'var(--red)'}">${pnl}</span>
+                  </div>`;
+              }).join('')
+          }
+          <button class="btn" style="width:100%;justify-content:center;font-size:10px;margin-top:10px;padding:5px" onclick="setTab('historial')">
+            Ver historial completo →
+          </button>
+        </div>
+      </div>
+
+      <!-- Accesos rápidos -->
+      <div class="card">
+        <div class="stl" style="margin-bottom:10px">⚡ Accesos rápidos</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          <button class="btn btng" onclick="onGenerate()" style="font-size:11px;padding:7px 14px">⚡ Analizar ahora</button>
+          <button class="btn" onclick="setTab('ops')" style="font-size:11px;padding:7px 14px">📊 Operaciones</button>
+          <button class="btn" onclick="setTab('alerts')" style="font-size:11px;padding:7px 14px">🔔 Alertas</button>
+          <button class="btn" onclick="setTab('mkt')" style="font-size:11px;padding:7px 14px">🌐 Mercado</button>
+          <button class="btn" onclick="showEquityCurve()" style="font-size:11px;padding:7px 14px">📈 Equity Curve</button>
+          <button class="btn" onclick="setTab('goals')" style="font-size:11px;padding:7px 14px">🎯 Objetivos</button>
+        </div>
+      </div>
+
+    </div>`;
+}
+
+function getGreeting() {
+  const h = new Date().getHours();
+  if (h < 6)  return 'Buenas noches';
+  if (h < 12) return 'Buenos días';
+  if (h < 20) return 'Buenas tardes';
+  return 'Buenas noches';
+}
+
+function dashKpi(label, value, color, icon, sub) {
+  return `
+    <div class="card" style="padding:12px 14px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${icon} ${label}</div>
+      <div style="font-family:var(--serif);font-size:18px;font-weight:700;color:${color};line-height:1.2">${value}</div>
+      ${sub ? `<div style="font-size:10px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
+    </div>`;
+}
+
+
 function setTab(id) {
   // Redirigir tabs antiguos a los nuevos fusionados
   if (id === 'perf' || id === 'backtest') id = 'historial';
   if (id === 'profile' || id === 'capital') id = 'config';
+  if (id === 'dashboard') id = 'dash';
 
   state.currentTab = id;
   qsa('.nb').forEach(b => b.classList.toggle('on', b.dataset.tab === id));
   qsa('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + id));
 
   const renders = {
+    dash:     renderDash,
     ops:      renderOps,
     alerts:   renderAlerts,
     historial:renderHistorial,
@@ -3920,6 +4320,13 @@ function setScanIntervalVal(m) {
   renderAlerts();
 }
 
+/* ── Onboarding (stub — marca como completado la primera vez) ─────── */
+function showOnboarding() { state.onboarded = true; saveKey('onboarded', true); }
+function onboardNext()    { state.onboarded = true; saveKey('onboarded', true); }
+function onboardBack()    {}
+function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state.profile); }
+
+
 /* ── Header buttons ──────────────────────────────────────────────────────── */
 async function onGenerate() {
   const btn = qs('#btn-gen');
@@ -3972,6 +4379,13 @@ async function onAdaptStrategy() {
 
 /* ── Full render ─────────────────────────────────────────────────────────── */
 /* ── Wrapper: Historial (Rendimiento + Backtesting fusionados) ───────────── */
+function histPageNav(dir) {
+  const total = Math.max(1, Math.ceil(state.closedTrades.length / 50));
+  state.histPage = Math.max(0, Math.min(total - 1, state.histPage + dir));
+  renderHistorial();
+}
+
+
 function renderHistorial() {
   const root = qs('#sec-historial');
   if (!root) return;
@@ -4534,7 +4948,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initMarketMeta(state.watchedCoins);
   connectWS();
 
-  setTab('ops');
+  setTab('dashboard');
   renderBalanceWidget();
   updateAlertBadge();
 
@@ -4544,6 +4958,15 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchEconomicCalendar();
   }, 300);
   setInterval(fetchMarketMeta, 15 * 60 * 1000);
+
+  // Detectar escáner muerto — avisa si lleva >2h activo sin ejecutarse
+  setInterval(() => {
+    if (!state.scannerOn) return;
+    const last = state.lastScan ? new Date(state.lastScan).getTime() : 0;
+    if (last && (Date.now() - last) > 120 * 60 * 1000) {
+      showToast('⚠️ El escáner lleva más de 2h sin ejecutarse. Puede estar detenido.', true);
+    }
+  }, 30 * 60 * 1000);
   setInterval(fetchEconomicCalendar, 30 * 60 * 1000);
 
   // Bitunix: comprobar config, cargar cuenta y sincronizar posiciones
@@ -4596,6 +5019,8 @@ Object.assign(window, {
   exportTradesCSV,
   showEquityCurve,
   renderBitunixHistory,
+  histPageNav,
+  renderDashboard,
 });
 /* ══════════════════════════════════════════════════════════════════
    HISTORIAL BITUNIX — Órdenes reales de la cuenta
