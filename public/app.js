@@ -3785,9 +3785,11 @@ function renderHistorial() {
   // Inyectar sub-divs con IDs originales — renderPerf y renderBacktest los encontrarán
   root.innerHTML = `
     <div id="sec-perf"     style="display:block"></div>
-    <div id="sec-backtest" style="display:block;margin-top:8px"></div>`;
+    <div id="sec-backtest" style="display:block;margin-top:8px"></div>
+    ${state.bitunix?.configured !== false ? '<div id="sec-bitunix-history" style="display:block;margin-top:8px"></div>' : ''}`;
   renderPerf();
   renderBacktest();
+  if (state.bitunix?.configured !== false) renderBitunixHistory();
 }
 
 /* ── Wrapper: Configuración (Perfil + Capital fusionados) ───────────────── */
@@ -4400,4 +4402,166 @@ Object.assign(window, {
   resetAll, renderAll,
   exportTradesCSV,
   showEquityCurve,
+  renderBitunixHistory,
 });
+/* ══════════════════════════════════════════════════════════════════
+   HISTORIAL BITUNIX — Órdenes reales de la cuenta
+   ══════════════════════════════════════════════════════════════════ */
+async function renderBitunixHistory() {
+  const containerId = 'sec-bitunix-history';
+  const container   = qs('#' + containerId);
+  if (!container) return;
+
+  // Estado de carga
+  container.innerHTML = `
+    <div class="card">
+      <div class="stl">📋 Historial Bitunix</div>
+      <div class="empty" style="padding:20px">
+        <div class="et">Cargando órdenes...</div>
+      </div>
+    </div>`;
+
+  try {
+    const res  = await authFetch('/api/bitunix/history');
+    const data = await res.json();
+
+    if (!data.ok) {
+      container.innerHTML = `
+        <div class="card">
+          <div class="stl">📋 Historial Bitunix</div>
+          <div class="empty" style="padding:20px">
+            <div class="et" style="color:var(--red)">Error: ${data.error || 'No se pudo obtener el historial'}</div>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const orders = data.orders || [];
+
+    if (!orders.length) {
+      container.innerHTML = `
+        <div class="card">
+          <div class="stl">📋 Historial Bitunix</div>
+          <div class="empty" style="padding:20px">
+            <div class="et">Sin órdenes en el historial de Bitunix.</div>
+          </div>
+        </div>`;
+      return;
+    }
+
+    // Calcular resumen
+    const filled  = orders.filter(o => o.status === 'FILLED' || o.status === 'filled');
+    const longs   = filled.filter(o => o.side === 'BUY'  || o.side === 'buy');
+    const shorts  = filled.filter(o => o.side === 'SELL' || o.side === 'sell');
+    const totalPnl = filled.reduce((a, o) => a + parseFloat(o.realizedPnl || o.pnl || 0), 0);
+
+    // Filas de órdenes
+    const rows = orders.map(o => {
+      const side      = (o.side || '').toUpperCase();
+      const isLong    = side === 'BUY';
+      const status    = (o.status || '').toUpperCase();
+      const isFilled  = status === 'FILLED';
+      const symbol    = (o.symbol || '').replace('USDT', '/USDT');
+      const qty       = parseFloat(o.qty || o.quantity || 0);
+      const price     = parseFloat(o.price || o.avgPrice || o.dealPrice || 0);
+      const pnl       = parseFloat(o.realizedPnl || o.pnl || 0);
+      const hasPnl    = o.realizedPnl != null || o.pnl != null;
+      const orderType = (o.orderType || o.type || 'MARKET').toUpperCase();
+
+      // Formatear timestamp
+      let dateStr = '—';
+      const ts = o.createTime || o.createdTime || o.time || o.timestamp;
+      if (ts) {
+        const d = new Date(typeof ts === 'string' ? parseInt(ts) : ts);
+        if (!isNaN(d)) dateStr = d.toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+      }
+
+      return `
+        <div style="display:flex;align-items:center;justify-content:space-between;
+                    padding:10px 12px;border-bottom:1px solid var(--border);gap:8px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:10px;min-width:0">
+            <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;flex-shrink:0;
+                         background:${isLong ? 'var(--green)' : 'var(--red)'}22;
+                         color:${isLong ? 'var(--green)' : 'var(--red)'}">
+              ${isLong ? 'LONG' : 'SHORT'}
+            </span>
+            <div style="min-width:0">
+              <div style="font-weight:600;font-size:13px">${symbol}</div>
+              <div style="font-size:10px;color:var(--muted)">${dateStr} · ${orderType}</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+            <div style="text-align:right">
+              <div style="font-size:11px;color:var(--muted)">Precio</div>
+              <div style="font-size:12px;font-weight:600">${price > 0 ? '$' + price.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:6}) : '—'}</div>
+            </div>
+            <div style="text-align:right">
+              <div style="font-size:11px;color:var(--muted)">Qty</div>
+              <div style="font-size:12px;font-weight:600">${qty > 0 ? qty : '—'}</div>
+            </div>
+            ${hasPnl ? `
+            <div style="text-align:right">
+              <div style="font-size:11px;color:var(--muted)">P&L</div>
+              <div style="font-size:12px;font-weight:700;color:${pnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+                ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}
+              </div>
+            </div>` : ''}
+            <span style="font-size:10px;padding:2px 7px;border-radius:4px;flex-shrink:0;
+                         background:${isFilled ? 'var(--green)' : 'var(--border)'}22;
+                         color:${isFilled ? 'var(--green)' : 'var(--muted)'}">
+              ${status || '—'}
+            </span>
+          </div>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)">
+          <div class="stl" style="margin:0">📋 Historial Bitunix <span style="font-size:11px;font-weight:400;color:var(--muted)">(${orders.length} órdenes)</span></div>
+          <button onclick="renderBitunixHistory()"
+            style="background:none;border:1px solid var(--border);border-radius:6px;padding:3px 10px;
+                   font-size:11px;color:var(--muted);cursor:pointer">
+            ↻ Actualizar
+          </button>
+        </div>
+
+        <!-- Resumen rápido -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:0;border-bottom:1px solid var(--border)">
+          <div style="padding:12px 16px;text-align:center;border-right:1px solid var(--border)">
+            <div style="font-size:18px;font-weight:700">${orders.length}</div>
+            <div style="font-size:10px;color:var(--muted)">Total órdenes</div>
+          </div>
+          <div style="padding:12px 16px;text-align:center;border-right:1px solid var(--border)">
+            <div style="font-size:18px;font-weight:700;color:var(--green)">${longs.length}</div>
+            <div style="font-size:10px;color:var(--muted)">LONGs ejecutados</div>
+          </div>
+          <div style="padding:12px 16px;text-align:center;border-right:1px solid var(--border)">
+            <div style="font-size:18px;font-weight:700;color:var(--red)">${shorts.length}</div>
+            <div style="font-size:10px;color:var(--muted)">SHORTs ejecutados</div>
+          </div>
+          ${totalPnl !== 0 ? `
+          <div style="padding:12px 16px;text-align:center">
+            <div style="font-size:18px;font-weight:700;color:${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}">
+              ${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}
+            </div>
+            <div style="font-size:10px;color:var(--muted)">P&L realizado</div>
+          </div>` : ''}
+        </div>
+
+        <!-- Lista de órdenes -->
+        <div style="max-height:500px;overflow-y:auto">
+          ${rows}
+        </div>
+      </div>`;
+
+  } catch (e) {
+    container.innerHTML = `
+      <div class="card">
+        <div class="stl">📋 Historial Bitunix</div>
+        <div class="empty" style="padding:20px">
+          <div class="et" style="color:var(--red)">Error al cargar: ${e.message}</div>
+        </div>
+      </div>`;
+  }
+}
