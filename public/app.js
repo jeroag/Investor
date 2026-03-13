@@ -2039,7 +2039,7 @@ function calcProposalMoney(proposal) {
    DASHBOARD DE INICIO
    ══════════════════════════════════════════════════════════════════ */
 function renderDashboard() {
-  const root = qs('#sec-dashboard');
+  const root = qs('#sec-dash');
   if (!root) return;
 
   const { closedTrades, activeTrades, prices, profile, alerts, scannerOn, lastScan } = state;
