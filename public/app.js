@@ -1531,6 +1531,14 @@ function closeTrade(tradeId, result, pnlOverride) {
   state.activeTrades.splice(idx, 1);
   saveKey('activeTrades', state.activeTrades);
   saveKey('closedTrades', state.closedTrades);
+
+  // Guardar trade cerrado en Supabase vía servidor
+  authFetch('/api/trades/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trade: closed }),
+  }).catch(e => console.warn('[closeTrade] Error guardando en servidor:', e.message));
+
   syncTradesToServer();
 
   // Resincronizar capital real desde Bitunix tras cerrar un trade

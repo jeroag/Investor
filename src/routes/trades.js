@@ -61,6 +61,30 @@ router.post('/confirm-closed', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ── Cerrar trade manualmente (guarda en Supabase) ───────────────── */
+router.post('/close', requireAuth, async (req, res) => {
+  const { trade } = req.body;
+  if (!trade || !trade.id) return res.status(400).json({ error: 'trade inválido' });
+
+  try {
+    // Eliminar de activos en memoria y Supabase
+    serverState.activeTrades = serverState.activeTrades.filter(t => t.id !== trade.id);
+    await db.deleteActiveTrade(trade.id);
+
+    // Guardar como cerrado en memoria y Supabase
+    const exists = serverState.closedTrades.some(t => t.id === trade.id);
+    if (!exists) {
+      serverState.closedTrades.unshift(trade);
+    }
+    await db.saveClosedTrade(trade);
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[trades/close]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /* ── Precios actuales ─────────────────────────────────────────────── */
 router.get('/prices', requireAuth, (req, res) =>
   res.json(serverState.prices),
