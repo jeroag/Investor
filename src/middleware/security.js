@@ -2,19 +2,12 @@
 
 const helmet = require('helmet');
 
-/**
- * Configura helmet con cabeceras de seguridad ajustadas para una SPA
- * que usa WebSockets a Binance y llama a APIs externas.
- *
- * CSP permite:
- *  - Scripts propios y de cdnjs (Chart.js para equity curve)
- *  - Conexiones WS a Binance, propias y Telegram/Anthropic APIs
- */
 const securityMiddleware = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:    ["'self'"],
       scriptSrc:     ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com'],
+      scriptSrcAttr: ["'unsafe-inline'"],  // permite onclick="..." generados por app.js
       styleSrc:      ["'self'", "'unsafe-inline'"],
       connectSrc:    [
         "'self'",
@@ -22,8 +15,8 @@ const securityMiddleware = helmet({
         'https://api.anthropic.com',
         'https://api.telegram.org',
         'https://fapi.bitunix.com',
-        'ws:',   // WebSocket local (dev)
-        'wss:',  // WebSocket local (prod)
+        'ws:',
+        'wss:',
       ],
       imgSrc:        ["'self'", 'data:'],
       fontSrc:       ["'self'"],
@@ -31,24 +24,17 @@ const securityMiddleware = helmet({
       upgradeInsecureRequests: [],
     },
   },
-  // HSTS — solo en prod (Railway usa HTTPS)
   hsts: {
-    maxAge:            31536000,  // 1 año
+    maxAge:            31536000,
     includeSubDomains: true,
     preload:           true,
   },
-  // Ocultar que usamos Express
-  hidePoweredBy:        true,
-  // Prevenir clickjacking
-  frameguard:          { action: 'deny' },
-  // Prevenir MIME sniffing
-  noSniff:             true,
-  // XSS filter (legacy browsers)
-  xssFilter:           true,
-  // Referrer policy
-  referrerPolicy:      { policy: 'strict-origin-when-cross-origin' },
-  // No enviar cabecera X-Powered-By
-  crossOriginEmbedderPolicy: false, // desactivar para no romper las APIs externas
+  hidePoweredBy:             true,
+  frameguard:                { action: 'deny' },
+  noSniff:                   true,
+  xssFilter:                 true,
+  referrerPolicy:            { policy: 'strict-origin-when-cross-origin' },
+  crossOriginEmbedderPolicy: false,
 });
 
 module.exports = { securityMiddleware };
