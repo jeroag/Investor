@@ -3690,11 +3690,26 @@ function closeTradeAtMarket(tradeId) {
     const pct  = trade.tipo === 'LONG'
       ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
-    const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const posSize  = trade.entrada * trade.size * (trade.leverage || 1);
+    const feesOpen  = posSize * 0.0006; // taker apertura
+    const feesClose = exitPrice * trade.size * (trade.leverage || 1) * 0.0006; // taker cierre
+    const totalFees = feesOpen + feesClose;
+    const netPnl    = pnl - totalFees;
+    const color     = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const grossColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     qs('#cpm-preview').innerHTML = `
-      <span style="color:var(--muted)">P&L estimado: </span>
-      <span style="font-family:var(--serif);font-size:16px;font-weight:600;color:${color}">${fmtUSD(pnl)}</span>
-      <span style="color:var(--muted);font-size:11px"> (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span>`;
+      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+        <span style="color:var(--muted)">P&L bruto</span>
+        <span style="font-family:var(--serif);font-weight:600;color:${grossColor}">${fmtUSD(pnl)} <span style="font-size:10px">(${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--muted)">Comisiones taker (×2)</span>
+        <span style="color:var(--red)">-${fmtUSD(totalFees)}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;border-top:1px solid var(--border);padding-top:6px">
+        <span style="font-weight:600;color:var(--text)">P&L neto</span>
+        <span style="font-family:var(--serif);font-size:16px;font-weight:700;color:${color}">${fmtUSD(netPnl)}</span>
+      </div>`;
   }
   priceInput.addEventListener('input', updatePreview);
   updatePreview();
@@ -3710,11 +3725,15 @@ function confirmCloseWithPrice(tradeId) {
   const rawPnl    = trade.tipo === 'LONG'
     ? (exitPrice - trade.entrada) * trade.size * lev
     : (trade.entrada - exitPrice) * trade.size * lev;
-  const result = rawPnl >= 0 ? 'WIN' : 'LOSS';
+  const feesOpen  = trade.entrada * trade.size * lev * 0.0006;
+  const feesClose = exitPrice    * trade.size * lev * 0.0006;
+  const totalFees = feesOpen + feesClose;
+  const netPnl    = rawPnl - totalFees;
+  const result    = netPnl >= 0 ? 'WIN' : 'LOSS';
 
   const idx = state.activeTrades.findIndex(t => t.id === tradeId);
   if (idx === -1) return;
-  const closed = { ...trade, result, pnl: rawPnl, exitPrice, notes, closedAt: nowFull() };
+  const closed = { ...trade, result, pnl: netPnl, pnlGross: rawPnl, fees: totalFees, exitPrice, notes, closedAt: nowFull() };
   state.closedTrades.unshift(closed);
   state.activeTrades.splice(idx, 1);
   saveKey('activeTrades', state.activeTrades);
@@ -3722,8 +3741,15 @@ function confirmCloseWithPrice(tradeId) {
   syncTradesToServer();
 
   qs('#close-price-modal')?.remove();
-  showToast(`${trade.par} cerrada a ${fmtP(exitPrice, coin)} — ${fmtUSD(rawPnl)}`, result === 'LOSS');
+  showToast(`${trade.par} cerrada — Neto: ${fmtUSD(netPnl)} (bruto ${fmtUSD(rawPnl)}, fees -${fmtUSD(totalFees)})`, result === 'LOSS');
   renderAll();
+
+  // Guardar en Supabase
+  authFetch('/api/trades/close', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trade: closed }),
+  }).catch(e => console.warn('[confirmClose] Error guardando en servidor:', e.message));
 
   // Flash close en Bitunix si está conectado y la posición existía en el exchange
   if (bitunix.configured && (trade.bitunixPos || trade.bitunixOrderId)) {
