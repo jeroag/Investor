@@ -4783,7 +4783,7 @@ function deleteGoal(id) {
 }
 
 function renderGoals() {
-  const root = qs('#goals-section');
+  const root = qs('#sec-goals') || qs('#goals-section');
   if (!root) return;
 
   const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
