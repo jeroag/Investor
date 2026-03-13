@@ -739,6 +739,12 @@ function handleServerTradeClosed(closed) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ids: [closed.id] }),
   }).catch(() => {});
+  // Limpiar gráfico del trade cerrado antes de re-renderizar
+  if (_tradeChartInstances[closed.id]) {
+    try { _tradeChartInstances[closed.id].remove(); } catch {}
+    delete _tradeChartInstances[closed.id];
+    delete _tradeChartTimeframes[closed.id];
+  }
   renderAll();
 }
 
@@ -1647,11 +1653,23 @@ function checkTPSL() {
   if (changed) {
     saveKey('activeTrades', state.activeTrades);
     saveKey('closedTrades', state.closedTrades);
-    // ── FIX: sincronizar inmediatamente con servidor para que deje de vigilar
-    // el trade que acaba de cerrar el cliente, evitando doble cierre
     syncTradesToServer();
-    if (state.currentTab === 'ops')  renderOps();
-    if (state.currentTab === 'perf') renderPerf();
+    // Solo re-renderizar completo si hubo cierres (no solo breakeven)
+    // Para evitar destruir gráficos inline abiertos
+    const hadClosures = state.autoClosedIds.size > 0;
+    if (hadClosures) {
+      if (state.currentTab === 'ops')  renderOps();
+      if (state.currentTab === 'perf') renderPerf();
+    }
+    // Si solo fue breakeven, actualizar el SL directamente en DOM
+    else if (state.currentTab === 'ops') {
+      state.activeTrades.forEach(t => {
+        if (!t.breakevenSet) return;
+        const coin  = coinOf(t.par);
+        const slEl  = qs(`[data-trade-id="${t.id}"] .op-sl`);
+        if (slEl) slEl.textContent = 'SL: ' + fmtP(t.stopLoss, coin) + ' 🔒';
+      });
+    }
   }
 }
 
@@ -2202,6 +2220,18 @@ function renderOps() {
   const root = qs('#sec-ops');
   if (!root) return;
 
+  // Preservar gráficos abiertos antes de re-renderizar
+  const openCharts = {};
+  Object.keys(_tradeChartInstances).forEach(id => {
+    const panel = qs(`#chart-panel-${id}`);
+    if (panel && panel.style.display !== 'none') {
+      openCharts[id] = _tradeChartTimeframes[id] || '4h';
+    }
+    // Limpiar instancias antiguas
+    try { _tradeChartInstances[id].remove(); } catch {}
+    delete _tradeChartInstances[id];
+  });
+
   let html = '';
 
   // AI message
@@ -2382,6 +2412,20 @@ function renderOps() {
   });
 
   root.innerHTML = html;
+
+  // Reabrir gráficos que estaban abiertos antes del re-render
+  if (Object.keys(openCharts).length) {
+    requestAnimationFrame(() => {
+      Object.entries(openCharts).forEach(([id, tf]) => {
+        const panel = qs(`#chart-panel-${id}`);
+        const btn   = qs(`#chart-btn-${id}`);
+        if (!panel) return;
+        panel.style.display = 'block';
+        if (btn) { btn.style.background = 'var(--accent)'; btn.style.color = '#fff'; }
+        loadTradeChart(id, tf || '4h');
+      });
+    });
+  }
 }
 
 /* ── Editar operación activa ─────────────────────────────────────────────── */
@@ -3163,6 +3207,7 @@ function openChart(coin) {
 
 /* ── Gráfico inline por trade (Lightweight Charts + Binance OHLCV) ────────── */
 const _tradeChartInstances = {};
+const _tradeChartTimeframes = {};  // id → '1h'|'4h'|'1d'
 
 function toggleTradeChart(tradeId) {
   const panel = qs(`#chart-panel-${tradeId}`);
@@ -3177,14 +3222,17 @@ function toggleTradeChart(tradeId) {
       try { _tradeChartInstances[tradeId].remove(); } catch {}
       delete _tradeChartInstances[tradeId];
     }
+    delete _tradeChartTimeframes[tradeId];
   } else {
     panel.style.display = 'block';
     if (btn) { btn.style.background = 'var(--accent)'; btn.style.color = '#fff'; }
-    loadTradeChart(tradeId, '4h');
+    _tradeChartTimeframes[tradeId] = _tradeChartTimeframes[tradeId] || '4h';
+    loadTradeChart(tradeId, _tradeChartTimeframes[tradeId]);
   }
 }
 
 function reloadTradeChart(tradeId, interval) {
+  _tradeChartTimeframes[tradeId] = interval;
   if (_tradeChartInstances[tradeId]) {
     try { _tradeChartInstances[tradeId].remove(); } catch {}
     delete _tradeChartInstances[tradeId];
@@ -4792,7 +4840,15 @@ function applyDarkMode(on) {
   document.body.classList.toggle('light', !on);
   const btn = qs('#dark-toggle');
   if (btn) btn.textContent = on ? '☀️' : '🌙';
-  if (qs('#tv-modal')) qs('#tv-modal').remove();
+  // Actualizar tema del chart inline si está abierto, sin cerrarlo
+  const tvModal = qs('#tv-modal');
+  if (tvModal) {
+    const iframe = tvModal.querySelector('iframe');
+    if (iframe) {
+      const src = iframe.src;
+      iframe.src = src.replace(/theme=(dark|light)/, 'theme=' + (on ? 'dark' : 'light'));
+    }
+  }
 }
 
 function toggleDarkMode() {
