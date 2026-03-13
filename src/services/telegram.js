@@ -89,8 +89,12 @@ async function handleTelegramUpdate(update) {
   const msg  = update?.message;
   if (!msg?.text) return null;
 
-  // Solo responder al chat configurado (seguridad)
-  if (String(msg.chat?.id) !== String(config.telegramChatId)) {
+  // Solo responder a los chats permitidos (seguridad)
+  const allowedIds = [
+    String(config.telegramChatId),
+    process.env.TELEGRAM_CHAT_ID_2 || '',
+  ].filter(Boolean);
+  if (!allowedIds.includes(String(msg.chat?.id))) {
     console.warn(`[Telegram] Mensaje rechazado de chatId=${msg.chat?.id}`);
     return null;
   }
