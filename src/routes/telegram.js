@@ -55,8 +55,8 @@ router.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
   try {
-    const reply = await handleTelegramUpdate(req.body);
-    if (reply) await sendTelegram(reply);
+    const result = await handleTelegramUpdate(req.body);
+    if (result) await sendTelegram(result.reply, result.chatId);
   } catch (e) {
     console.error('[Telegram webhook]', e.message);
   }

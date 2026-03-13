@@ -10,14 +10,15 @@ const { serverState } = require('../state');
 /**
  * Envía un mensaje de texto a Telegram (HTML parse_mode).
  */
-async function sendTelegram(text) {
+async function sendTelegram(text, targetChatId) {
   const { telegramToken: token, telegramChatId: chatId } = config;
-  if (!token || !chatId) return { ok: false, error: 'Variables no configuradas' };
+  const dest = targetChatId || chatId;
+  if (!token || !dest) return { ok: false, error: 'Variables no configuradas' };
   try {
     const res  = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' }),
+      body:    JSON.stringify({ chat_id: dest, text, parse_mode: 'HTML' }),
     });
     const data = await res.json();
     if (!data.ok) console.warn(`[Telegram] Error: ${data.error_code} — ${data.description}`);
@@ -105,23 +106,17 @@ async function handleTelegramUpdate(update) {
 
   const text = rawText;
 
-  if (text.startsWith('/estado') || text.startsWith('/status')) {
-    return buildEstadoMsg();
-  }
-  if (text.startsWith('/precios') || text.startsWith('/prices')) {
-    return buildPreciosMsg();
-  }
-  if (text.startsWith('/trades')) {
-    return buildTradesMsg();
-  }
-  if (text.startsWith('/historial') || text.startsWith('/history')) {
-    return buildHistorialMsg();
-  }
-  if (text.startsWith('/ayuda') || text.startsWith('/help')) {
-    return buildAyudaMsg();
-  }
+  const originChatId = String(msg.chat?.id);
+  const reply = (() => {
+    if (text.startsWith('/estado') || text.startsWith('/status'))   return buildEstadoMsg();
+    if (text.startsWith('/precios') || text.startsWith('/prices'))  return buildPreciosMsg();
+    if (text.startsWith('/trades'))                                  return buildTradesMsg();
+    if (text.startsWith('/historial') || text.startsWith('/history')) return buildHistorialMsg();
+    if (text.startsWith('/ayuda') || text.startsWith('/help'))      return buildAyudaMsg();
+    return '❓ Comando no reconocido. Envía /ayuda para ver los comandos disponibles.';
+  })();
 
-  return '❓ Comando no reconocido. Envía /ayuda para ver los comandos disponibles.';
+  return { reply, chatId: originChatId };
 }
 
 function buildEstadoMsg() {
