@@ -3387,7 +3387,68 @@ function renderCapital() {
       <div style="font-size:10px;color:var(--muted)">
         Activas: <b style="color:var(--text)">${state.watchedCoins.join(', ')}</b>
       </div>
+
+    <!-- Widget: Capital mínimo por moneda y leverage -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:14px 16px;border-bottom:1px solid var(--border)">
+        <div class="stl" style="margin:0">📊 Capital mínimo por moneda y leverage</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:3px">Capital necesario = qty_min × precio / leverage &nbsp;·&nbsp; 🟢 &lt;$5 &nbsp;·&nbsp; 🟡 $5–$30 &nbsp;·&nbsp; 🔴 &gt;$30</div>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="lev-table" style="width:100%;border-collapse:collapse;min-width:700px;font-size:11px">
+        </table>
+      </div>
+    </div>
     </div>`;
+  renderLevTable();
+}
+
+
+function renderLevTable() {
+  const tbl = qs('#lev-table');
+  if (!tbl) return;
+  const LEVERAGES = [1, 2, 3, 5, 10, 20, 25, 50, 75];
+  const COINS = [
+    { coin:'DOGE',  minQty:10,    price:0.097,    color:'#c29d43' },
+    { coin:'ADA',   minQty:1,     price:0.273,    color:'#0d65bf' },
+    { coin:'MATIC', minQty:1,     price:0.50,     color:'#8247e5' },
+    { coin:'XRP',   minQty:1,     price:1.42,     color:'#347ab6' },
+    { coin:'ATOM',  minQty:0.1,   price:1.84,     color:'#6f728e' },
+    { coin:'UNI',   minQty:0.1,   price:4.00,     color:'#ff007a' },
+    { coin:'DOT',   minQty:0.1,   price:4.00,     color:'#e6007a' },
+    { coin:'LINK',  minQty:0.1,   price:9.20,     color:'#2a5ada' },
+    { coin:'AVAX',  minQty:0.1,   price:9.83,     color:'#e84142' },
+    { coin:'LTC',   minQty:0.01,  price:55.15,    color:'#a6a9aa' },
+    { coin:'SOL',   minQty:0.1,   price:88.55,    color:'#9945ff' },
+    { coin:'BNB',   minQty:0.01,  price:661.82,   color:'#f3ba2f' },
+    { coin:'ETH',   minQty:0.01,  price:2095.00,  color:'#627eea' },
+    { coin:'BTC',   minQty:0.001, price:71471.00, color:'#f7931a' },
+  ].sort((a, b) => a.minQty * a.price - b.minQty * b.price);
+
+  // Header
+  let html = '<thead><tr style="background:var(--s2)">';
+  html += '<th style="text-align:left;padding:8px 12px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap">Moneda · qty mín.</th>';
+  LEVERAGES.forEach(l => {
+    html += `<th style="padding:8px 6px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);text-align:center">${l}x</th>`;
+  });
+  html += '</tr></thead><tbody>';
+
+  COINS.forEach(({ coin, minQty, price, color }) => {
+    html += `<tr style="border-bottom:1px solid var(--border)">`;
+    html += `<td style="padding:7px 12px;white-space:nowrap">`;
+    html += `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${color};margin-right:6px;vertical-align:middle"></span>`;
+    html += `<b>${coin}</b><span style="color:var(--muted);font-size:10px"> ·${minQty}</span></td>`;
+    LEVERAGES.forEach(lev => {
+      const cap = (minQty * price) / lev;
+      const bg  = cap < 5  ? 'rgba(34,197,94,.12)' : cap < 30 ? 'rgba(234,179,8,.12)' : 'rgba(239,68,68,.1)';
+      const fg  = cap < 5  ? 'var(--green)'         : cap < 30 ? 'var(--yellow)'        : 'var(--red)';
+      const val = cap < 1  ? cap.toFixed(3) : cap.toFixed(2);
+      html += `<td style="padding:7px 6px;text-align:center;background:${bg};color:${fg};font-weight:600">$${val}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody>';
+  tbl.innerHTML = html;
 }
 
 function updateCapCalc() {
