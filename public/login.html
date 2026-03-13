@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>CryptoPlan IA — Acceso</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap"/>
+  <style>
+    :root {
+      --bg:      #F4F1ED;
+      --surface: #FFFFFF;
+      --border:  #E5E0D8;
+      --text:    #2C2825;
+      --muted:   #9E9790;
+      --accent:  #7BA7BC;
+      --green:   #82AD8F;
+      --red:     #C97E7E;
+      --serif:   "Lora", Georgia, serif;
+      --sans:    "DM Sans", system-ui, sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg:      #141210;
+        --surface: #1E1C19;
+        --border:  #2E2B27;
+        --text:    #E8E4DE;
+        --muted:   #7A756E;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      -webkit-font-smoothing: antialiased;
+    }
+    @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
+    @keyframes shake  { 0%,100%{transform:none} 20%,60%{transform:translateX(-6px)} 40%,80%{transform:translateX(6px)} }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 380px;
+      box-shadow: 0 8px 40px rgba(44,40,37,.12);
+      animation: fadeUp .4s ease;
+    }
+
+    .logo {
+      font-family: var(--serif);
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .logo b { color: var(--accent); font-style: italic; }
+    .subtitle {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 32px;
+    }
+
+    label {
+      display: block;
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 6px;
+    }
+
+    .inp-wrap { position: relative; margin-bottom: 20px; }
+    input[type=password], input[type=text] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 44px 12px 14px;
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 15px;
+      outline: none;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(123,167,188,.15);
+    }
+    .eye-btn {
+      position: absolute;
+      right: 12px; top: 50%;
+      transform: translateY(-50%);
+      background: none; border: none;
+      cursor: pointer; padding: 4px;
+      color: var(--muted); font-size: 16px;
+      line-height: 1; transition: color .2s;
+    }
+    .eye-btn:hover { color: var(--text); }
+
+    .btn-login {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 10px;
+      padding: 13px;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .2s;
+      box-shadow: 0 2px 10px rgba(123,167,188,.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    .btn-login:hover:not(:disabled) { background: #6A96AB; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(123,167,188,.4); }
+    .btn-login:active { transform: none; }
+    .btn-login:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+
+    .spinner {
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg {
+      background: #F4EBEB;
+      border: 1px solid #D9BCBC;
+      color: #8A4A4A;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin-top: 14px;
+      display: none;
+      animation: shake .4s ease;
+    }
+    .error-msg.show { display: block; }
+
+    .footer {
+      margin-top: 28px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 10px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .lock-icon { font-size: 14px; }
+
+    .attempts {
+      font-size: 10px;
+      color: var(--red);
+      text-align: center;
+      margin-top: 10px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="card">
+    <div class="logo">Crypto<b>Plan</b> <span style="font-size:14px;color:var(--muted);font-family:var(--sans);font-style:normal;font-weight:400">AI</span></div>
+    <div class="subtitle">Introduce tu clave de acceso para continuar</div>
+
+    <div>
+      <label for="pwd">Contraseña</label>
+      <div class="inp-wrap">
+        <input type="password" id="pwd" placeholder="••••••••••••" autocomplete="current-password" autofocus/>
+        <button class="eye-btn" id="eye" type="button" onclick="toggleEye()" title="Ver contraseña">👁</button>
+      </div>
+      <button class="btn-login" id="login-btn" onclick="doLogin()">
+        <span id="btn-text">Entrar</span>
+      </button>
+      <div class="error-msg" id="error-msg">Contraseña incorrecta. Inténtalo de nuevo.</div>
+      <div class="attempts" id="attempts-msg"></div>
+    </div>
+
+    <div class="footer">
+      <span class="lock-icon">🔒</span>
+      <span>Conexión segura · Sesión de 12 horas · Tus claves nunca salen del servidor</span>
+    </div>
+  </div>
+
+  <script>
+    let attempts = 0;
+    let blocked  = false;
+
+    // Enter para hacer login
+    document.getElementById('pwd').addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+
+    function toggleEye() {
+      const inp = document.getElementById('pwd');
+      const eye = document.getElementById('eye');
+      if (inp.type === 'password') { inp.type = 'text'; eye.textContent = '🙈'; }
+      else { inp.type = 'password'; eye.textContent = '👁'; }
+    }
+
+    async function doLogin() {
+      if (blocked) return;
+      const password = document.getElementById('pwd').value;
+      if (!password) {
+        showError('Introduce tu contraseña.');
+        return;
+      }
+
+      const btn  = document.getElementById('login-btn');
+      const text = document.getElementById('btn-text');
+      btn.disabled = true;
+      text.innerHTML = '<span class="spinner"></span>';
+      hideError();
+
+      try {
+        const res  = await fetch('/auth/login', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ password }),
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          // Guardar token en sessionStorage como backup (la cookie httpOnly es la principal)
+          sessionStorage.setItem('cp_token', data.token);
+          text.textContent = '✓ Acceso correcto';
+          btn.style.background = '#82AD8F';
+          // Añadir token a todas las peticiones futuras
+          setTimeout(() => { window.location.href = '/'; }, 600);
+        } else {
+          attempts++;
+          showError(data.error || 'Contraseña incorrecta.');
+          document.getElementById('pwd').value = '';
+          document.getElementById('pwd').focus();
+
+          if (attempts >= 5) {
+            blocked = true;
+            const wait = 60;
+            showError(`Demasiados intentos fallidos. Espera ${wait} segundos.`);
+            let t = wait;
+            const interval = setInterval(() => {
+              t--;
+              document.getElementById('attempts-msg').style.display = 'block';
+              document.getElementById('attempts-msg').textContent = `Bloqueado por ${t}s`;
+              if (t <= 0) {
+                clearInterval(interval);
+                blocked = false; attempts = 0;
+                document.getElementById('attempts-msg').style.display = 'none';
+                hideError();
+              }
+            }, 1000);
+          }
+          btn.disabled = false;
+          text.textContent = 'Entrar';
+        }
+      } catch (e) {
+        showError('Error de conexión. Inténtalo de nuevo.');
+        btn.disabled = false;
+        text.textContent = 'Entrar';
+      }
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('error-msg');
+      el.textContent = msg;
+      el.classList.add('show');
+      // Reiniciar animación shake
+      el.style.animation = 'none';
+      el.offsetHeight; // reflow
+      el.style.animation = '';
+    }
+    function hideError() {
+      document.getElementById('error-msg').classList.remove('show');
+    }
+  </script>
+</body>
+</html>

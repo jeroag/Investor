@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CryptoPlan IA</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- Loading -->
+  <div id="loading-screen">
+    <h1>Crypto<b>Plan</b> <small>AI</small></h1>
+    <p><span class="spinner"></span> Cargando...</p>
+  </div>
+
+  <!-- Header -->
+  <header class="hdr">
+    <div class="hdr-left">
+      <button class="menu-toggle" id="menu-toggle" aria-label="Menú">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="7" x2="21" y2="7"/>
+          <line x1="3" y1="12" x2="21" y2="12"/>
+          <line x1="3" y1="17" x2="21" y2="17"/>
+        </svg>
+      </button>
+      <div class="logo">Crypto<b>Plan</b> <small>AI</small></div>
+    </div>
+    <div class="hdr-right">
+      <div class="ws-status">
+        <span class="ws-dot connecting" id="ws-dot-ref"></span>
+        <span id="ws-label" style="color:var(--yellow)">CONECTANDO...</span>
+      </div>
+      <button id="scanner-toggle-hdr" class="scanner-btn off">📡 Escáner</button>
+      <button id="btn-gen" class="btn-main" disabled><span>⚡</span> Analizar</button>
+      <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro/claro">🌙</button>
+      <button onclick="doLogout()" title="Cerrar sesión" style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px" onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">🔒 Salir</button>
+    </div>
+  </header>
+
+  <!-- Balance widget -->
+  <div id="balance-widget" style="
+    background:var(--surface);
+    border-bottom:1px solid var(--border);
+    padding:10px 20px;
+    box-shadow:var(--shadow-sm);
+  "></div>
+
+  <div class="layout">
+    <div class="side-backdrop" id="side-backdrop"></div>
+
+    <!-- Sidebar -->
+    <nav class="side" id="sidebar">
+      <div class="ns">Trading</div>
+      <button class="nb on" data-tab="ops">📊 Operaciones</button>
+      <button class="nb" data-tab="alerts">🔔 Alertas IA <span class="nb-badge" id="alert-badge" style="display:none">0</span></button>
+      <button class="nb" data-tab="mkt">🌐 Mercado</button>
+
+      <div class="ns">Análisis</div>
+      <button class="nb" data-tab="historial">📈 Historial</button>
+      <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
+      <button class="nb" data-tab="goals">🎯 Objetivos</button>
+
+      <div class="ns">Ajustes</div>
+      <button class="nb" data-tab="config">⚙️ Configuración</button>
+
+      <div class="scanner-mini" id="scanner-mini" style="display:none">
+        <div class="scanner-mini-title"><span class="scanner-mini-dot"></span> Escáner activo</div>
+        <div style="color:var(--muted)" id="scanner-mini-time"></div>
+      </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="cnt" style="height:calc(100vh - 54px - 49px)">
+      <div id="sec-ops"       class="sec on"></div>
+      <div id="sec-alerts"    class="sec"></div>
+      <div id="sec-mkt"       class="sec"></div>
+      <div id="sec-historial" class="sec"></div>
+      <div id="sec-strat"     class="sec"></div>
+      <div id="sec-goals"     class="sec"></div>
+      <div id="sec-config"    class="sec"></div>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="app.js"></script>
+  <script>
+    const _toggle   = document.getElementById('menu-toggle');
+    const _sidebar  = document.getElementById('sidebar');
+    const _backdrop = document.getElementById('side-backdrop');
+    function openSidebar()  { _sidebar.classList.add('open');    _backdrop.classList.add('open');    }
+    function closeSidebar() { _sidebar.classList.remove('open'); _backdrop.classList.remove('open'); }
+    _toggle.addEventListener('click', () => _sidebar.classList.contains('open') ? closeSidebar() : openSidebar());
+    _backdrop.addEventListener('click', closeSidebar);
+    document.querySelectorAll('.nb').forEach(b => b.addEventListener('click', closeSidebar));
+  </script>
+</body>
+</html>
