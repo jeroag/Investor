@@ -457,6 +457,9 @@ const state = {
   aiHistory:    [],
   darkMode:     false,
   goals:        [],
+  configTab:    'perfil',
+  diary:        [],
+  activityLog:  [],
   onboarded:    false,
 
   // session
@@ -501,6 +504,8 @@ function loadAll() {
   state.aiHistory    = storage.get(STORAGE_KEYS.aiHistory)      ?? [];
   state.darkMode     = storage.get(STORAGE_KEYS.darkMode)       ?? false;
   state.goals        = storage.get(STORAGE_KEYS.goals)          ?? [];
+  state.diary        = storage.get('cp:diary')                   ?? [];
+  state.activityLog  = storage.get('cp:activity')               ?? [];
   state.onboarded    = storage.get(STORAGE_KEYS.onboarded)      ?? false;
 }
 
@@ -665,6 +670,7 @@ async function startServerScanner() {
     if (data.ok) {
       state.scannerActive = true;
       saveKey('scannerActive', true);
+      logActivity('scanner_on', `Escáner activado — cada ${data.intervalMin} min`);
       showToast(`🔍 Escáner SERVER activo — cada ${data.intervalMin} min (24/7)`);
       updateScannerBadge();
     }
@@ -678,6 +684,7 @@ async function stopServerScanner() {
     await authFetch('/api/scanner/stop', { method: 'POST' });
     state.scannerActive = false;
     saveKey('scannerActive', false);
+    logActivity('scanner_off', 'Escáner detenido');
     showToast('⏹ Escáner detenido');
     updateScannerBadge();
   } catch {}
@@ -1485,6 +1492,7 @@ function commitTrade(trade) {
   saveKey('activeTrades', state.activeTrades);
   syncTradesToServer();
   const coin = coinOf(trade.par);
+  logActivity('trade_open', `${trade.tipo} ${trade.par} @ ${trade.entrada} · SL ${trade.stopLoss} · TP ${trade.tp1}${trade.leverage > 1 ? ' · ' + trade.leverage + 'x' : ''}`);
   showToast(`✓ ${trade.par} activa — entrada ${fmtP(trade.entrada, coin)}`);
 }
 
@@ -1562,6 +1570,8 @@ function closeTrade(tradeId, result, pnlOverride) {
 function cancelTrade(tradeId) {
   state.activeTrades = state.activeTrades.filter(t => t.id !== tradeId);
   saveKey('activeTrades', state.activeTrades);
+  const _cancelledTrade = state.activeTrades.find(t => t.id === tradeId) || {};
+  logActivity('trade_cancel', `Operación cancelada: ${_cancelledTrade.par || tradeId}`);
   showToast('Operación cancelada.');
   renderOps();
 }
@@ -1870,6 +1880,7 @@ async function runScan() {
       if (state.alerts.length > 30) state.alerts = state.alerts.slice(0, 30);
       saveKey('alerts', state.alerts);
       fireNotification(alert);
+      logActivity('scanner_alert', `Alerta: ${alert.tipo} ${alert.par} @ ${alert.entrada} — ${alert.confianza}% confianza`);
       updateAlertBadge();
       if (state.currentTab === 'alerts') renderAlerts();
     }
@@ -2892,7 +2903,7 @@ function loadChartJs() {
   });
 }
 
-async function showEquityCurve(filterDays) {
+async function showEquityCurve(filterDays, filterCoin) {
   try {
     const res  = await authFetch('/api/trades/equity-curve');
     const data = await res.json();
@@ -2905,13 +2916,14 @@ async function showEquityCurve(filterDays) {
     // Eliminar modal anterior
     document.getElementById('eq-modal')?.remove();
 
-    // Filtrar por fecha si se especifica
+    // Filtrar por fecha y/o moneda
     const activeDays = filterDays || 0;
+    const activeCoin = filterCoin || '';
     const cutoff = activeDays > 0 ? Date.now() - activeDays * 86_400_000 : 0;
     let allPoints = data.points;
-    let filteredPoints = cutoff > 0
-      ? allPoints.filter(p => new Date(p.date || 0).getTime() >= cutoff)
-      : allPoints;
+    let filteredPoints = allPoints;
+    if (cutoff > 0) filteredPoints = filteredPoints.filter(p => new Date(p.date || 0).getTime() >= cutoff);
+    if (activeCoin) filteredPoints = filteredPoints.filter(p => (p.par || '').startsWith(activeCoin));
 
     // Recalcular cumPnl para el rango filtrado
     let cum = 0;
@@ -2945,11 +2957,21 @@ async function showEquityCurve(filterDays) {
       { label: '30d',  days: 30 },
       { label: '90d',  days: 90 },
     ].map(f => `
-      <button onclick="showEquityCurve(${f.days})"
+      <button onclick="showEquityCurve(${f.days}, '${activeCoin}')"
         style="padding:4px 10px;border-radius:6px;font-size:11px;border:1px solid var(--border);cursor:pointer;
                background:${activeDays === f.days ? 'var(--accent)' : 'var(--s2)'};
                color:${activeDays === f.days ? '#fff' : 'var(--muted)'}">
         ${f.label}
+      </button>`).join('');
+
+    // Coins that appear in trade history
+    const coinsInHistory = [...new Set(allPoints.map(p => (p.par || '').split('/')[0]).filter(Boolean))].sort();
+    const coinFilterBtns = ['', ...coinsInHistory].map(c => `
+      <button onclick="showEquityCurve(${activeDays}, '${c}')"
+        style="padding:4px 10px;border-radius:6px;font-size:11px;border:1px solid var(--border);cursor:pointer;
+               background:${activeCoin === c ? 'var(--yellow)' : 'var(--s2)'};
+               color:${activeCoin === c ? '#000' : 'var(--muted)'}">
+        ${c || 'Todos'}
       </button>`).join('');
 
     const modal = document.createElement('div');
@@ -2968,10 +2990,11 @@ async function showEquityCurve(filterDays) {
 
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;flex-wrap:wrap;gap:8px">
           <h3 style="margin:0;font-size:16px;font-weight:700">📈 Equity Curve</h3>
-          <div style="display:flex;gap:6px">${filterBtns}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">${filterBtns}</div>
         </div>
-        <p style="margin:0 0 16px;font-size:12px;color:var(--muted)">
-          ${summary.total} trades · ${activeDays > 0 ? 'Últimos ' + activeDays + ' días' : 'Histórico completo'}
+        ${coinsInHistory.length > 1 ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;margin-bottom:4px">${coinFilterBtns}</div>` : ''}
+        <p style="margin:4px 0 16px;font-size:12px;color:var(--muted)">
+          ${summary.total} trades · ${activeDays > 0 ? 'Últimos ' + activeDays + ' días' : 'Histórico completo'}${activeCoin ? ' · Moneda: ' + activeCoin : ''}
         </p>
 
         <!-- KPIs -->
@@ -3530,6 +3553,7 @@ function saveProfile() {
   const notes = qs('#profile-notes');
   if (notes) state.profile.notes = notes.value;
   saveKey('profile', state.profile);
+  logActivity('config_save', 'Perfil actualizado');
   showToast('✓ Perfil guardado');
 }
 
@@ -3805,6 +3829,7 @@ function saveCapital() {
   state.profile.risk_pct = parseFloat(qs('#risk-input')?.value) || 2;
   // leverage ya se guarda en setLeverage al hacer clic
   saveKey('profile', state.profile);
+  logActivity('config_save', 'Capital actualizado: $' + state.profile.capital);
   showToast('✓ Capital guardado');
 }
 
@@ -4022,6 +4047,7 @@ function setTab(id) {
 
   const renders = {
     dash:     renderDash,
+    diary:    renderDiary,
     ops:      renderOps,
     alerts:   renderAlerts,
     historial:renderHistorial,
@@ -4141,6 +4167,7 @@ function confirmCloseWithPrice(tradeId) {
   syncTradesToServer();
 
   qs('#close-price-modal')?.remove();
+  logActivity('trade_close', `${result === 'WIN' ? '✅' : '❌'} ${trade.par} ${trade.tipo} cerrada @ ${exitPrice} · Neto: ${fmtUSD(netPnl)}`);
   showToast(`${trade.par} cerrada — Neto: ${fmtUSD(netPnl)} (bruto ${fmtUSD(rawPnl)}, fees -${fmtUSD(totalFees)})`, result === 'LOSS');
   renderAll();
 
@@ -4403,12 +4430,320 @@ function renderHistorial() {
 function renderConfig() {
   const root = qs('#sec-config');
   if (!root) return;
-  // Inyectar sub-divs con IDs originales — renderProfile y renderCapital los encontrarán
+
+  const tabs = [
+    { id: 'perfil',    label: '👤 Perfil' },
+    { id: 'capital',   label: '💰 Capital' },
+    { id: 'sizing',    label: '📐 Sizing' },
+    { id: 'bitunix',   label: '🔗 Bitunix' },
+    { id: 'avanzado',  label: '⚙️ Avanzado' },
+  ];
+  const active = state.configTab || 'perfil';
+
+  const tabBar = tabs.map(t => `
+    <button onclick="setConfigTab('${t.id}')"
+      style="padding:7px 14px;font-size:11px;border-radius:8px;border:1px solid ${active===t.id?'var(--accent)':'var(--border)'};
+             background:${active===t.id?'var(--accent)':'var(--s2)'};color:${active===t.id?'#fff':'var(--muted)'};
+             cursor:pointer;white-space:nowrap;transition:all .15s">
+      ${t.label}
+    </button>`).join('');
+
   root.innerHTML = `
-    <div id="sec-profile" style="display:block"></div>
-    <div id="sec-capital" style="display:block;margin-top:8px"></div>`;
-  renderProfile();
-  renderCapital();
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+      ${tabBar}
+    </div>
+    <div id="config-tab-content"></div>`;
+
+  renderConfigTabContent(active);
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   CONFIG TAB: SIZING (Calculadora de Position Sizing)
+   ══════════════════════════════════════════════════════════════════ */
+function renderSizingCalc(root) {
+  const p = state.profile;
+  root.innerHTML = `
+    <div class="stl">📐 Calculadora de Position Sizing</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:16px">
+      Calcula el tamaño exacto de cada operación según tu capital, riesgo y distancia al stop loss.
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
+        <div>
+          <div class="lbl">Capital ($)</div>
+          <input class="inp" type="number" id="sz-capital" value="${p.capital}" oninput="calcSizing()" placeholder="1000">
+        </div>
+        <div>
+          <div class="lbl">Riesgo por operación (%)</div>
+          <input class="inp" type="number" id="sz-risk" value="${p.risk_pct}" step="0.1" oninput="calcSizing()" placeholder="2">
+        </div>
+        <div>
+          <div class="lbl">Precio de entrada</div>
+          <input class="inp" type="number" id="sz-entry" step="any" oninput="calcSizing()" placeholder="Ej: 65000">
+        </div>
+        <div>
+          <div class="lbl">Stop Loss</div>
+          <input class="inp" type="number" id="sz-sl" step="any" oninput="calcSizing()" placeholder="Ej: 63000">
+        </div>
+        <div>
+          <div class="lbl">Take Profit 1 (opcional)</div>
+          <input class="inp" type="number" id="sz-tp1" step="any" oninput="calcSizing()" placeholder="Ej: 68000">
+        </div>
+        <div>
+          <div class="lbl">Apalancamiento</div>
+          <input class="inp" type="number" id="sz-lev" value="${p.leverage || 1}" min="1" max="100" oninput="calcSizing()" placeholder="1">
+        </div>
+      </div>
+      <button class="btn btng" onclick="calcSizing()" style="font-size:11px;padding:7px 16px">⚡ Calcular</button>
+    </div>
+
+    <div id="sizing-result" style="display:none"></div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="stl" style="margin-bottom:10px">📋 Tabla rápida — distintos riesgos</div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead>
+            <tr style="background:var(--s2)">
+              <th style="padding:7px 10px;text-align:left;border-bottom:1px solid var(--border);color:var(--muted)">Riesgo %</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">En USD</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">Posición (1x)</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">Posición (5x)</th>
+              <th style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--border);color:var(--muted)">Posición (10x)</th>
+            </tr>
+          </thead>
+          <tbody id="sizing-table-body">
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  calcSizing();
+  renderSizingTable();
+}
+
+function calcSizing() {
+  const capital = parseFloat(qs('#sz-capital')?.value) || 0;
+  const riskPct = parseFloat(qs('#sz-risk')?.value)    || 0;
+  const entry   = parseFloat(qs('#sz-entry')?.value)   || 0;
+  const sl      = parseFloat(qs('#sz-sl')?.value)      || 0;
+  const tp1     = parseFloat(qs('#sz-tp1')?.value)     || 0;
+  const lev     = parseFloat(qs('#sz-lev')?.value)     || 1;
+  const result  = qs('#sizing-result');
+  if (!result) return;
+
+  renderSizingTable();
+
+  if (!capital || !riskPct || !entry || !sl) {
+    result.style.display = 'none';
+    return;
+  }
+
+  const riskUSD     = capital * riskPct / 100;
+  const slDist      = Math.abs(entry - sl);
+  const slPct       = (slDist / entry) * 100;
+  if (slDist === 0) { result.style.display = 'none'; return; }
+
+  const direction   = entry > sl ? 'LONG' : 'SHORT';
+  const qty         = riskUSD / slDist;               // unidades sin apalancamiento
+  const posSize     = qty * entry;                    // valor nocional sin lev
+  const margin      = posSize / lev;                  // margen requerido
+  const rr          = tp1 > 0 ? (Math.abs(tp1 - entry) / slDist).toFixed(2) : null;
+  const potGain     = tp1 > 0 ? (Math.abs(tp1 - entry) * qty).toFixed(2) : null;
+  const feeOpen     = posSize * 0.0006;
+  const feeClose    = posSize * 0.0006;
+  const totalFees   = feeOpen + feeClose;
+  const netRisk     = riskUSD + totalFees;
+
+  const colors = {
+    LONG:  'var(--green)',
+    SHORT: 'var(--red)',
+  };
+
+  result.style.display = 'block';
+  result.innerHTML = `
+    <div class="card" style="border-left:3px solid ${colors[direction]}">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+        <span style="font-size:13px;font-weight:700;color:${colors[direction]}">${direction}</span>
+        <span style="font-size:11px;color:var(--muted)">· Entrada ${entry} · SL ${sl} · Lev ${lev}x</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+        ${szKpi('Riesgo en USD', '$' + riskUSD.toFixed(2), 'var(--red)', 'Máximo a perder')}
+        ${szKpi('Cantidad', qty.toFixed(4) + ' u', 'var(--text)', 'Unidades a comprar')}
+        ${szKpi('Valor nocional', '$' + posSize.toFixed(2), 'var(--text)', 'qty × precio entrada')}
+        ${szKpi('Margen necesario', '$' + margin.toFixed(2), 'var(--accent)', 'a ' + lev + 'x')}
+        ${szKpi('Dist. SL', slPct.toFixed(2) + '%', 'var(--yellow)', '$' + slDist.toFixed(4))}
+        ${rr ? szKpi('R:R ratio', '1:' + rr, parseFloat(rr) >= 2 ? 'var(--green)' : 'var(--yellow)', 'Ganancia potencial $' + potGain) : ''}
+        ${szKpi('Comisiones est.', '$' + totalFees.toFixed(2), 'var(--muted)', 'Taker 0.06% × 2')}
+        ${szKpi('Riesgo neto', '$' + netRisk.toFixed(2), 'var(--red)', 'con comisiones')}
+      </div>
+      ${margin > capital ? '<div style="margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.1);border-radius:6px;font-size:11px;color:var(--red)">⚠️ El margen requerido supera tu capital disponible. Reduce el apalancamiento o ajusta el SL.</div>' : ''}
+    </div>`;
+}
+
+function szKpi(label, value, color, sub) {
+  return `
+    <div style="background:var(--s2);border-radius:8px;padding:10px 12px">
+      <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${label}</div>
+      <div style="font-size:14px;font-weight:700;color:${color}">${value}</div>
+      ${sub ? `<div style="font-size:9px;color:var(--muted);margin-top:1px">${sub}</div>` : ''}
+    </div>`;
+}
+
+function renderSizingTable() {
+  const tbody   = qs('#sizing-table-body');
+  if (!tbody) return;
+  const capital = parseFloat(qs('#sz-capital')?.value) || state.profile.capital;
+  const risks   = [0.5, 1, 1.5, 2, 3, 5];
+  tbody.innerHTML = risks.map(r => {
+    const rUSD    = (capital * r / 100);
+    const pos1x   = rUSD.toFixed(2);
+    const pos5x   = (rUSD * 5).toFixed(2);
+    const pos10x  = (rUSD * 10).toFixed(2);
+    const color   = r <= 1 ? 'var(--green)' : r <= 3 ? 'var(--yellow)' : 'var(--red)';
+    return `
+      <tr style="border-bottom:1px solid var(--border)${r === state.profile.risk_pct ? ';background:rgba(108,99,255,.08)' : ''}">
+        <td style="padding:6px 10px;color:${color};font-weight:600">${r}%</td>
+        <td style="padding:6px 10px;text-align:right">$${rUSD.toFixed(2)}</td>
+        <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos1x}</td>
+        <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos5x}</td>
+        <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos10x}</td>
+      </tr>`;
+  }).join('');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   CONFIG TAB: BITUNIX
+   ══════════════════════════════════════════════════════════════════ */
+function renderConfigBitunix(root) {
+  root.innerHTML = `
+    <div class="stl">🔗 Bitunix Exchange</div>
+    <div id="bitunix-config-status" style="margin-bottom:14px">
+      <div style="font-size:11px;color:var(--muted)">Comprobando conexión...</div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.7">
+        Para conectar Bitunix añade estas variables en tu panel de Railway y haz redeploy:
+      </div>
+      <div style="background:var(--s2);border-radius:8px;padding:12px 14px;font-size:11px;font-family:monospace;margin-bottom:14px;line-height:2">
+        BITUNIX_API_KEY = tu_api_key<br>
+        BITUNIX_SECRET = tu_secret_key
+      </div>
+      <div style="font-size:10px;color:var(--muted);line-height:1.6">
+        ⚠️ Crea la API Key con permisos de <b>trading</b> únicamente. Nunca actives permisos de retiro.
+      </div>
+    </div>
+
+    <div id="bitunix-account-panel"></div>
+
+    <div class="card" style="margin-top:12px">
+      <div class="stl" style="margin-bottom:10px">📊 Historial de órdenes</div>
+      <div id="bitunix-history-panel"><div style="font-size:11px;color:var(--muted)">Cargando...</div></div>
+    </div>`;
+
+  // Load status
+  checkBitunixStatus().then(ok => {
+    const el = qs('#bitunix-config-status');
+    if (!el) return;
+    el.innerHTML = ok
+      ? '<div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(34,197,94,.1);border-radius:8px;font-size:11px;color:var(--green)">✅ Conectado — Bitunix Live activo</div>'
+      : '<div style="display:flex;align-items:center;gap:6px;padding:8px 12px;background:rgba(234,179,8,.1);border-radius:8px;font-size:11px;color:var(--yellow)">⚠️ No conectado — añade las variables en Railway</div>';
+    if (ok) {
+      fetchBitunixAccount().then(() => {
+        const panel = qs('#bitunix-account-panel');
+        if (!panel) return;
+        const b = state.bitunixBalance || {};
+        panel.innerHTML = `
+          <div class="card">
+            <div class="stl" style="margin-bottom:10px">💰 Cuenta actual</div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+              ${szKpi('Equity', '$' + (b.equity || '—'), 'var(--accent)', '')}
+              ${szKpi('Balance', '$' + (b.balance || '—'), 'var(--text)', '')}
+              ${szKpi('Margen usado', '$' + (b.usedMargin || '—'), 'var(--yellow)', '')}
+              ${szKpi('P&L no realizado', (b.unrealized >= 0 ? '+' : '') + '$' + (b.unrealized || '0'), b.unrealized >= 0 ? 'var(--green)' : 'var(--red)', '')}
+            </div>
+          </div>`;
+      });
+      const hPanel = qs('#bitunix-history-panel');
+      if (hPanel) renderBitunixHistory().catch(() => { if (hPanel) hPanel.innerHTML = '<div style="font-size:11px;color:var(--muted)">Sin historial disponible</div>'; });
+    }
+  });
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   CONFIG TAB: AVANZADO
+   ══════════════════════════════════════════════════════════════════ */
+function renderConfigAvanzado(root) {
+  const scanInterval = state.profile.scan_interval || 15;
+  root.innerHTML = `
+    <div class="stl">⚙️ Configuración avanzada</div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">🔔 Monedas vigiladas</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+        Selecciona qué monedas aparecen en Mercado y se usan en el análisis IA. Mínimo 2, máximo 10.
+      </div>
+      <div style="display:flex;flex-wrap:wrap;margin-bottom:14px" id="adv-coin-chips"></div>
+      <div style="font-size:10px;color:var(--muted)">Activas: <b style="color:var(--text)">${state.watchedCoins.join(', ')}</b></div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">📡 Escáner automático</div>
+      <div class="lbl">Intervalo de escaneo (minutos)</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <input class="inp" type="number" id="scan-interval-input" value="${scanInterval}" min="5" max="240" style="max-width:100px">
+        <button class="btn btng" onclick="saveScanInterval()" style="font-size:11px;padding:7px 12px">Guardar</button>
+      </div>
+      <div style="font-size:10px;color:var(--muted)">Recomendado: 15–30 min para no consumir demasiadas peticiones a la API.</div>
+    </div>
+
+    <div class="card" style="margin-bottom:12px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">📊 Logs de actividad</div>
+      <div id="activity-log-panel">
+        ${renderActivityLogHTML()}
+      </div>
+    </div>
+
+    <div class="card" style="border-color:rgba(239,68,68,.3)">
+      <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:8px">⚠️ Zona peligrosa</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Estas acciones son irreversibles.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn" onclick="exportTradesCSV()" style="font-size:11px;padding:7px 12px">📥 Exportar trades CSV</button>
+        <button class="btn" onclick="resetAll()" style="font-size:11px;padding:7px 12px;border-color:rgba(239,68,68,.4);color:var(--red)">🗑️ Borrar todos los datos</button>
+      </div>
+    </div>`;
+  // Render coin chips (can't use template literals inside template literals easily)
+  const advChips = qs('#adv-coin-chips');
+  if (advChips) {
+    advChips.innerHTML = ALL_COINS.map(c => {
+      const active = state.watchedCoins.includes(c);
+      return '<span class="chip' + (active ? ' on' : '') + '" onclick="toggleWatchedCoin(\'' + c + '\')">' + c + ' <span style="font-size:9px;color:var(--muted)">' + (COIN_NAMES[c] || '') + '</span></span>';
+    }).join('');
+  }
+}
+
+function saveScanInterval() {
+  const val = parseInt(qs('#scan-interval-input')?.value);
+  if (!val || val < 5 || val > 240) { showToast('Intervalo entre 5 y 240 minutos', true); return; }
+  state.profile.scan_interval = val;
+  saveKey('profile', state.profile);
+  showToast('✓ Intervalo guardado — se aplicará en el próximo ciclo');
+}
+
+
+function setConfigTab(tabId) {
+  state.configTab = tabId;
+  renderConfig();
+}
+
+function renderConfigTabContent(tab) {
+  const root = qs('#config-tab-content');
+  if (!root) return;
+  if (tab === 'perfil')   { root.innerHTML = '<div id="sec-profile"></div>'; renderProfile(); }
+  if (tab === 'capital')  { root.innerHTML = '<div id="sec-capital"></div>'; renderCapital(); }
+  if (tab === 'sizing')   { renderSizingCalc(root); }
+  if (tab === 'bitunix')  { renderConfigBitunix(root); }
+  if (tab === 'avanzado') { renderConfigAvanzado(root); }
 }
 
 
@@ -4425,6 +4760,7 @@ function renderAll() {
   if (id === 'strat')     renderStrategy();
   if (id === 'config')    renderConfig();
   if (id === 'goals')     renderGoals();
+  if (id === 'diary')     renderDiary();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -4772,6 +5108,7 @@ function addGoal(title, targetPnl, deadline) {
   };
   state.goals.push(goal);
   saveKey('goals', state.goals);
+  logActivity('goal_add', 'Objetivo añadido: ' + goal.title + ' → +$' + goal.targetPnl);
   renderGoals();
   showToast(`🎯 Objetivo "${title}" creado`);
 }
@@ -4779,6 +5116,7 @@ function addGoal(title, targetPnl, deadline) {
 function deleteGoal(id) {
   state.goals = state.goals.filter(g => g.id !== id);
   saveKey('goals', state.goals);
+  logActivity('goal_delete', 'Objetivo eliminado');
   renderGoals();
 }
 
@@ -5021,6 +5359,15 @@ Object.assign(window, {
   renderBitunixHistory,
   histPageNav,
   renderDashboard,
+  // Nuevas
+  setConfigTab,
+  renderConfigTabContent,
+  calcSizing,
+  renderSizingTable,
+  saveScanInterval,
+  saveDiaryEntry,
+  deleteDiaryEntry,
+  logActivity,
 });
 /* ══════════════════════════════════════════════════════════════════
    HISTORIAL BITUNIX — Órdenes reales de la cuenta
@@ -5182,4 +5529,202 @@ async function renderBitunixHistory() {
         </div>
       </div>`;
   }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   LOGS DE ACTIVIDAD
+   ══════════════════════════════════════════════════════════════════ */
+function logActivity(action, detail) {
+  const entry = {
+    id:     Date.now(),
+    ts:     new Date().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }),
+    action,
+    detail: detail || '',
+  };
+  state.activityLog.unshift(entry);
+  if (state.activityLog.length > 200) state.activityLog.length = 200;
+  storage.set('cp:activity', state.activityLog);
+  // Refresh panel if visible
+  const panel = qs('#activity-log-panel');
+  if (panel) panel.innerHTML = renderActivityLogHTML();
+}
+
+function renderActivityLogHTML() {
+  const log = state.activityLog || [];
+  if (!log.length) return '<div style="font-size:11px;color:var(--muted)">Sin actividad registrada aún.</div>';
+
+  const icons = {
+    'trade_open':    '🟢',
+    'trade_close':   '🔵',
+    'trade_cancel':  '⚫',
+    'scanner_alert': '🔔',
+    'scanner_on':    '▶️',
+    'scanner_off':   '⏸',
+    'login':         '🔑',
+    'goal_add':      '🎯',
+    'goal_delete':   '🗑️',
+    'diary_entry':   '📓',
+    'config_save':   '⚙️',
+  };
+
+  const rows = log.slice(0, 50).map(e => {
+    const icon = icons[e.action] || '•';
+    return `<div style="display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);font-size:11px">
+      <span style="color:var(--muted);white-space:nowrap;min-width:90px">${e.ts}</span>
+      <span>${icon}</span>
+      <span style="color:var(--text)">${e.detail || e.action}</span>
+    </div>`;
+  }).join('');
+
+  return rows + (log.length > 50
+    ? `<div style="font-size:10px;color:var(--muted);padding-top:6px">... y ${log.length - 50} entradas más</div>`
+    : '');
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   DIARIO DE TRADING
+   ══════════════════════════════════════════════════════════════════ */
+function renderDiary() {
+  const root = qs('#sec-diary');
+  if (!root) return;
+
+  const entries = state.diary || [];
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const todayEntry = entries.find(e => e.date === todayKey);
+
+  // Group by month for display
+  const byMonth = {};
+  entries.forEach(e => {
+    const month = e.date.slice(0, 7);
+    if (!byMonth[month]) byMonth[month] = [];
+    byMonth[month].push(e);
+  });
+
+  const moodEmojis = { great: '🚀', good: '😊', neutral: '😐', bad: '😟', terrible: '💀' };
+  const moodLabels = { great: 'Excelente', good: 'Bueno', neutral: 'Neutral', bad: 'Malo', terrible: 'Pésimo' };
+
+  const monthsHTML = Object.keys(byMonth).sort().reverse().map(month => {
+    const [y, m] = month.split('-');
+    const monthName = new Date(y, m - 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+    const cards = byMonth[month].sort((a,b) => b.date.localeCompare(a.date)).map(e => {
+      const mood  = moodEmojis[e.mood] || '😐';
+      const pnl   = e.pnl != null ? `<span style="color:${e.pnl>=0?'var(--green)':'var(--red)'};font-weight:600">${e.pnl>=0?'+':''}$${e.pnl.toFixed(2)}</span>` : '';
+      const date  = new Date(e.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'short' });
+      return `
+        <div class="card" style="margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+            <div>
+              <div style="font-size:12px;font-weight:600;color:var(--text);text-transform:capitalize">${date}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:1px">${mood} ${moodLabels[e.mood]||''}${e.ops ? ' · ' + e.ops + ' operaciones' : ''}${e.pnl != null ? ' · P&L: ' : ''}${pnl}</div>
+            </div>
+            <button onclick="deleteDiaryEntry('${e.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px">×</button>
+          </div>
+          ${e.notes ? `<div style="font-size:12px;color:var(--text);line-height:1.6;white-space:pre-wrap">${e.notes}</div>` : ''}
+          ${e.lessons ? `<div style="margin-top:8px;padding:8px 10px;background:rgba(108,99,255,.08);border-left:3px solid var(--accent);border-radius:4px;font-size:11px;color:var(--text);line-height:1.5"><b style="color:var(--accent)">💡 Lección:</b> ${e.lessons}</div>` : ''}
+          ${e.tags?.length ? `<div style="margin-top:8px;display:flex;flex-wrap:wrap;gap:4px">${e.tags.map(t => `<span style="padding:2px 8px;border-radius:12px;font-size:10px;background:var(--s2);color:var(--muted)">#${t}</span>`).join('')}</div>` : ''}
+        </div>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">${monthName}</div>
+        ${cards}
+      </div>`;
+  }).join('');
+
+  root.innerHTML = `
+    <div class="stl">📓 Diario de Trading</div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:16px">Registra tu estado mental, decisiones y lecciones aprendidas cada día.</div>
+
+    <!-- Nueva entrada -->
+    <div class="card" style="margin-bottom:20px">
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">
+        ✏️ Entrada de hoy — ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
+        ${todayEntry ? ' <span style="font-size:10px;color:var(--accent)">(ya existe, se sobreescribirá)</span>' : ''}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+        <div>
+          <div class="lbl">Estado de ánimo</div>
+          <select class="inp" id="diary-mood" style="font-size:12px">
+            <option value="great">🚀 Excelente</option>
+            <option value="good" selected>😊 Bueno</option>
+            <option value="neutral">😐 Neutral</option>
+            <option value="bad">😟 Malo</option>
+            <option value="terrible">💀 Pésimo</option>
+          </select>
+        </div>
+        <div>
+          <div class="lbl">P&L del día ($) — opcional</div>
+          <input class="inp" type="number" id="diary-pnl" step="any" placeholder="Ej: 45.50" style="font-size:12px">
+        </div>
+      </div>
+      <div style="margin-bottom:10px">
+        <div class="lbl">Notas del día — ¿qué pasó en el mercado? ¿cómo te sentiste?</div>
+        <textarea class="inp" id="diary-notes" rows="4" placeholder="Hoy el mercado estuvo lateral. BTC rebotó en soporte..." style="resize:vertical;font-size:12px;line-height:1.6"></textarea>
+      </div>
+      <div style="margin-bottom:10px">
+        <div class="lbl">Lección aprendida (opcional)</div>
+        <input class="inp" type="text" id="diary-lessons" placeholder="Ej: No operar contra la tendencia mayor" style="font-size:12px">
+      </div>
+      <div style="margin-bottom:14px">
+        <div class="lbl">Tags (separados por coma)</div>
+        <input class="inp" type="text" id="diary-tags" placeholder="Ej: disciplina, fomo, breakeven" style="font-size:12px">
+      </div>
+      <button class="btn btng" onclick="saveDiaryEntry()" style="font-size:11px;padding:8px 18px">💾 Guardar entrada</button>
+    </div>
+
+    <!-- Historial -->
+    ${entries.length === 0
+      ? '<div class="empty"><div class="ei">📓</div><div class="et">Sin entradas aún. Escribe tu primera nota del día.</div></div>'
+      : monthsHTML
+    }`;
+
+  // Pre-fill today if exists
+  if (todayEntry) {
+    const moodSel = qs('#diary-mood');
+    if (moodSel) moodSel.value = todayEntry.mood || 'good';
+    const notesTa = qs('#diary-notes');
+    if (notesTa) notesTa.value = todayEntry.notes || '';
+    const lessonIn = qs('#diary-lessons');
+    if (lessonIn) lessonIn.value = todayEntry.lessons || '';
+    const tagsIn = qs('#diary-tags');
+    if (tagsIn) tagsIn.value = (todayEntry.tags || []).join(', ');
+    const pnlIn = qs('#diary-pnl');
+    if (pnlIn && todayEntry.pnl != null) pnlIn.value = todayEntry.pnl;
+  }
+}
+
+function saveDiaryEntry() {
+  const mood    = qs('#diary-mood')?.value    || 'neutral';
+  const notes   = qs('#diary-notes')?.value?.trim()   || '';
+  const lessons = qs('#diary-lessons')?.value?.trim() || '';
+  const tagsRaw = qs('#diary-tags')?.value?.trim()    || '';
+  const pnlRaw  = qs('#diary-pnl')?.value;
+  const pnl     = pnlRaw !== '' && pnlRaw != null ? parseFloat(pnlRaw) : null;
+
+  if (!notes) { showToast('Escribe algo en las notas antes de guardar', true); return; }
+
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const tags = tagsRaw ? tagsRaw.split(',').map(t => t.trim().toLowerCase()).filter(Boolean) : [];
+
+  // Remove existing today entry
+  state.diary = state.diary.filter(e => e.date !== todayKey);
+
+  const entry = { id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
+    ops: state.closedTrades.filter(t => {
+      const d = new Date(t.closedAt || 0);
+      return d.toISOString().slice(0,10) === todayKey;
+    }).length,
+  };
+  state.diary.unshift(entry);
+  storage.set('cp:diary', state.diary);
+  logActivity('diary_entry', 'Entrada del diario — ' + new Date().toLocaleDateString('es-ES'));
+  showToast('📓 Entrada guardada');
+  renderDiary();
+}
+
+function deleteDiaryEntry(id) {
+  if (!confirm('¿Eliminar esta entrada del diario?')) return;
+  state.diary = state.diary.filter(e => String(e.id) !== String(id));
+  storage.set('cp:diary', state.diary);
+  renderDiary();
 }
