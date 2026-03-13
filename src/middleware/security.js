@@ -11,18 +11,23 @@ const securityMiddleware = helmet({
       styleSrc:      ["'self'", "'unsafe-inline'"],
       connectSrc:    [
         "'self'",
-        'wss://stream.binance.com:9443',  // WebSocket precios
-        'https://api.binance.com',         // REST OHLCV (RSI, soporte, resistencia)
+        'wss://stream.binance.com:9443',
+        'https://api.binance.com',
         'https://api.anthropic.com',
         'https://api.telegram.org',
         'https://fapi.bitunix.com',
         'ws:',
         'wss:',
       ],
-      imgSrc:        ["'self'", 'data:', 'https://s3-symbol-logo.tradingview.com'],
-      fontSrc:       ["'self'"],
-      objectSrc:     ["'none'"],
-      frameSrc:      ["'self'", 'https://s.tradingview.com'],  // widget TradingView
+      frameSrc: [
+        "'self'",
+        'https://s.tradingview.com',
+        'https://www.tradingview.com',
+        'https://charts.bitunix.com',
+      ],
+      imgSrc:    ["'self'", 'data:', 'https://s3-symbol-logo.tradingview.com'],
+      fontSrc:   ["'self'"],
+      objectSrc: ["'none'"],
       upgradeInsecureRequests: [],
     },
   },
@@ -31,8 +36,9 @@ const securityMiddleware = helmet({
     includeSubDomains: true,
     preload:           true,
   },
+  // Desactivar X-Frame-Options para que el iframe de TradingView funcione
+  frameguard:                false,
   hidePoweredBy:             true,
-  frameguard:                false,   // desactivado para permitir iframe de TradingView
   noSniff:                   true,
   xssFilter:                 true,
   referrerPolicy:            { policy: 'strict-origin-when-cross-origin' },
