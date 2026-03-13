@@ -165,4 +165,26 @@ function stopServerScanner() {
   console.log('[Scanner] ✗ Detenido');
 }
 
+/* ── Health ping: avisa por Telegram si el escáner se atasca ─────── */
+setInterval(() => {
+  if (!scannerState.enabled) return;
+  if (!scannerState.lastScan)  return;
+
+  const elapsed   = Date.now() - scannerState.lastScan;
+  const threshold = scannerState.intervalMin * 60_000 * 2.5; // 2.5× el intervalo
+
+  if (elapsed > threshold) {
+    const { sendTelegram } = require('./telegram');
+    const mins = Math.floor(elapsed / 60_000);
+    sendTelegram(
+      `⚠️ <b>ESCÁNER — POSIBLE FALLO</b>\n\n` +
+      `El escáner está activo pero lleva <b>${mins} min</b> sin ejecutarse.\n` +
+      `Intervalo configurado: ${scannerState.intervalMin} min\n\n` +
+      `Puede ser un error de red o de API. Comprueba los logs en Railway.\n` +
+      `/scanner off → /scanner on para reiniciar`
+    ).catch(() => {});
+    console.warn(`[Scanner] ⚠️ Health warning — sin escaneo en ${mins} min`);
+  }
+}, 30 * 60_000); // comprueba cada 30 min
+
 module.exports = { setBroadcast, startServerScanner, stopServerScanner, runServerScan };

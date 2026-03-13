@@ -1105,8 +1105,6 @@ async function fetchBitunixAccount() {
     if (data.ok && data.account) {
       bitunix.account  = data.account;
       bitunix.lastSync = Date.now();
-      console.log('[Bitunix account campos]', Object.keys(data.account));
-      console.log('[Bitunix account valores]', data.account);
 
       // Leer equity real (incluye PnL no realizado = valor real de la cuenta)
       const equity = parseFloat(
@@ -1124,6 +1122,16 @@ async function fetchBitunixAccount() {
         data.account.freeBalance      ??
         data.account.free             ?? 0
       );
+      const unrealized = parseFloat(data.account.unrealizedPnl ?? data.account.unrealPnl ?? 0);
+      const margin     = parseFloat(data.account.usedMargin ?? data.account.positionMargin ?? 0);
+
+      // Guardar snapshot en state.bitunixBalance para la UI
+      state.bitunixBalance = {
+        equity:     equity.toFixed(2),
+        balance:    (equity - unrealized).toFixed(2),
+        unrealized: unrealized,
+        usedMargin: margin.toFixed(2),
+      };
 
       // Preferir equity sobre available para cálculos de riesgo más precisos
       const realCapital = equity > 0 ? equity : available;
@@ -3905,9 +3913,18 @@ function renderDash() {
 
   const pnlColor  = v => v >= 0 ? 'var(--green)' : 'var(--red)';
   const fmtPnl    = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
-  const scanBadge = scannerOn
-    ? '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:4px;box-shadow:0 0 6px var(--green)"></span>ACTIVO'
-    : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:4px"></span>INACTIVO';
+  // Scanner badge con health check
+  const scanLastMs   = state.lastScan ? (Date.now() - new Date(state.lastScan).getTime()) : null;
+  const scanStalled  = scanLastMs && scannerOn && scanLastMs > (state.scanInterval || 15) * 60_000 * 2.5;
+  const scanLastStr  = scanLastMs
+    ? (scanLastMs < 60_000 ? 'hace <1min' : scanLastMs < 3_600_000 ? `hace ${Math.floor(scanLastMs/60_000)}min` : `hace ${Math.floor(scanLastMs/3_600_000)}h`)
+    : null;
+  const scanDot = scannerOn
+    ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${scanStalled?'var(--yellow)':'var(--green)'};margin-right:4px;box-shadow:0 0 6px ${scanStalled?'var(--yellow)':'var(--green)'}"></span>`
+    : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:4px"></span>';
+  const scanBadge = scanDot + (scannerOn
+    ? (scanStalled ? `⚠️ POSIBLE FALLO${scanLastStr?' ('+scanLastStr+')':''}` : `ACTIVO${scanLastStr?' · '+scanLastStr:''}`)
+    : 'INACTIVO');
 
   root.innerHTML = `
     <div style="padding:0 0 24px">
@@ -3921,6 +3938,7 @@ function renderDash() {
           ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
           &nbsp;·&nbsp; Escáner: ${scanBadge}
           &nbsp;·&nbsp; ${activeTrades.length} trade${activeTrades.length !== 1 ? 's' : ''} abierto${activeTrades.length !== 1 ? 's' : ''}
+          &nbsp;·&nbsp; <span style="font-weight:600;color:${bitunix.configured?'var(--green)':'var(--yellow)'}" title="${bitunix.configured?'Órdenes reales en Bitunix':'Modo simulación — no se ejecutan órdenes reales'}">${bitunix.configured?'🔗 Real':'📋 Paper'}</span>
         </div>
       </div>
 
@@ -4638,7 +4656,7 @@ function renderConfigBitunix(root) {
 
     <div class="card" style="margin-top:12px">
       <div class="stl" style="margin-bottom:10px">📊 Historial de órdenes</div>
-      <div id="bitunix-history-panel"><div style="font-size:11px;color:var(--muted)">Cargando...</div></div>
+      <div id="sec-bitunix-history"><div style="font-size:11px;color:var(--muted)">Cargando...</div></div>
     </div>`;
 
   // Load status
@@ -4664,8 +4682,10 @@ function renderConfigBitunix(root) {
             </div>
           </div>`;
       });
-      const hPanel = qs('#bitunix-history-panel');
-      if (hPanel) renderBitunixHistory().catch(() => { if (hPanel) hPanel.innerHTML = '<div style="font-size:11px;color:var(--muted)">Sin historial disponible</div>'; });
+      renderBitunixHistory().catch(() => {
+        const hp = qs('#sec-bitunix-history');
+        if (hp) hp.innerHTML = '<div style="font-size:11px;color:var(--muted)">Sin historial disponible</div>';
+      });
     }
   });
 }
@@ -5269,6 +5289,38 @@ async function refreshBitunixData() {
 /* ── Init ────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
   loadAll();
+
+  // ── Multi-tab: evitar conflictos si hay más de una pestaña abierta ──
+  const TAB_KEY = 'cplan_active_tab';
+  const myTabId = Date.now() + '_' + Math.random().toString(36).slice(2);
+  let isLeaderTab = true;
+
+  const claimLeader = () => localStorage.setItem(TAB_KEY, myTabId);
+  claimLeader();
+
+  // Cada 4s renovar el claim; si otro tab lo tomó, mostrar aviso
+  setInterval(() => {
+    const current = localStorage.getItem(TAB_KEY);
+    if (current && current !== myTabId) {
+      // Otro tab es líder — mostrar banner no intrusivo
+      if (isLeaderTab) {
+        isLeaderTab = false;
+        const banner = document.createElement('div');
+        banner.id = 'multi-tab-banner';
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#1a1000;border-bottom:2px solid var(--yellow,#c8aa50);padding:8px 16px;font-size:12px;color:#c8aa50;text-align:center';
+        banner.innerHTML = '⚠️ CryptoPlan IA ya está abierto en otra pestaña. Para evitar conflictos, usa solo una pestaña a la vez. <button onclick="document.getElementById(\'multi-tab-banner\').remove();window._multiTabAck=true" style="margin-left:12px;background:none;border:1px solid currentColor;border-radius:4px;padding:2px 8px;color:inherit;cursor:pointer;font-size:11px">Entendido</button>';
+        document.body.prepend(banner);
+      }
+    } else {
+      claimLeader(); // seguimos siendo líder
+      if (!isLeaderTab && !window._multiTabAck) isLeaderTab = true;
+    }
+  }, 4_000);
+
+  // Al cerrar esta pestaña, liberar el claim
+  window.addEventListener('beforeunload', () => {
+    if (localStorage.getItem(TAB_KEY) === myTabId) localStorage.removeItem(TAB_KEY);
+  });
 
   // Aplicar modo oscuro guardado ANTES de mostrar nada
   applyDarkMode(state.darkMode);

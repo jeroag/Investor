@@ -230,6 +230,26 @@ async function routeCommand(args, chatId) {
     return cmdAlerta(coin, price, chatId);
   }
 
+  if (cmd === '/alertas') {
+    return buildAlertasMsg(chatId);
+  }
+
+  if (cmd === '/borraralerta') {
+    const coin = (args[1] || '').toUpperCase();
+    if (!coin) return '❌ Uso: /borraralerta BTC';
+    return cmdBorrarAlerta(coin, chatId);
+  }
+
+  if (cmd === '/diario') {
+    return buildDiarioMsg();
+  }
+
+  if (cmd === '/notadiaria') {
+    const nota = args.slice(1).join(' ').trim();
+    if (!nota) return '❌ Uso: /notadiaria tu nota del día aquí';
+    return cmdNotaDiaria(nota);
+  }
+
   return `❓ Comando no reconocido.\nEnvía /ayuda para ver todos los comandos.`;
 }
 
@@ -543,6 +563,29 @@ function cmdAlerta(coin, targetPrice, chatId) {
   );
 }
 
+function buildAlertasMsg(chatId) {
+  const myAlerts = priceAlerts.filter(a => a.chatId === chatId);
+  if (!myAlerts.length) {
+    return '🔔 <b>Sin alertas configuradas.</b>\n\nUsa /alerta BTC 70000 para crear una.';
+  }
+  const lines = myAlerts.map(a => {
+    const emoji   = a.direction === 'up' ? '⬆️' : '⬇️';
+    const current = serverState.prices[a.coin];
+    const dist    = current
+      ? ` · ${Math.abs(((a.targetPrice - current) / current) * 100).toFixed(1)}% restante`
+      : '';
+    return `${emoji} <b>${a.coin}</b> → <code>$${a.targetPrice}</code>${dist}`;
+  });
+  return `🔔 <b>TUS ALERTAS (${myAlerts.length})</b>\n\n` + lines.join('\n') + '\n\n/borraralerta BTC — eliminar una alerta';
+}
+
+function cmdBorrarAlerta(coin, chatId) {
+  const idx = priceAlerts.findIndex(a => a.coin === coin && a.chatId === chatId);
+  if (idx === -1) return `📭 No tienes alerta configurada para <b>${coin}</b>.`;
+  priceAlerts.splice(idx, 1);
+  return `✅ Alerta de <b>${coin}</b> eliminada.`;
+}
+
 function buildAyudaMsg() {
   return (
     `🤖 <b>COMANDOS DISPONIBLES</b>\n\n` +
@@ -567,8 +610,40 @@ function buildAyudaMsg() {
     `/scanner — ver estado\n` +
     `/intervalo 15 — cambiar intervalo (5–240 min)\n\n` +
     `<b>🔔 Alertas de precio</b>\n` +
-    `/alerta BTC 70000 — aviso al llegar al precio`
+    `/alerta BTC 70000 — configurar alerta\n` +
+    `/alertas — ver alertas activas\n` +
+    `/borraralerta BTC — eliminar alerta\n\n` +
+    `<b>📓 Diario</b>\n` +
+    `/diario — ver notas del día\n` +
+    `/notadiaria texto — añadir nota rápida`
   );
+}
+
+/* ═══ DIARIO SERVER-SIDE (notas rápidas vía Telegram) ════════════════ */
+// En memoria — las notas rápidas del día se guardan aquí
+const telegramNotes = [];
+
+function buildDiarioMsg() {
+  const todayKey   = new Date().toISOString().slice(0, 10);
+  const todayNotes = telegramNotes.filter(n => n.date === todayKey);
+  const dateStr    = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  if (!todayNotes.length) {
+    return `📓 <b>DIARIO — ${dateStr}</b>\n\nSin notas hoy.\n\nUsa /notadiaria tu texto aquí para añadir una nota.`;
+  }
+
+  const lines = todayNotes.map((n, i) => `${i + 1}. ${n.time} — ${n.text}`);
+  return `📓 <b>DIARIO — ${dateStr}</b>\n\n` + lines.join('\n') + '\n\n/notadiaria texto — añadir nota';
+}
+
+function cmdNotaDiaria(texto) {
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const time     = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+  telegramNotes.push({ date: todayKey, time, text: texto });
+  // Limitar a 100 notas en memoria
+  if (telegramNotes.length > 100) telegramNotes.splice(0, telegramNotes.length - 100);
+  return `📓 Nota añadida (${time}):
+<i>${texto}</i>`;
 }
 
 /* ── Webhook setup ─────────────────────────────────────────────── */

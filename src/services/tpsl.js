@@ -20,6 +20,23 @@ async function checkTPSL(coin, price) {
   for (const trade of serverState.activeTrades) {
     if (coinOf(trade.par) !== coin) continue;
 
+    // ── Breakeven automático: si hay TP2 y se toca TP1 → mover SL a entrada ──
+    if (trade.tp2 && !trade.breakevenSet) {
+      const hitTP1 = trade.tipo === 'LONG' ? price >= trade.tp1 : price <= trade.tp1;
+      if (hitTP1) {
+        trade.stopLoss    = trade.entrada;
+        trade.breakevenSet = true;
+        // Persistir el trade actualizado en Supabase
+        db.saveActiveTrade(trade).catch(() => {});
+        // Notificar por Telegram
+        const { notifyBreakeven } = require('./telegram');
+        notifyBreakeven(trade).catch(() => {});
+        // Broadcast al cliente si hay WebSocket activo
+        if (broadcastFn) broadcastFn({ type: 'BREAKEVEN', trade });
+        console.log(`[Breakeven] ${trade.par} — SL movido a entrada ${trade.entrada}`);
+      }
+    }
+
     const target = trade.tp2 || trade.tp1;
     const hitSL  = trade.tipo === 'LONG' ? price <= trade.stopLoss : price >= trade.stopLoss;
     const hitTP  = trade.tipo === 'LONG' ? price >= target         : price <= target;
@@ -27,11 +44,13 @@ async function checkTPSL(coin, price) {
     if (!hitSL && !hitTP) continue;
 
     const exit   = hitTP ? target : trade.stopLoss;
+    const result = hitTP ? 'WIN' : (trade.breakevenSet ? 'BREAKEVEN' : 'LOSS');
     const pnl    = calcPnL(trade, exit);
     const closed = {
       ...trade,
-      result:         hitTP ? 'WIN' : 'LOSS',
+      result,
       pnl,
+      exitPrice:      exit,
       closedAt:       nowFull(),
       closedByServer: true,
     };
@@ -43,8 +62,8 @@ async function checkTPSL(coin, price) {
     db.deleteActiveTrade(trade.id).catch(() => {});
 
     if (broadcastFn) broadcastFn({ type: 'TRADE_CLOSED', trade: closed });
-    notifyTradeClosed(closed, closed.result, pnl);
-    console.log(`[TP/SL] ${trade.par} → ${closed.result} | PnL: $${pnl.toFixed(2)}`);
+    notifyTradeClosed(closed, result, pnl);
+    console.log(`[TP/SL] ${trade.par} → ${result} | PnL: $${pnl.toFixed(2)}`);
   }
 
   if (toRemove.length) {
