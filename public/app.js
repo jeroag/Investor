@@ -1828,6 +1828,19 @@ async function runScan() {
   try {
     const result = await aiScanMarket();
     addScanLog(result);
+
+    // Filtro cliente: verificar que la moneda del escáner sea ejecutable
+    if (result.hay_oportunidad && bitunix.configured) {
+      const coin = (result.par || '').split('/')[0];
+      const { feasible } = buildFeasibleCoins();
+      const ejecutable = feasible.some(f => f.coin === coin);
+      if (!ejecutable) {
+        console.warn(`[Escáner] Alerta de ${result.par} descartada — capital insuficiente para mínimo Bitunix`);
+        result.hay_oportunidad = false;
+        result.razon = `Capital insuficiente para el mínimo de Bitunix en ${result.par}. ${result.razon}`;
+      }
+    }
+
     if (result.hay_oportunidad) {
       const alert = {
         ...result,
@@ -3812,10 +3825,27 @@ async function onGenerate() {
   state.aiMsg = null;
   try {
     const data = await aiGenerateProposals();
-    state.pending = data.proposals || [];
+
+    // Filtro cliente: descartar propuestas de monedas no ejecutables con Bitunix
+    let proposals = data.proposals || [];
+    if (bitunix.configured) {
+      const { feasible } = buildFeasibleCoins();
+      const feasibleCoins = new Set(feasible.map(f => f.coin));
+      const antes = proposals.length;
+      proposals = proposals.filter(p => {
+        const coin = (p.par || '').split('/')[0];
+        return feasibleCoins.size === 0 || feasibleCoins.has(coin);
+      });
+      const filtradas = antes - proposals.length;
+      if (filtradas > 0) {
+        showToast(`⚠️ ${filtradas} propuesta(s) eliminadas — capital insuficiente para el mínimo de Bitunix`, true);
+      }
+    }
+
+    state.pending = proposals;
     state.aiMsg   = { market: data.analisis_mercado, rec: data.recomendacion_ia };
     setTab('ops');
-    showToast(`✓ IA generó ${data.proposals?.length || 0} propuesta(s) con precios reales.`);
+    showToast(`✓ IA generó ${proposals.length} propuesta(s) ejecutables con tu capital.`);
   } catch (e) {
     showToast('Error IA: ' + e.message, true);
   }
