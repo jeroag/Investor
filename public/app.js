@@ -440,6 +440,17 @@ async function fetchMarketMeta() {
   }
 }
 
+const storage = {
+  get(key) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
+    catch { return null; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  },
+  del(key) { try { localStorage.removeItem(key); } catch {} },
+};
+
 /* ── State ───────────────────────────────────────────────────────────────── */
 const state = {
   // persisted
@@ -482,16 +493,6 @@ const state = {
 };
 
 /* ── Storage helpers ─────────────────────────────────────────────────────── */
-const storage = {
-  get(key) {
-    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
-    catch { return null; }
-  },
-  set(key, value) {
-    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
-  },
-  del(key) { try { localStorage.removeItem(key); } catch {} },
-};
 
 function loadAll() {
   state.activeTrades = storage.get(STORAGE_KEYS.activeTrades)  ?? [];
