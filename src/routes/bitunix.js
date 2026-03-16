@@ -126,9 +126,16 @@ router.post('/place-order', requireAuth, async (req, res) => {
     if (tpPrice) { orderBody.tpPrice = String(tpPrice); orderBody.tpStopType = 'LAST_PRICE'; orderBody.tpOrderType = 'MARKET'; }
     if (slPrice) { orderBody.slPrice = String(slPrice); orderBody.slStopType = 'LAST_PRICE'; orderBody.slOrderType = 'MARKET'; }
 
+    console.log('[Bitunix] Enviando orden:', JSON.stringify(orderBody));
     const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, orderBody);
+    console.log('[Bitunix] Respuesta completa:', JSON.stringify(orderData));
     const orderId   = orderData.data?.orderId;
+    // Calcular margen real para log
+    const qtyNum  = parseFloat(qty);
+    const slDistN = tpPrice && slPrice ? Math.abs(parseFloat(tpPrice) - parseFloat(slPrice)) : 0;
+    const priceRef = parseFloat(orderBody.price || 0);
     console.log(`[Bitunix order OK] ${symbol} ${side} qty=${qty} orderId=${orderId}`);
+    console.log(`[Bitunix margin]  qty=${qtyNum} leverage=${leverage} → margen estimado = qty*precio/lev`);
     notifyTradeOpened({
       par:      symbol.replace('USDT', '/USDT'),
       tipo:     side === 'BUY' ? 'LONG' : 'SHORT',

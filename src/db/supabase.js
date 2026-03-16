@@ -131,6 +131,84 @@ module.exports = {
   loadClosedTrades, saveClosedTrade, deleteClosedTrades,
   // Sessions
   loadSessions, saveSession, deleteSession, deleteExpiredSessions,
-  // Alerts
+  // Scanner alerts
   saveAlert, loadRecentAlerts,
+  // Diary
+  loadDiaryEntries, saveDiaryEntry, deleteDiaryEntry,
+  // Price alerts (Telegram ↔ app sync)
+  loadPriceAlerts, savePriceAlert, deletePriceAlert,
+  // User profile (sync between devices)
+  loadProfile, saveProfile,
 };
+
+/* ════════════════════════════════════════════════════════════════════
+   HELPERS — User Profile (persists config across browsers/devices)
+   ════════════════════════════════════════════════════════════════════ */
+async function loadProfile() {
+  const { data, error } = await supabase
+    .from('user_profile')
+    .select('data')
+    .eq('id', 'main')
+    .single();
+  if (error) { 
+    if (error.code !== 'PGRST116') console.error('[DB] loadProfile:', error.message);
+    return null;
+  }
+  return data?.data || null;
+}
+
+async function saveProfile(profile) {
+  const { error } = await supabase
+    .from('user_profile')
+    .upsert({ id: 'main', data: profile, updated_at: Date.now() });
+  if (error) console.error('[DB] saveProfile:', error.message);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   HELPERS — Diary Entries
+   ════════════════════════════════════════════════════════════════════ */
+async function loadDiaryEntries(limit = 365) {
+  const { data, error } = await supabase
+    .from('diary_entries')
+    .select('data')
+    .order('entry_date', { ascending: false })
+    .limit(limit);
+  if (error) { console.error('[DB] loadDiaryEntries:', error.message); return []; }
+  return (data || []).map(r => r.data);
+}
+
+async function saveDiaryEntry(entry) {
+  const { error } = await supabase
+    .from('diary_entries')
+    .upsert({ id: entry.id, data: entry, entry_date: entry.date, created_at: Date.now() });
+  if (error) console.error('[DB] saveDiaryEntry:', error.message);
+}
+
+async function deleteDiaryEntry(id) {
+  const { error } = await supabase.from('diary_entries').delete().eq('id', id);
+  if (error) console.error('[DB] deleteDiaryEntry:', error.message);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   HELPERS — Price Alerts (sync Telegram ↔ app)
+   ════════════════════════════════════════════════════════════════════ */
+async function loadPriceAlerts() {
+  const { data, error } = await supabase
+    .from('price_alerts')
+    .select('data')
+    .order('created_at', { ascending: false });
+  if (error) { console.error('[DB] loadPriceAlerts:', error.message); return []; }
+  return (data || []).map(r => r.data);
+}
+
+async function savePriceAlert(alert) {
+  const { error } = await supabase
+    .from('price_alerts')
+    .upsert({ id: alert.id, data: alert, created_at: Date.now() });
+  if (error) console.error('[DB] savePriceAlert:', error.message);
+}
+
+async function deletePriceAlert(id) {
+  const { error } = await supabase.from('price_alerts').delete().eq('id', id);
+  if (error) console.error('[DB] deletePriceAlert:', error.message);
+}

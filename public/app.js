@@ -513,6 +513,15 @@ function loadAll() {
 
 function saveKey(key, value) { storage.set(STORAGE_KEYS[key], value); }
 
+/* Sincroniza el perfil con el servidor tras cualquier cambio */
+function syncProfileToServer() {
+  authFetch('/api/profile', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ profile: state.profile }),
+  }).catch(() => {});
+}
+
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const nowTime = () => new Date().toLocaleTimeString('es-ES', { hour:'2-digit', minute:'2-digit' });
@@ -3666,6 +3675,7 @@ function saveProfile() {
   const notes = qs('#profile-notes');
   if (notes) state.profile.notes = notes.value;
   saveKey('profile', state.profile);
+  syncProfileToServer();
   logActivity('config_save', 'Perfil actualizado');
   showToast('✓ Perfil guardado');
 }
@@ -3956,6 +3966,7 @@ function toggleWatchedCoin(coin) {
 function setLeverage(lev) {
   state.profile.leverage = lev;
   saveKey('profile', state.profile);
+  syncProfileToServer();
   renderCapital();
 }
 
@@ -3965,6 +3976,7 @@ function saveCapital() {
   state.profile.daily_loss_limit = parseFloat(qs('#daily-loss-input')?.value)  || 0;
   // leverage ya se guarda en setLeverage al hacer clic
   saveKey('profile', state.profile);
+  syncProfileToServer();
   // Re-evaluar el circuit breaker con el nuevo límite
   checkCircuitBreaker();
   logActivity('config_save', `Capital actualizado: $${state.profile.capital} · Límite diario: ${state.profile.daily_loss_limit > 0 ? '-$' + state.profile.daily_loss_limit : 'desactivado'}`);
@@ -4597,7 +4609,7 @@ function setScanIntervalVal(m) {
 function showOnboarding() { state.onboarded = true; saveKey('onboarded', true); }
 function onboardNext()    { state.onboarded = true; saveKey('onboarded', true); }
 function onboardBack()    {}
-function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state.profile); }
+function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state.profile); syncProfileToServer(); }
 
 
 /* ── Header buttons ──────────────────────────────────────────────────────── */
@@ -5636,6 +5648,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // ── Cargar perfil desde servidor (tiene prioridad sobre localStorage)
+  authFetch('/api/profile').then(r => r.json()).then(data => {
+    if (data.ok && data.profile && typeof data.profile === 'object') {
+      // Merge: servidor gana en los campos que existen, localStorage en el resto
+      state.profile = { ...DEFAULT_PROFILE, ...state.profile, ...data.profile };
+      storage.set(STORAGE_KEYS.profile, state.profile);
+      console.log('[Profile] Cargado desde servidor:', JSON.stringify({
+        capital: state.profile.capital,
+        risk_pct: state.profile.risk_pct,
+        leverage: state.profile.leverage,
+      }));
+      // Re-renderizar si hay cambios relevantes
+      renderAll();
+    }
+  }).catch(() => {});
+
   syncTradesToServer();
   // Cargar price alerts desde Supabase y merge con localStorage
   authFetch('/api/price-alerts').then(r => r.json()).then(data => {
@@ -5691,7 +5719,7 @@ Object.assign(window, {
   refreshCalendar,
   showBitunixSetup, refreshBitunixData,
   doLogout,
-  resetAll, renderAll,
+  resetAll, renderAll, syncProfileToServer,
   exportTradesCSV,
   showEquityCurve,
   renderBitunixHistory,

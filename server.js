@@ -32,6 +32,8 @@ const scannerRoutes    = require('./src/routes/scanner');
 const claudeRoutes     = require('./src/routes/claude');
 const telegramRoutes   = require('./src/routes/telegram');
 const { router: bitunixRoutes } = require('./src/routes/bitunix');
+const diaryRoutes      = require('./src/routes/diary');
+const priceAlertRoutes = require('./src/routes/pricealerts');
 
 /* ══════════════════════════════════════════════════════════════════
    APP EXPRESS
@@ -57,6 +59,9 @@ app.use('/api/claude',      claudeRoutes);
 app.use('/api/telegram',    telegramRoutes);
 app.use('/api/bitunix',     bitunixRoutes);
 app.use('/api/tradingview', tvModule.router);
+app.use('/api/diary',         diaryRoutes);
+app.use('/api/profile',        require('./src/routes/profile'));
+app.use('/api/price-alerts',  priceAlertRoutes);
 
 /* ── Precios (alias rápido) ────────────────────────────────────── */
 app.get('/api/prices', requireAuth, (req, res) =>
