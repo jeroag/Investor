@@ -99,10 +99,10 @@ function buildFeasibleCoins() {
     // SL típico = 2% del precio (ajustado a la volatilidad por tipo de moneda)
     const slPct   = coin === 'BTC' ? 0.02 : coin === 'ETH' ? 0.025 : 0.03;
     const slDist  = price * slPct;
-    const qty     = riskUSD / (slDist * leverage);
+    const qty     = riskUSD / slDist;         // leverage no divide qty
     const minNotional = minQty * price;
     const myNotional  = qty * price;
-    const margin      = myNotional / leverage;
+    const margin      = myNotional / leverage; // leverage sí reduce el margen
 
     if (qty >= minQty) {
       feasible.push({
@@ -116,7 +116,7 @@ function buildFeasibleCoins() {
       });
     } else {
       // Calcular cuánto capital mínimo necesitaría
-      const minCapitalNeeded = (minQty * slDist * leverage) / (riskPct / 100);
+      const minCapitalNeeded = (minQty * slDist) / (riskPct / 100); // sin leverage en numerador
       infeasible.push({ coin, price, minQty, minNotional: parseFloat(minNotional.toFixed(2)), minCapitalNeeded: parseFloat(minCapitalNeeded.toFixed(2)) });
     }
   });
@@ -474,6 +474,8 @@ const state = {
   scanning:     false,
   lastScan:     null,
   notifPermission: Notification.permission,
+  circuitBreakerTripped: false,  // se activa si se supera el límite diario
+  readOnlyMode: storage.get('cp:readOnly') ?? false,
   activeNotif:  null,
   scanTimer:    null,
   autoClosedIds: new Set(),
@@ -1174,6 +1176,7 @@ async function syncBitunixPositions() {
     bitunix.positions = data.positions || [];
 
     // Marcar trades locales que tienen una posición real en Bitunix
+    // y actualizar la entrada con el precio real de ejecución del exchange
     bitunix.positions.forEach(pos => {
       const symbol = pos.symbol?.replace('USDT', ''); // "BTCUSDT" → "BTC"
       const side   = pos.side === 'BUY' ? 'LONG' : 'SHORT';
@@ -1186,6 +1189,20 @@ async function syncBitunixPositions() {
         match.unrealizedPnl  = parseFloat(pos.unrealizedPnl || 0);
         match.bitunixQty     = parseFloat(pos.qty || 0);
         match.bitunixSide    = pos.side;
+
+        // ── Precio real de ejecución en Bitunix ────────────────────
+        // Bitunix devuelve el precio medio de apertura en openPrice / avgOpenPrice
+        const realEntry = parseFloat(
+          pos.openPrice || pos.avgOpenPrice || pos.avgPrice || pos.entryPrice || 0
+        );
+        if (realEntry > 0 && !match.entradaBitunix) {
+          // Primera sincronización: guardar el precio real y actualizar entrada
+          match.entradaBitunix   = realEntry;  // precio real del exchange
+          match.entradaApp       = match.entrada; // precio original de la app (para referencia)
+          match.entrada          = realEntry;   // usar precio real para cálculos de P&L
+          saveKey('activeTrades', state.activeTrades);
+          console.log(`[Bitunix sync] ${symbol} entrada actualizada: app=${match.entradaApp} → real=${realEntry}`);
+        }
       }
     });
 
@@ -1197,14 +1214,25 @@ async function syncBitunixPositions() {
 
 /* Calcular qty en unidades base para Bitunix dado el riskUSD y precio */
 function calcBitunixQty(riskUSD, entry, stopLoss, leverage, symbol) {
-  // Para BTC y ETH: qty en contratos (unidades de la moneda base)
-  // Fórmula: qty = riskUSD / (|entry - sl| * leverage)
+  // Fórmula correcta para futuros:
+  // qty = riskUSD / slDist
+  // El leverage NO va en el denominador — solo afecta el margen requerido.
+  // Si el precio cae hasta SL, la pérdida = qty * slDist = riskUSD exacto.
   const dist = Math.abs(entry - stopLoss);
   if (dist === 0) return 0;
-  const qty = riskUSD / (dist * leverage);
-  // Redondear según el par: BTC 3 decimales, resto 2
-  const decimals = symbol?.startsWith('BTC') ? 3 : 2;
-  return parseFloat(qty.toFixed(decimals));
+  const qty = riskUSD / dist;
+  // Redondear según el par (mínimos de Bitunix)
+  const coin = symbol?.replace('USDT','') || '';
+  const decimals = coin === 'BTC' ? 3
+    : coin === 'ETH' ? 2
+    : coin === 'SOL' ? 1
+    : coin === 'XRP' || coin === 'ADA' || coin === 'MATIC' || coin === 'ATOM' ? 0
+    : coin === 'DOGE' ? -1   // múltiplo de 10
+    : 2;
+  const rounded = decimals >= 0
+    ? parseFloat(qty.toFixed(decimals))
+    : Math.floor(qty / 10) * 10;
+  return rounded;
 }
 
 /* Ejecutar orden en Bitunix */
@@ -1223,7 +1251,8 @@ async function placeBitunixOrder(trade) {
   // TP2 = objetivo visual en la app — cuando se alcance TP1 ya estarás fuera
   const tpPrice = trade.tp1 || null;
 
-  showToast(`📡 Enviando orden ${symbol} ${side} qty=${qty} TP=${tpPrice} SL=${trade.stopLoss}...`);
+  const marginEstimado = (qty * trade.entrada / leverage).toFixed(2);
+  showToast(`📡 Enviando orden ${symbol} ${side} · qty=${qty} · margen ~$${marginEstimado} · TP=${tpPrice} SL=${trade.stopLoss}...`);
 
   try {
     const res  = await authFetch('/api/bitunix/place-order', {
@@ -1439,11 +1468,13 @@ function renderBalanceWidget() {
     })() : ''}`;
 }
 function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
-  // Con apalancamiento: la posición efectiva se multiplica, pero el riesgo en USD no cambia.
-  // Unidades = riesgo / (distancia_precio * apalancamiento)
-  // Así, si el precio llega al SL, la pérdida sigue siendo exactamente riskUSD.
+  // Fórmula correcta para futuros:
+  // qty = riskUSD / slDist
+  // El leverage NO divide qty — solo reduce el margen requerido.
+  // P&L = qty × (precio_salida - entrada), independiente del leverage.
+  // margin = qty × precio / leverage
   const dist = Math.abs(entry - stopLoss);
-  return dist > 0 ? riskUSD / (dist * leverage) : 0.001;
+  return dist > 0 ? riskUSD / dist : 0.001;
 }
 
 // Construye el objeto trade SIN guardarlo todavía en el estado.
@@ -1452,6 +1483,23 @@ function calcSize(riskUSD, entry, stopLoss, leverage = 1) {
  * Valida si una propuesta es ejecutable con el capital actual.
  * Devuelve null si es OK, o un string con el mensaje de error.
  */
+function checkCorrelation(tipo) {
+  const CORRELATED = ['BTC','ETH','SOL','BNB','AVAX','LINK'];
+  const activeSameSide = state.activeTrades.filter(t => {
+    const coin = coinOf(t.par);
+    return t.tipo === tipo && CORRELATED.includes(coin);
+  });
+  if (activeSameSide.length === 0) return null;
+  const coins = activeSameSide.map(t => coinOf(t.par)).join(', ');
+  const totalRisk = activeSameSide.reduce((a, t) => a + (t.riskUSD || 0), 0);
+  return {
+    count: activeSameSide.length,
+    coins,
+    totalRisk,
+    warning: `Ya tienes ${activeSameSide.length} ${tipo} abierto${activeSameSide.length > 1 ? 's' : ''} en activos correlacionados (${coins}). Riesgo acumulado: $${totalRisk.toFixed(2)}.`
+  };
+}
+
 function checkTradeExecutability(proposal) {
   if (!bitunix.configured) return null; // sin Bitunix no bloqueamos
 
@@ -1465,7 +1513,7 @@ function checkTradeExecutability(proposal) {
   const size     = calcSize(riskUSD, price, proposal.stopLoss, leverage);
 
   if (size < minQty) {
-    const minCapital = (minQty * Math.abs(price - proposal.stopLoss) * leverage) / (state.profile.risk_pct / 100);
+    const minCapital = (minQty * Math.abs(price - proposal.stopLoss)) / (state.profile.risk_pct / 100);
     return `❌ ${coin} rechazado: qty calculada ${size.toFixed(5)} < mínimo Bitunix ${minQty}.\nNecesitas ~$${minCapital.toFixed(0)} de capital o aumentar el leverage.`;
   }
   return null;
@@ -1721,12 +1769,19 @@ function addPriceAlert(coin, targetPrice, direction) {
   saveKey('priceAlerts', state.priceAlerts);
   renderPriceAlertsPanel();
   showToast(`🔔 Alerta creada: ${coin} ${direction === 'above' ? '≥' : '≤'} ${fmtP(pa.targetPrice, coin)}`);
+  // Sync to Supabase (Telegram ↔ app)
+  authFetch('/api/price-alerts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ alert: pa }),
+  }).catch(() => {});
 }
 
 function deletePriceAlert(id) {
   state.priceAlerts = state.priceAlerts.filter(a => a.id !== id);
   saveKey('priceAlerts', state.priceAlerts);
   renderPriceAlertsPanel();
+  authFetch('/api/price-alerts/' + id, { method: 'DELETE' }).catch(() => {});
 }
 
 function checkPriceAlerts() {
@@ -2047,7 +2102,7 @@ function calcProposalMoney(proposal) {
   const riskUSD   = capital * riskPct / 100;
   const size      = calcSize(riskUSD, entry, proposal.stopLoss, leverage);
   const notional  = size * entry;              // valor total de la posición
-  const margin    = notional / leverage;       // dinero real bloqueado (margen)
+  const margin    = notional / leverage;       // dinero real bloqueado (margen inicial)
   const maxWin    = riskUSD * parseFloat(proposal.rr || 1);
   const capitalPct = (margin / capital * 100); // % del capital usado
 
@@ -2367,8 +2422,10 @@ function renderOps() {
             </div>
             <div class="op-meta">${o.setup} · ${o.createdAt} · Riesgo $${(o.riskUSD || 0).toFixed(2)}${lev > 1 ? ` · Apalancamiento ${lev}x` : ''}</div>
             <div class="op-levels">
-              <span class="lv lv-e">E: ${fmtP(o.entrada, coin)}</span>
-              <span class="lv lv-s">SL: ${fmtP(o.stopLoss, coin)}</span>
+              <span class="lv lv-e" title="${o.entradaBitunix && o.entradaApp && Math.abs(o.entradaBitunix - o.entradaApp) > 0.00001 ? `App: ${fmtP(o.entradaApp, coin)} → Bitunix real: ${fmtP(o.entradaBitunix, coin)}` : 'Precio de entrada'}">
+                E: ${fmtP(o.entrada, coin)}${o.entradaBitunix && o.entradaApp && Math.abs(o.entradaBitunix - o.entradaApp) > 0.00001 ? ` <span style="font-size:9px;color:var(--yellow)" title="El exchange ejecutó a un precio ligeramente diferente al que mostraba la app">⚡</span>` : ''}
+              </span>
+              <span class="lv lv-s op-sl">SL: ${fmtP(o.stopLoss, coin)}${o.breakevenSet ? ' 🔒' : ''}</span>
               <span class="lv lv-t">TP1 🎯: ${fmtP(o.tp1, coin)}</span>
               ${o.tp2 ? `<span class="lv lv-t" style="opacity:.55" title="Objetivo visual — no se ejecuta automáticamente en Bitunix">TP2: ${fmtP(o.tp2, coin)}</span>` : ''}
               <span style="font-size:10px;color:var(--yellow)">R:R 1:${o.rr}</span>
@@ -3667,6 +3724,28 @@ function renderCapital() {
         </div>
       </div>
 
+      <!-- Circuit Breaker -->
+      <div style="background:rgba(239,68,68,.06);border:1px solid rgba(239,68,68,.2);border-radius:10px;padding:14px;margin-bottom:16px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span style="font-size:14px">🛑</span>
+          <div style="font-size:12px;font-weight:600;color:var(--text)">Circuit Breaker — Límite de pérdida diaria</div>
+          ${state.circuitBreakerTripped ? '<span style="font-size:10px;font-weight:700;color:#fff;background:var(--red);padding:2px 8px;border-radius:20px">ACTIVO</span>' : ''}
+        </div>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.5">
+          Si tu P&L del día cae por debajo de este valor, la app bloqueará nuevas operaciones automáticamente. Pon <b>0</b> para desactivar.
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div style="flex:1">
+            <label class="lbl">Pérdida máxima diaria (USD)</label>
+            <input class="inp" type="number" id="daily-loss-input" value="${p.daily_loss_limit || 0}" min="0" step="1" placeholder="0 = desactivado">
+          </div>
+          <div style="flex:1">
+            <div class="csl">P&L hoy</div>
+            <div class="csv" style="color:${(() => { const now=Date.now(); const todayPnl=state.closedTrades.filter(t=>(now-new Date(t.closedAt||0).getTime())<86400000).reduce((a,t)=>a+(t.pnl||0),0); return todayPnl>=0?'var(--green)':'var(--red)'; })()}">${(() => { const now=Date.now(); const todayPnl=state.closedTrades.filter(t=>(now-new Date(t.closedAt||0).getTime())<86400000).reduce((a,t)=>a+(t.pnl||0),0); return (todayPnl>=0?'+':'')+fmtUSD(todayPnl); })()}</div>
+          </div>
+        </div>
+      </div>
+
       <div class="lbl" style="margin-bottom:8px">Apalancamiento por defecto</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
         ${levOptions.map(x => `
@@ -3881,12 +3960,15 @@ function setLeverage(lev) {
 }
 
 function saveCapital() {
-  state.profile.capital  = parseFloat(qs('#cap-input')?.value)  || 1000;
-  state.profile.risk_pct = parseFloat(qs('#risk-input')?.value) || 2;
+  state.profile.capital          = parseFloat(qs('#cap-input')?.value)        || 1000;
+  state.profile.risk_pct         = parseFloat(qs('#risk-input')?.value)        || 2;
+  state.profile.daily_loss_limit = parseFloat(qs('#daily-loss-input')?.value)  || 0;
   // leverage ya se guarda en setLeverage al hacer clic
   saveKey('profile', state.profile);
-  logActivity('config_save', 'Capital actualizado: $' + state.profile.capital);
-  showToast('✓ Capital guardado');
+  // Re-evaluar el circuit breaker con el nuevo límite
+  checkCircuitBreaker();
+  logActivity('config_save', `Capital actualizado: $${state.profile.capital} · Límite diario: ${state.profile.daily_loss_limit > 0 ? '-$' + state.profile.daily_loss_limit : 'desactivado'}`);
+  showToast('✓ Capital y límites guardados');
 }
 
 /* ── Render: Storage panel ───────────────────────────────────────────────── */
@@ -3976,6 +4058,22 @@ function renderDash() {
 
   root.innerHTML = `
     <div style="padding:0 0 24px">
+
+      <!-- Banner Circuit Breaker -->
+      ${checkCircuitBreaker() ? `
+      <div style="background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);border-radius:12px;padding:14px 18px;margin-bottom:16px;display:flex;align-items:center;gap:12px">
+        <span style="font-size:20px">🛑</span>
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:700;color:var(--red)">Circuit Breaker activo</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px">
+            Has superado el límite de pérdida diaria de <b style="color:var(--red)">$${Math.abs(profile.daily_loss_limit||0).toFixed(2)}</b>.
+            No puedes abrir nuevas operaciones hoy.
+          </div>
+        </div>
+        <button onclick="setTab('config')" style="font-size:11px;padding:6px 12px;border-radius:8px;border:1px solid rgba(239,68,68,.4);background:transparent;color:var(--red);cursor:pointer;white-space:nowrap">
+          ⚙️ Ajustar límite
+        </button>
+      </div>` : ''}
 
       <!-- Saludo -->
       <div style="margin-bottom:18px">
@@ -4237,11 +4335,13 @@ function confirmCloseWithPrice(tradeId) {
   showToast(`${trade.par} cerrada — Neto: ${fmtUSD(netPnl)} (bruto ${fmtUSD(rawPnl)}, fees -${fmtUSD(totalFees)})`, result === 'LOSS');
   renderAll();
 
-  // Guardar en Supabase
+  // Guardar en Supabase (incluye notes, exitPrice, fees, pnlGross)
   authFetch('/api/trades/close', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ trade: closed }),
+  }).then(r => r.json()).then(d => {
+    if (!d.ok) console.warn('[confirmClose] Supabase error:', d.error);
   }).catch(e => console.warn('[confirmClose] Error guardando en servidor:', e.message));
 
   // Flash close en Bitunix si está conectado y la posición existía en el exchange
@@ -4375,12 +4475,62 @@ function showTradeConfirmModal(trade) {
   });
 }
 
+function checkCircuitBreaker() {
+  const limit = parseFloat(state.profile.daily_loss_limit) || 0;
+  if (!limit) return false;
+  const now        = Date.now();
+  const todayLoss  = state.closedTrades
+    .filter(t => (now - new Date(t.closedAt || 0).getTime()) < 86_400_000)
+    .reduce((a, t) => a + (t.pnl || 0), 0);
+  if (todayLoss <= -Math.abs(limit)) {
+    state.circuitBreakerTripped = true;
+    return true;
+  }
+  state.circuitBreakerTripped = false;
+  return false;
+}
+
 async function onAcceptProposal(i) {
   const p = state.pending[i];
   if (!p) return;
 
+  // Read-only mode block
+  if (state.readOnlyMode) {
+    showToast('👁️ Modo solo lectura activo — desactívalo para operar.', true);
+    return;
+  }
+
+  // Circuit Breaker
+  if (checkCircuitBreaker()) {
+    const limit = Math.abs(parseFloat(state.profile.daily_loss_limit) || 0);
+    showToast(`🛑 Circuit Breaker activo — pérdida diaria superó $${limit.toFixed(2)}. No puedes abrir nuevas operaciones hoy.`, true);
+    return;
+  }
+
   const execError = checkTradeExecutability(p);
   if (execError) { showToast(execError, true); return; }
+
+  // Correlación: advertir si ya hay trades en activos correlacionados del mismo lado
+  const corrWarning = checkCorrelation(p.tipo);
+  if (corrWarning && corrWarning.count >= 1) {
+    const proceed = await new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
+      overlay.innerHTML = `
+        <div style="background:var(--card);border-radius:14px;padding:24px;max-width:400px;width:100%;border:1px solid var(--yellow)">
+          <div style="font-size:14px;font-weight:700;color:var(--yellow);margin-bottom:12px">⚠️ Advertencia de Correlación</div>
+          <div style="font-size:12px;color:var(--text);line-height:1.6;margin-bottom:16px">${corrWarning.warning}<br><br>
+          Los activos crypto están altamente correlacionados. Una caída del mercado afectará a todos al mismo tiempo.</div>
+          <div style="display:flex;gap:10px">
+            <button onclick="this.closest('[style]').remove();window._corrResolve(false)" style="flex:1;padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--s2);color:var(--muted);cursor:pointer;font-size:12px">Cancelar</button>
+            <button onclick="this.closest('[style]').remove();window._corrResolve(true)" style="flex:1;padding:9px;border-radius:8px;border:none;background:var(--yellow);color:#000;cursor:pointer;font-weight:600;font-size:12px">Continuar de todas formas</button>
+          </div>
+        </div>`;
+      window._corrResolve = resolve;
+      document.body.appendChild(overlay);
+    });
+    if (!proceed) return;
+  }
 
   const trade = buildTrade(p);
 
@@ -4393,6 +4543,36 @@ async function onAcceptProposal(i) {
       showToast(`❌ Trade no registrado: Bitunix rechazó la orden.`, true);
       return;
     }
+  } else {
+    // Paper trading: mostrar confirmación con el precio actual
+    const coin    = coinOf(trade.par);
+    const current = state.prices[coin];
+    const dist    = current ? Math.abs((current - trade.entrada) / trade.entrada * 100).toFixed(2) : null;
+    const distTxt = dist ? `<div style="font-size:11px;color:var(--yellow);margin-top:4px">⚠️ Precio actual: ${fmtP(current, coin)} (${dist}% de diferencia con entrada propuesta)</div>` : '';
+    const ok = await new Promise(resolve => {
+      const ov = document.createElement('div');
+      ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease';
+      ov.innerHTML = `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;max-width:380px;width:100%;box-shadow:var(--shadow-lg)">
+          <div style="font-size:14px;font-weight:700;margin-bottom:14px">📋 Confirmar operación (Paper)</div>
+          <div style="display:grid;gap:8px;margin-bottom:14px">
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Par</span><b>${trade.par} ${trade.tipo}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Entrada propuesta</span><b style="color:var(--accent)">${fmtP(trade.entrada, coin)}</b></div>
+            ${distTxt}
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Stop Loss</span><b style="color:var(--red)">${fmtP(trade.stopLoss, coin)}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Take Profit</span><b style="color:var(--green)">${fmtP(trade.tp1, coin)}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Riesgo</span><b style="color:var(--red)">-$${(trade.riskUSD||0).toFixed(2)}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">R:R</span><b>${trade.rr}</b></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <button onclick="this.closest('[style]').remove();window._paperResolve(false)" style="padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--s2);color:var(--muted);cursor:pointer;font-size:12px">Cancelar</button>
+            <button onclick="this.closest('[style]').remove();window._paperResolve(true)" style="padding:9px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-weight:600;font-size:12px">✓ Confirmar</button>
+          </div>
+        </div>`;
+      window._paperResolve = resolve;
+      document.body.appendChild(ov);
+    });
+    if (!ok) return;
   }
 
   commitTrade(trade);
@@ -4422,6 +4602,11 @@ function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state
 
 /* ── Header buttons ──────────────────────────────────────────────────────── */
 async function onGenerate() {
+  if (checkCircuitBreaker()) {
+    const limit = Math.abs(parseFloat(state.profile.daily_loss_limit) || 0);
+    showToast(`🛑 Circuit Breaker: límite diario de $${limit.toFixed(2)} alcanzado. Sin nuevas operaciones hoy.`, true);
+    return;
+  }
   const btn = qs('#btn-gen');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> ANALIZANDO...'; }
   state.aiMsg = null;
@@ -4840,6 +5025,7 @@ function applyDarkMode(on) {
   document.body.classList.toggle('light', !on);
   const btn = qs('#dark-toggle');
   if (btn) btn.textContent = on ? '☀️' : '🌙';
+  updateReadOnlyBadge();
   // Actualizar tema del chart inline si está abierto, sin cerrarlo
   const tvModal = qs('#tv-modal');
   if (tvModal) {
@@ -4849,6 +5035,26 @@ function applyDarkMode(on) {
       iframe.src = src.replace(/theme=(dark|light)/, 'theme=' + (on ? 'dark' : 'light'));
     }
   }
+}
+
+function toggleReadOnly() {
+  state.readOnlyMode = !state.readOnlyMode;
+  storage.set('cp:readOnly', state.readOnlyMode);
+  updateReadOnlyBadge();
+  showToast(state.readOnlyMode ? '👁️ Modo solo lectura activado — no puedes abrir operaciones.' : '✏️ Modo edición activado.', state.readOnlyMode);
+}
+
+function updateReadOnlyBadge() {
+  const badge = qs('#ro-badge');
+  if (!badge) return;
+  badge.textContent  = state.readOnlyMode ? '👁️ Solo lectura' : '✏️ Editar';
+  badge.title        = state.readOnlyMode ? 'Modo solo lectura activo — click para desactivar' : 'Click para activar solo lectura';
+  badge.style.background = state.readOnlyMode ? 'rgba(251,191,36,.15)' : 'var(--s2)';
+  badge.style.color      = state.readOnlyMode ? 'var(--yellow)' : 'var(--muted)';
+  badge.style.border     = state.readOnlyMode ? '1px solid rgba(251,191,36,.4)' : '1px solid var(--border)';
+  // Deshabilitar botón generar
+  const genBtn = qs('#btn-gen');
+  if (genBtn) genBtn.disabled = state.readOnlyMode || state.wsStatus !== 'live';
 }
 
 function toggleDarkMode() {
@@ -5431,6 +5637,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   syncTradesToServer();
+  // Cargar price alerts desde Supabase y merge con localStorage
+  authFetch('/api/price-alerts').then(r => r.json()).then(data => {
+    if (!data.ok || !data.alerts?.length) return;
+    const localIds = new Set((state.priceAlerts || []).map(a => a.id));
+    const merged   = [...(state.priceAlerts || [])];
+    data.alerts.forEach(a => { if (!localIds.has(a.id) && !a.triggered) merged.push(a); });
+    state.priceAlerts = merged;
+    saveKey('priceAlerts', state.priceAlerts);
+    if (state.currentTab === 'alerts') renderAlerts();
+  }).catch(() => {});
+
+  // Cargar diary desde Supabase y merge con localStorage
+  authFetch('/api/diary').then(r => r.json()).then(data => {
+    if (!data.ok || !data.entries?.length) return;
+    const localDiary = state.diary || [];
+    const localIds   = new Set(localDiary.map(e => e.id));
+    const merged     = [...localDiary];
+    data.entries.forEach(e => { if (!localIds.has(e.id)) merged.push(e); });
+    merged.sort((a, b) => b.date.localeCompare(a.date));
+    state.diary = merged;
+    storage.set('cp:diary', state.diary);
+    if (state.currentTab === 'diary') renderDiary();
+  }).catch(() => {});
+  updateReadOnlyBadge();
   connectServerWS();   // WS push: reemplaza polling para TRADE_CLOSED
   setInterval(pollServerClosedTrades, 30000); // fallback por si WS se desconecta
 
@@ -5692,6 +5922,85 @@ function renderActivityLogHTML() {
 /* ══════════════════════════════════════════════════════════════════
    DIARIO DE TRADING
    ══════════════════════════════════════════════════════════════════ */
+function exportDiaryCSV() {
+  const entries = state.diary || [];
+  if (!entries.length) { showToast('Sin entradas en el diario.', true); return; }
+  const headers = ['Fecha','Ánimo','P&L($)','Operaciones','Notas','Lección','Tags'];
+  const moodLabels = { great:'Excelente', good:'Bueno', neutral:'Neutral', bad:'Malo', terrible:'Pésimo' };
+  const rows = entries.map(e => [
+    e.date,
+    moodLabels[e.mood] || e.mood || '',
+    e.pnl != null ? e.pnl.toFixed(2) : '',
+    e.ops || '',
+    (e.notes || '').replace(/"/g, '""'),
+    (e.lessons || '').replace(/"/g, '""'),
+    (e.tags || []).join(';'),
+  ]);
+  const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `diario_trading_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast('📥 Diario exportado como CSV');
+}
+
+async function showWeeklySummary() {
+  const btn = qs('.btn.btny');
+  const origText = btn?.innerHTML || '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Generando...'; }
+  try {
+    const r    = await authFetch('/api/diary/weekly-summary');
+    const data = await r.json();
+    if (!data.ok) { showToast('Error generando resumen: ' + (data.error || ''), true); return; }
+    const { summary, stats } = data;
+
+    const modal = document.createElement('div');
+    modal.id = 'weekly-summary-modal';
+    modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:3000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease';
+    modal.innerHTML = `
+      <div style="background:var(--card);border-radius:16px;padding:24px;width:min(480px,100%);max-height:90vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.4);position:relative">
+        <button onclick="document.getElementById('weekly-summary-modal').remove()" style="position:absolute;top:12px;right:12px;background:none;border:none;font-size:20px;cursor:pointer;color:var(--muted)">✕</button>
+        <h3 style="margin:0 0 4px;font-size:16px;font-weight:700">${summary.titulo}</h3>
+        <div style="font-size:11px;color:var(--muted);margin-bottom:18px">
+          ${stats.trades} ops · ${stats.wins}W/${stats.trades - stats.wins}L · P&L: <span style="color:${stats.pnl >= 0 ? 'var(--green)' : 'var(--red)'};">${stats.pnl >= 0 ? '+' : ''}$${stats.pnl.toFixed(2)}</span>
+        </div>
+        <div style="display:grid;gap:12px">
+          <div style="padding:12px 14px;background:var(--s2);border-radius:10px;border-left:3px solid var(--accent)">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">Balance general</div>
+            <div style="font-size:12px;line-height:1.6">${summary.balance}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div style="padding:12px 14px;background:rgba(0,200,150,.06);border-radius:10px;border-left:3px solid var(--green)">
+              <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">💪 Fortaleza</div>
+              <div style="font-size:11px;line-height:1.5;color:#c8f0d8">${summary.fortaleza}</div>
+            </div>
+            <div style="padding:12px 14px;background:rgba(255,71,87,.06);border-radius:10px;border-left:3px solid var(--red)">
+              <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">🔧 Mejorar</div>
+              <div style="font-size:11px;line-height:1.5;color:#f0c8c8">${summary.mejora}</div>
+            </div>
+          </div>
+          <div style="padding:12px 14px;background:rgba(108,99,255,.08);border-radius:10px;border-left:3px solid var(--accent)">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">💡 Lección clave</div>
+            <div style="font-size:12px;line-height:1.6">${summary.leccion}</div>
+          </div>
+          <div style="padding:12px 14px;background:rgba(255,200,0,.07);border-radius:10px;border-left:3px solid var(--yellow)">
+            <div style="font-size:10px;color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.05em">🎯 Objetivo próxima semana</div>
+            <div style="font-size:12px;line-height:1.6;color:var(--yellow)">${summary.objetivo_proxima}</div>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  } catch (err) {
+    showToast('Error: ' + err.message, true);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = origText; }
+  }
+}
+
 function renderDiary() {
   const root = qs('#sec-diary');
   if (!root) return;
@@ -5740,7 +6049,13 @@ function renderDiary() {
   }).join('');
 
   root.innerHTML = `
-    <div class="stl">📓 Diario de Trading</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+      <div class="stl" style="margin-bottom:0">📓 Diario de Trading</div>
+      <div style="display:flex;gap:6px">
+        <button class="btn" style="font-size:11px;padding:7px 12px" onclick="exportDiaryCSV()">⬇️ CSV</button>
+        <button class="btn btny" style="font-size:11px;padding:7px 14px" onclick="showWeeklySummary()">📅 Resumen semanal IA</button>
+      </div>
+    </div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:16px">Registra tu estado mental, decisiones y lecciones aprendidas cada día.</div>
 
     <!-- Nueva entrada -->
@@ -5816,6 +6131,9 @@ function saveDiaryEntry() {
 
   // Remove existing today entry
   state.diary = state.diary.filter(e => e.date !== todayKey);
+  // Borrar entrada anterior del día en Supabase si existe
+  const prevEntry = state.diary.find(e => e.date === todayKey);
+  if (prevEntry) authFetch('/api/diary/' + prevEntry.id, { method: 'DELETE' }).catch(() => {});
 
   const entry = { id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
     ops: state.closedTrades.filter(t => {
@@ -5825,6 +6143,12 @@ function saveDiaryEntry() {
   };
   state.diary.unshift(entry);
   storage.set('cp:diary', state.diary);
+  // Sincronizar con Supabase
+  authFetch('/api/diary', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry }),
+  }).catch(() => {});
   logActivity('diary_entry', 'Entrada del diario — ' + new Date().toLocaleDateString('es-ES'));
   showToast('📓 Entrada guardada');
   renderDiary();
@@ -5834,5 +6158,6 @@ function deleteDiaryEntry(id) {
   if (!confirm('¿Eliminar esta entrada del diario?')) return;
   state.diary = state.diary.filter(e => String(e.id) !== String(id));
   storage.set('cp:diary', state.diary);
+  authFetch('/api/diary/' + id, { method: 'DELETE' }).catch(() => {});
   renderDiary();
 }
