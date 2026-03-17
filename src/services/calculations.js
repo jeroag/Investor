@@ -1,9 +1,29 @@
 'use strict';
 
 /**
- * CryptoPlan IA — calculations.js v3
- * Toda la matemática pura de la estrategia institucional.
- * Sin dependencias externas — importable en servidor y tests.
+ * CryptoPlan IA — calculations.js v3.1 (AUDITADO)
+ *
+ * CORRECCIÓN [ALTO] — Bug de apalancamiento en calcNetPnL y calcPnL:
+ *
+ *   El `size` de un trade es la cantidad real en activo base (ej: 0.105 BTC),
+ *   calculada como `riskUSD / slDist` en calcPositionSize. Con esta definición:
+ *
+ *     PnL (LONG)  = (exitPrice - entrada) × size          ← SIN × leverage
+ *     PnL (SHORT) = (entrada - exitPrice) × size
+ *
+ *   El apalancamiento solo afecta al MARGEN requerido (capital inmovilizado),
+ *   NO amplifica el PnL cuando `size` ya es la cantidad de contratos reales.
+ *   Multiplicar por `leverage` inflaba el PnL y las comisiones por ese factor,
+ *   produciendo una curva de equity y un circuit breaker completamente erróneos
+ *   cuando el usuario usaba leverage > 1.
+ *
+ *   Ejemplo con 10× leverage, BTC, riskUSD=$100, slDist=$950:
+ *     size = 100/950 = 0.1053 BTC
+ *     PnL correcto al SL: (−950) × 0.1053 = −$100        ✓
+ *     PnL erróneo (× lev): −$100 × 10 = −$1.000          ✗ (pierde todo)
+ *
+ *   Las comisiones se calculan sobre el nocional (precio × qty), lo que es
+ *   correcto y no requiere cambios.
  */
 
 /* ── Comisiones Bitunix ─────────────────────────────────────────── */
@@ -27,7 +47,7 @@ function calcRiskUSD(equity, riskPct = 1) {
 
 /**
  * qty = riskUSD / |entrada - stopLoss|
- * El apalancamiento NO afecta qty, solo reduce el margen.
+ * El apalancamiento NO afecta qty, solo reduce el margen requerido.
  */
 function calcPositionSize(riskUSD, entry, stopLoss, leverage = 1) {
   const slDist = Math.abs(entry - stopLoss);
@@ -59,8 +79,8 @@ function calcTargets(entry, stopLoss, tipo, tp1Ratio = 1.2, tp2Ratio = 2.5) {
 
 /**
  * Breakeven real con fees incluidas.
- * LONG:  BE = entrada × (1 + 0.0008)
- * SHORT: BE = entrada × (1 - 0.0008)
+ * LONG:  BE = entrada × (1 + ROUND_TRIP)
+ * SHORT: BE = entrada × (1 − ROUND_TRIP)
  */
 function calcBreakevenPrice(entry, tipo) {
   const buf = FEES.ROUND_TRIP;
@@ -70,17 +90,28 @@ function calcBreakevenPrice(entry, tipo) {
 }
 
 /**
- * P&L neto descontando comisiones.
- * Apertura siempre taker; cierre maker (TP) o taker (SL de mercado).
+ * P&L NETO — CORRECCIÓN APLICADA:
+ *
+ *   gross = (exitPrice − entrada) × size   ← leverage ELIMINADO
+ *   fees  = (entrada × size × TAKER) + (exitPrice × size × feeType)
+ *   net   = gross − fees
+ *
+ * @param {object} trade     - trade con campos: tipo, entrada, size, leverage (no usado en PnL)
+ * @param {number} exitPrice - precio de cierre
+ * @param {string} exitFeeType - 'maker' (TP) | 'taker' (SL de mercado)
  */
 function calcNetPnL(trade, exitPrice, exitFeeType = 'maker') {
-  const lev = trade.leverage || 1;
+  // ── PnL bruto: (diferencia de precio) × cantidad de activo ──────────────
+  // El leverage NO multiplica el PnL porque `size` ya es la cantidad real.
   const gross = trade.tipo === 'LONG'
-    ? (exitPrice - trade.entrada) * trade.size * lev
-    : (trade.entrada - exitPrice) * trade.size * lev;
+    ? (exitPrice - trade.entrada) * trade.size
+    : (trade.entrada - exitPrice) * trade.size;
+
+  // ── Comisiones sobre nocional (precio × qty) — esto es correcto ─────────
   const feeOpen = trade.entrada * trade.size * FEES.TAKER;
   const feeClose = exitPrice * trade.size * (exitFeeType === 'taker' ? FEES.TAKER : FEES.MAKER);
   const fees = feeOpen + feeClose;
+
   return {
     gross: parseFloat(gross.toFixed(4)),
     fees: parseFloat(fees.toFixed(4)),
@@ -115,7 +146,7 @@ function checkNYSession(now = new Date()) {
 }
 
 /* ═══════════════════════════════════════════════════════
-   FILTRO DE VOLUMEN (fuera de sesión)
+   FILTRO DE VOLUMEN
    ═══════════════════════════════════════════════════════ */
 
 function validateVolumeFilter(currentVol, recentVols, multiplier = 1.5) {
@@ -200,7 +231,6 @@ function validateTradeEntry(params) {
 
   const errors = [], warnings = [], checks = {};
 
-  // 1. Sesión NY
   const session = checkNYSession();
   checks.session = session;
   if (!session.inSession && requireNYSession) {
@@ -210,13 +240,11 @@ function validateTradeEntry(params) {
     else warnings.push(`Fuera de sesión — volume override: ${vol.ratio}×`);
   }
 
-  // 2. Circuit breaker consecutivo
   const cb = checkCircuitBreakerConsec(closedTrades, 2);
   checks.circuitBreaker = cb;
   if (cb.triggered) errors.push(cb.reason);
   else if (cb.reason) warnings.push(cb.reason);
 
-  // 3. Límite diario
   if (dailyLossLimit > 0) {
     const now = Date.now();
     const today = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < 86_400_000);
@@ -226,12 +254,10 @@ function validateTradeEntry(params) {
       errors.push(`⛔ Límite diario: P&L hoy $${dpnl.toFixed(2)} ≤ -$${dailyLossLimit}`);
   }
 
-  // 4. Noticias
   const news = checkNewsFilter(calendarEvents);
   checks.news = news;
   if (news.blocked) errors.push(news.reason);
 
-  // 5. SL razonable
   const slPct = Math.abs(entry - stopLoss) / entry * 100;
   checks.slPct = slPct;
   if (slPct > 5) warnings.push(`SL amplio: ${slPct.toFixed(2)}% del precio`);
@@ -241,13 +267,14 @@ function validateTradeEntry(params) {
 
 /* ═══════════════════════════════════════════════════════
    LEGACY / COMPATIBILIDAD
+   CORRECCIÓN: leverage eliminado del cálculo de PnL bruto
    ═══════════════════════════════════════════════════════ */
 
 function calcPnL(trade, exit) {
-  const lev = trade.leverage || 1;
+  // Leverage eliminado — `size` ya es qty real en activo base
   return trade.tipo === 'LONG'
-    ? (exit - trade.entrada) * trade.size * lev
-    : (trade.entrada - exit) * trade.size * lev;
+    ? (exit - trade.entrada) * trade.size
+    : (trade.entrada - exit) * trade.size;
 }
 
 function coinOf(par) { return (par || '').split('/')[0]; }

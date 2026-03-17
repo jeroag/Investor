@@ -1,10 +1,15 @@
 'use strict';
 
 /**
- * CryptoPlan IA — tpsl.js v3
+ * CryptoPlan IA — tpsl.js v3.1 (AUDITADO)
  *
- * Motor ÚNICO y autoritativo de TP/SL. El cliente nunca cierra trades —
- * solo escucha los eventos WS que emite este módulo.
+ * CORRECCIÓN CRÍTICA: Se añade `processingTrades` (Set) como mutex ligero
+ * para evitar que dos ticks de precio concurrentes cierren el mismo trade
+ * dos veces en los caminos TP2 y SL (Race Condition).
+ *
+ * En Node.js single-threaded, la operación Set.add() es SÍNCRONA y ocurre
+ * ANTES del primer `await`, lo que garantiza exclusión mutua sin librerías
+ * externas (Mutex, semáforo, etc.) en el contexto del event loop.
  *
  * Flujo completo para un trade con TP1 + TP2:
  *   1. Precio toca TP1
@@ -32,14 +37,29 @@ let broadcastFn = null;
 function setBroadcast(fn) { broadcastFn = fn; }
 
 /* ═══════════════════════════════════════════════════════
+   MUTEX LIGERO — previene doble cierre en TP2 / SL
+   Set de IDs de trades que están siendo procesados ahora mismo.
+   Como Node.js es single-threaded, .add() es atómico respecto
+   al event loop: ocurre sincronamente antes del primer await.
+   ═══════════════════════════════════════════════════════ */
+const processingTrades = new Set();
+
+/* ═══════════════════════════════════════════════════════
    MOTOR PRINCIPAL
    ═══════════════════════════════════════════════════════ */
 
 async function checkTPSL(coin, price) {
+  // Optimización: salida temprana si no hay trades activos
+  if (!serverState.activeTrades.length) return;
+
   const toRemove = [];
 
   for (const trade of serverState.activeTrades) {
     if (coinOf(trade.par) !== coin) continue;
+
+    // ── GUARD: si este trade ya está siendo procesado por otra
+    //    llamada asíncrona concurrente, lo saltamos.
+    if (processingTrades.has(trade.id)) continue;
 
     const isLong = trade.tipo === 'LONG';
 
@@ -47,7 +67,11 @@ async function checkTPSL(coin, price) {
     if (trade.tp2 && !trade.tp1Hit) {
       const hitTP1 = isLong ? price >= trade.tp1 : price <= trade.tp1;
       if (hitTP1) {
-        await _handleTP1(trade, price);
+        // _handleTP1 inicia con `trade.tp1Hit = true` de forma SÍNCRONA
+        // antes de cualquier await — el guard por processingTrades es
+        // redundante para TP1, pero lo añadimos por consistencia.
+        processingTrades.add(trade.id);
+        _handleTP1(trade, price).finally(() => processingTrades.delete(trade.id));
         continue; // trade sigue activo con el 50% restante
       }
     }
@@ -56,10 +80,18 @@ async function checkTPSL(coin, price) {
     if (!trade.tp2 && !trade.tp1Hit) {
       const hitTP1 = isLong ? price >= trade.tp1 : price <= trade.tp1;
       if (hitTP1) {
+        // ATÓMICO: add antes del primer await
+        processingTrades.add(trade.id);
         const { net, fees } = calcNetPnL(trade, trade.tp1, 'maker');
         const total = net + (trade.partialClosePnl || 0);
-        await _closeTrade(trade, trade.tp1, 'WIN', total, fees);
-        toRemove.push(trade.id);
+        try {
+          await _closeTrade(trade, trade.tp1, 'WIN', total, fees);
+          toRemove.push(trade.id);
+        } catch (e) {
+          console.error(`[TP1-solo close] ${trade.id}: ${e.message}`);
+        } finally {
+          processingTrades.delete(trade.id);
+        }
         continue;
       }
     }
@@ -68,10 +100,18 @@ async function checkTPSL(coin, price) {
     if (trade.tp2 && trade.tp1Hit) {
       const hitTP2 = isLong ? price >= trade.tp2 : price <= trade.tp2;
       if (hitTP2) {
+        // ATÓMICO: add antes del primer await — previene doble cierre
+        processingTrades.add(trade.id);
         const { net, fees } = calcNetPnL(trade, trade.tp2, 'maker');
         const total = net + (trade.partialClosePnl || 0);
-        await _closeTrade(trade, trade.tp2, 'WIN', total, fees);
-        toRemove.push(trade.id);
+        try {
+          await _closeTrade(trade, trade.tp2, 'WIN', total, fees);
+          toRemove.push(trade.id);
+        } catch (e) {
+          console.error(`[TP2 close] ${trade.id}: ${e.message}`);
+        } finally {
+          processingTrades.delete(trade.id);
+        }
         continue;
       }
     }
@@ -79,13 +119,21 @@ async function checkTPSL(coin, price) {
     /* ── Stop Loss ────────────────────────────────────────────────── */
     const hitSL = isLong ? price <= trade.stopLoss : price >= trade.stopLoss;
     if (hitSL) {
+      // ATÓMICO: add antes del primer await — previene doble cierre
+      processingTrades.add(trade.id);
       const { net, fees } = calcNetPnL(trade, trade.stopLoss, 'taker');
       const total = net + (trade.partialClosePnl || 0);
       const result = trade.breakevenSet
         ? (Math.abs(total) < 1 ? 'BREAKEVEN' : total > 0 ? 'WIN' : 'LOSS')
         : 'LOSS';
-      await _closeTrade(trade, trade.stopLoss, result, total, fees);
-      toRemove.push(trade.id);
+      try {
+        await _closeTrade(trade, trade.stopLoss, result, total, fees);
+        toRemove.push(trade.id);
+      } catch (e) {
+        console.error(`[SL close] ${trade.id}: ${e.message}`);
+      } finally {
+        processingTrades.delete(trade.id);
+      }
     }
   }
 
@@ -101,6 +149,8 @@ async function checkTPSL(coin, price) {
    ═══════════════════════════════════════════════════════ */
 
 async function _handleTP1(trade, currentPrice) {
+  // IMPORTANTE: esta línea es síncrona — ocurre antes de cualquier await.
+  // Esto garantiza que ningún otro tick llame a _handleTP1 para este trade.
   trade.tp1Hit = true;
 
   const closeQty = parseFloat((trade.size * 0.5).toFixed(6));
@@ -124,7 +174,7 @@ async function _handleTP1(trade, currentPrice) {
   trade.partialClosePrice = trade.tp1;
   trade.partialCloseFees = parseFloat(pnlData.fees.toFixed(4));
 
-  // 3. Actualizar SL en Bitunix
+  // 3. Actualizar SL en Bitunix (no bloquea — errores son warnings)
   if (isBitunixConfigured() && trade.bitunixSymbol) {
     _bitunixUpdateSL(trade, newSL).catch(e =>
       console.warn(`[TP1] SL update fallido: ${e.message}`)
@@ -207,15 +257,10 @@ async function _closeTrade(trade, exitPrice, result, netPnl, fees) {
    BITUNIX HELPERS
    ═══════════════════════════════════════════════════════ */
 
-/**
- * Cierre parcial: orden MARKET reduceOnly para cerrar `qty` contratos.
- * @returns {boolean} true si la orden fue aceptada por Bitunix
- */
 async function _bitunixPartialClose(trade, qty) {
   try {
     const symbol = trade.bitunixSymbol || trade.par.replace('/', '');
     const closeSide = trade.tipo === 'LONG' ? 'SELL' : 'BUY';
-
     const body = {
       symbol,
       qty: String(parseFloat(qty.toFixed(6))),
@@ -225,7 +270,6 @@ async function _bitunixPartialClose(trade, qty) {
       reduceOnly: true,
       clientId: `cp_partial_${trade.id.slice(-8)}_${Date.now()}`,
     };
-
     const data = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, body);
     console.log(`[Bitunix partial] orderId=${data.data?.orderId}`);
     return true;
@@ -235,20 +279,15 @@ async function _bitunixPartialClose(trade, qty) {
   }
 }
 
-/**
- * Actualiza el stop loss de la posición en Bitunix.
- */
 async function _bitunixUpdateSL(trade, newSL) {
   const symbol = trade.bitunixSymbol || trade.par.replace('/', '');
   const side = trade.tipo === 'LONG' ? 'BUY' : 'SELL';
-
   const posData = await bitunixRequest('GET', '/api/v1/futures/position/get_pending_positions', {});
   const positions = Array.isArray(posData.data) ? posData.data : [];
   const pos = positions.find(
     p => p.symbol === symbol && (p.side === side || p.positionSide === side)
   );
   if (!pos) throw new Error(`Sin posición ${symbol} en Bitunix`);
-
   await bitunixRequest('POST', '/api/v1/futures/trade/set_risk_limit', {}, {
     positionId: pos.positionId,
     stopLoss: String(newSL),
@@ -256,30 +295,21 @@ async function _bitunixUpdateSL(trade, newSL) {
   console.log(`[Bitunix SL] ${symbol} → $${newSL}`);
 }
 
-/**
- * Cierra una posición completa via flash_close.
- */
 async function _bitunixFlashClose(trade) {
   const symbol = trade.bitunixSymbol || trade.par.replace('/', '');
-
-  // Intentar con positionId guardado primero
   if (trade.bitunixPos) {
     await bitunixRequest('POST', '/api/v1/futures/trade/flash_close_position', {}, {
       positionId: trade.bitunixPos,
     });
     return;
   }
-
-  // Buscar posición activa por símbolo
   const posData = await bitunixRequest('GET', '/api/v1/futures/position/get_pending_positions', {});
   const positions = Array.isArray(posData.data) ? posData.data : [];
   const pos = positions.find(p => p.symbol === symbol);
-
   if (!pos) {
     console.warn(`[flash_close] ${symbol} no encontrada — posiblemente ya cerrada`);
     return;
   }
-
   await bitunixRequest('POST', '/api/v1/futures/trade/flash_close_position', {}, {
     positionId: pos.positionId,
   });
@@ -287,8 +317,7 @@ async function _bitunixFlashClose(trade) {
 }
 
 /* ═══════════════════════════════════════════════════════
-   CIRCUIT BREAKER — persiste entre reinicios
-   (lee desde closedTrades cargados de Supabase)
+   CIRCUIT BREAKER
    ═══════════════════════════════════════════════════════ */
 
 function getServerConsecutiveLosses() {

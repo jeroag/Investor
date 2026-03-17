@@ -1,17 +1,40 @@
 'use strict';
 
+/**
+ * CryptoPlan IA — routes/bitunix.js v1.1 (AUDITADO)
+ *
+ * CORRECCIONES:
+ *
+ * [ALTO] Bug crítico en /debug: ReferenceError al arrancar.
+ *   El endpoint /debug llamaba a `generateNonce()` y `bitunixSign()` que NO
+ *   estaban importadas en este archivo. El código habría lanzado un ReferenceError
+ *   en cualquier petición a /debug, crasheando el handler (aunque Express lo
+ *   captura como 500, el error sería confuso y el debug inútil).
+ *   SOLUCIÓN: importar `bitunixSign` y `generateNonce` desde services/bitunix.js,
+ *   que ahora los exporta explícitamente.
+ *
+ * [ALTO] /debug sin rate limit:
+ *   El endpoint de debug, aunque requiere autenticación, no tenía rate limit,
+ *   lo que permitía a un atacante con sesión activa hacer cientos de llamadas
+ *   reales a la API de Bitunix (account, positions, history) por segundo,
+ *   agotando el rate limit de la API de Bitunix para las operaciones reales.
+ *   SOLUCIÓN: añadir rateLimitGeneral al endpoint /debug.
+ */
+
 const express = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { isAuthenticated } = require('../middleware/auth');
 const { config } = require('../config');
 const { notifyTradeOpened } = require('../services/telegram');
 const { rateLimitGeneral } = require('../middleware/rateLimit');
-const { bitunixRequest } = require('../services/bitunix');
+// CORRECCIÓN: importar bitunixSign y generateNonce que antes faltaban en este archivo
+const { bitunixRequest, bitunixSign, generateNonce } = require('../services/bitunix');
 
 const router = express.Router();
 
 /* ── Debug (sin sesión si viene DEBUG_TOKEN) ─────────────────────── */
-router.get('/debug', async (req, res) => {
+// CORRECCIÓN: añadido rateLimitGeneral para evitar abuso del rate-limit de Bitunix
+router.get('/debug', rateLimitGeneral, async (req, res) => {
   const debugToken = config.debugToken;
   const tokenMatch = debugToken && req.query.token === debugToken;
   if (!isAuthenticated(req) && !tokenMatch) {
@@ -38,6 +61,7 @@ router.get('/debug', async (req, res) => {
   };
 
   async function tryEp(label, method, epPath, params, body) {
+    // CORRECCIÓN: generateNonce y bitunixSign ahora importados correctamente
     const nonce = generateNonce(), ts = Date.now().toString();
     const bStr = body ? JSON.stringify(body).replace(/\s+/g, '') : '';
     const sign = bitunixSign(apiKey, secretKey, nonce, ts, params, bStr);
@@ -48,13 +72,30 @@ router.get('/debug', async (req, res) => {
     try {
       const r = await fetch('https://fapi.bitunix.com' + epPath + qsStr, {
         method,
-        headers: { 'Content-Type': 'application/json', 'api-key': apiKey, 'nonce': nonce, 'timestamp': ts, 'sign': sign, 'language': 'en-US' },
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey,
+          'nonce': nonce,
+          'timestamp': ts,
+          'sign': sign,
+          'language': 'en-US',
+        },
+        signal: AbortSignal.timeout(10_000),
         ...(body ? { body: bStr } : {}),
       });
       const txt = await r.text();
-      let d; try { d = JSON.parse(txt); } catch { d = { raw: txt.slice(0, 300) }; }
-      results[label] = { httpStatus: r.status, code: d.code, msg: d.msg, ok: d.code === 0, dataPreview: JSON.stringify(d.data).slice(0, 200) };
-    } catch (e) { results[label] = { error: e.message }; }
+      let d;
+      try { d = JSON.parse(txt); } catch { d = { raw: txt.slice(0, 300) }; }
+      results[label] = {
+        httpStatus: r.status,
+        code: d.code,
+        msg: d.msg,
+        ok: d.code === 0,
+        dataPreview: JSON.stringify(d.data).slice(0, 200),
+      };
+    } catch (e) {
+      results[label] = { error: e.message };
+    }
   }
 
   await tryEp('account', 'GET', '/api/v1/futures/account', { marginCoin: 'USDT' });
@@ -130,12 +171,8 @@ router.post('/place-order', requireAuth, async (req, res) => {
     const orderData = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, orderBody);
     console.log('[Bitunix] Respuesta completa:', JSON.stringify(orderData));
     const orderId = orderData.data?.orderId;
-    // Calcular margen real para log
-    const qtyNum = parseFloat(qty);
-    const slDistN = tpPrice && slPrice ? Math.abs(parseFloat(tpPrice) - parseFloat(slPrice)) : 0;
-    const priceRef = parseFloat(orderBody.price || 0);
     console.log(`[Bitunix order OK] ${symbol} ${side} qty=${qty} orderId=${orderId}`);
-    console.log(`[Bitunix margin]  qty=${qtyNum} leverage=${leverage} → margen estimado = qty*precio/lev`);
+
     notifyTradeOpened({
       par: symbol.replace('USDT', '/USDT'),
       tipo: side === 'BUY' ? 'LONG' : 'SHORT',
@@ -208,7 +245,6 @@ router.get('/status', requireAuth, (req, res) => {
   res.json({ configured, hasTradeKey: configured, canRead: configured });
 });
 
-
 /* ── Cierre parcial (reduceOnly MARKET) ──────────────────────────── */
 router.post('/partial-close', requireAuth, async (req, res) => {
   try {
@@ -226,7 +262,6 @@ router.post('/partial-close', requireAuth, async (req, res) => {
       reduceOnly: true,
       clientId: `cp_partial_${Date.now()}`,
     };
-
     console.log('[Bitunix partial-close] Enviando:', JSON.stringify(body));
     const data = await bitunixRequest('POST', '/api/v1/futures/trade/place_order', {}, body);
     const orderId = data.data?.orderId;
@@ -238,7 +273,7 @@ router.post('/partial-close', requireAuth, async (req, res) => {
   }
 });
 
-/* ── Circuit breaker (estado del servidor) ───────────────────────── */
+/* ── Circuit breaker ─────────────────────────────────────────────── */
 router.get('/circuit-breaker', requireAuth, (req, res) => {
   const { isServerCircuitBreakerActive } = require('../services/tpsl');
   const { active, losses, maxConsec } = isServerCircuitBreakerActive(2);
