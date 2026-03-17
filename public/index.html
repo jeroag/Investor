@@ -4,16 +4,16 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CryptoPlan IA</title>
+  <title>CryptoPlan IA — Terminal</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
 
-  <!-- Loading -->
+  <!-- Loading screen -->
   <div id="loading-screen">
     <h1>Crypto<b>Plan</b> <small>AI</small></h1>
-    <p><span class="spinner"></span> Cargando...</p>
+    <p><span class="spinner"></span> Iniciando terminal...</p>
   </div>
 
   <!-- Header -->
@@ -26,43 +26,61 @@
           <line x1="3" y1="17" x2="21" y2="17" />
         </svg>
       </button>
+
       <div class="logo">Crypto<b>Plan</b> <small>AI</small></div>
+
+      <!-- Session badge — updated by strategy.js -->
+      <div id="session-badge" class="session-badge">
+        <span class="sb-dot"></span>
+        <span style="font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.5px">NY SESSION</span>
+      </div>
     </div>
+
     <div class="hdr-right">
+      <!-- WS status -->
       <div class="ws-status">
         <span class="ws-dot connecting" id="ws-dot-ref"></span>
-        <span id="ws-label" style="color:var(--yellow)">CONECTANDO...</span>
+        <span id="ws-label"
+          style="color:var(--yellow);font-family:var(--font-mono);font-size:9px;letter-spacing:.5px">CONECTANDO</span>
       </div>
-      <div id="session-badge" class="session-badge"><span class="sb-dot"></span><span
-          style="font-size:9px;font-family:var(--font-mono)">NY SESSION</span></div>
-      <button id="scanner-toggle-hdr" class="scanner-btn off">📡 Escáner</button>
-      <button id="btn-gen" class="btn-main" disabled><span>⚡</span> Analizar</button>
-      <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro/claro">🌙</button>
-      <button onclick="doLogout()" title="Cerrar sesión"
-        style="background:none;border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:11px;color:var(--muted);cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px"
-        onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'"
-        onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">🔒 Salir</button>
+
+      <!-- Scanner toggle -->
+      <button id="scanner-toggle-hdr" class="scanner-btn off">📡 ESCÁNER</button>
+
+      <!-- Analyze -->
+      <button id="btn-gen" class="btn-main" disabled>
+        <span style="font-size:12px">⚡</span> ANALIZAR
+      </button>
+
+      <!-- Dark mode -->
+      <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro / claro">🌙</button>
+
+      <!-- Logout -->
+      <button class="btn-logout" onclick="doLogout()" title="Cerrar sesión">
+        <span>🔒</span> SALIR
+      </button>
     </div>
   </header>
 
-  <!-- Balance widget -->
-  <div id="balance-widget" style="
-    background:var(--surface);
-    border-bottom:1px solid var(--border);
-    padding:10px 20px;
-    box-shadow:var(--shadow-sm);
-  "></div>
+  <!-- Balance / equity widget -->
+  <div id="balance-widget"></div>
 
   <div class="layout">
     <div class="side-backdrop" id="side-backdrop"></div>
 
-    <!-- Sidebar -->
+    <!-- Sidebar navigation -->
     <nav class="side" id="sidebar">
+
       <button class="nb" data-tab="dash">🏠 Inicio</button>
+
       <div class="ns">Trading</div>
-      <button class="nb" data-tab="ops">📊 Operaciones</button>
-      <button class="nb" data-tab="alerts">🔔 Alertas IA <span class="nb-badge" id="alert-badge"
-          style="display:none">0</span></button>
+      <button class="nb" data-tab="ops">
+        📊 Operaciones
+      </button>
+      <button class="nb" data-tab="alerts">
+        🔔 Alertas IA
+        <span class="nb-badge" id="alert-badge" style="display:none">0</span>
+      </button>
       <button class="nb" data-tab="mkt">🌐 Mercado</button>
 
       <div class="ns">Análisis</div>
@@ -74,14 +92,17 @@
       <div class="ns">Ajustes</div>
       <button class="nb" data-tab="config">⚙️ Configuración</button>
 
+      <!-- Scanner active indicator -->
       <div class="scanner-mini" id="scanner-mini" style="display:none">
-        <div class="scanner-mini-title"><span class="scanner-mini-dot"></span> Escáner activo</div>
-        <div style="color:var(--muted)" id="scanner-mini-time"></div>
+        <div class="scanner-mini-title">
+          <span class="scanner-mini-dot"></span> Escáner activo
+        </div>
+        <div style="color:var(--muted);font-size:10px;margin-top:3px" id="scanner-mini-time"></div>
       </div>
     </nav>
 
     <!-- Main content -->
-    <main class="cnt" style="height:calc(100vh - 54px - 49px)">
+    <main class="cnt" style="height:calc(100vh - var(--hdr-h) - var(--bal-h, 46px))">
       <div id="sec-dash" class="sec on"></div>
       <div id="sec-ops" class="sec"></div>
       <div id="sec-alerts" class="sec"></div>
@@ -94,30 +115,37 @@
     </main>
   </div>
 
+  <!-- Scanner sweep FX -->
+  <div id="scanner-sweep"></div>
+
+  <!-- External libraries -->
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- <script src="app.js"></script> -->
+
+  <!-- App scripts — order matters -->
   <script src="js/core.js" defer></script>
   <script src="js/indicators.js" defer></script>
   <script src="js/network.js" defer></script>
   <script src="js/claude.js" defer></script>
   <script src="js/bitunix.js" defer></script>
   <script src="js/trading.js" defer></script>
-  <script src="js/strategy.js" defer></script>
+  <script src="js/strategy.js" defer></script><!-- sobreescribe buildTrade, calcProposalMoney -->
   <script src="js/ui-market.js" defer></script>
   <script src="js/ui-ops.js" defer></script>
   <script src="js/ui-analysis.js" defer></script>
   <script src="js/ui-config.js" defer></script>
   <script src="js/app-init.js" defer></script>
+
+  <!-- Sidebar toggle (no deps needed, runs immediately) -->
   <script>
     const _toggle = document.getElementById('menu-toggle');
     const _sidebar = document.getElementById('sidebar');
     const _backdrop = document.getElementById('side-backdrop');
-    function openSidebar() { _sidebar.classList.add('open'); _backdrop.classList.add('open'); }
-    function closeSidebar() { _sidebar.classList.remove('open'); _backdrop.classList.remove('open'); }
-    _toggle.addEventListener('click', () => _sidebar.classList.contains('open') ? closeSidebar() : openSidebar());
-    _backdrop.addEventListener('click', closeSidebar);
-    document.querySelectorAll('.nb').forEach(b => b.addEventListener('click', closeSidebar));
+    const _open = () => { _sidebar.classList.add('open'); _backdrop.classList.add('open'); };
+    const _close = () => { _sidebar.classList.remove('open'); _backdrop.classList.remove('open'); };
+    _toggle.addEventListener('click', () => _sidebar.classList.contains('open') ? _close() : _open());
+    _backdrop.addEventListener('click', _close);
+    document.querySelectorAll('.nb').forEach(b => b.addEventListener('click', _close));
   </script>
 </body>
 
