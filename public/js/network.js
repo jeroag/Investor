@@ -1,10 +1,12 @@
 /* ═══════════════════════════════════════════════════
-   CRYPTOPLAN IA — network.js
+   CRYPTOPLAN IA — network.js v3
+   Arquitectura: El SERVIDOR es el motor único de TP/SL.
+   El cliente solo escucha eventos WS y actualiza la UI.
    ═══════════════════════════════════════════════════ */
 
 'use strict';
 
-/* ── Sincronización con servidor (TP/SL en background) ───────────────────── */
+/* ── Sincronización con servidor (cliente → servidor) ───────────────────── */
 async function syncTradesToServer() {
   try {
     await authFetch('/api/trades/sync', {
@@ -13,57 +15,40 @@ async function syncTradesToServer() {
       body: JSON.stringify({ activeTrades: state.activeTrades }),
     });
   } catch (e) {
-    console.warn('sync error:', e.message);
+    console.warn('[sync]', e.message);
   }
 }
 
 async function pollServerClosedTrades() {
   try {
-    const res  = await authFetch('/api/trades/closed-by-server');
+    const res = await authFetch('/api/trades/closed-by-server', {}, { skipRedirect: true });
+    if (!res.ok) return;
     const data = await res.json();
     if (!data.closed || data.closed.length === 0) return;
 
     let changed = false;
-    const confirmedIds = []; // IDs que confirmamos al servidor
+    const confirmedIds = [];
 
     for (const closed of data.closed) {
-      // ── FIX: dedup — si ya está en closedTrades, solo confirmamos y seguimos
-      const alreadyInClosed = state.closedTrades.some(t => t.id === closed.id);
-      if (alreadyInClosed) {
-        confirmedIds.push(closed.id);
-        continue;
-      }
+      const alreadyDone = state.closedTrades.some(t => t.id === closed.id);
+      if (alreadyDone) { confirmedIds.push(closed.id); continue; }
 
-      // Verificar que aún está activa en el frontend
       const idx = state.activeTrades.findIndex(t => t.id === closed.id);
-      if (idx === -1) {
-        // El cliente ya la cerró antes (checkTPSL local) — solo confirmamos
-        confirmedIds.push(closed.id);
-        continue;
-      }
+      if (idx === -1) { confirmedIds.push(closed.id); continue; }
 
       state.activeTrades.splice(idx, 1);
       state.closedTrades.unshift(closed);
       confirmedIds.push(closed.id);
       changed = true;
-
-      showToast(
-        closed.result === 'WIN'
-          ? `✓ ${closed.par} cerrada en TP por servidor! +$${closed.pnl?.toFixed(2)}`
-          : `✕ ${closed.par} SL alcanzado (servidor). -$${Math.abs(closed.pnl || 0).toFixed(2)}`,
-        closed.result !== 'WIN'
-      );
+      _toastTradeClosed(closed);
     }
 
-    // ── FIX: confirmar recepción SOLO si tenemos IDs que reportar.
-    // El servidor borra estos trades de su lista solo tras recibir esta confirmación.
-    // Si la red falla antes de llegar aquí, el servidor los conserva y los reenvía en el próximo poll.
-    if (confirmedIds.length > 0) {
+    if (confirmedIds.length) {
       await authFetch('/api/trades/confirm-closed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: confirmedIds }),
-      }).catch(e => console.warn('confirm-closed error:', e.message));
+      }).catch(() => { });
     }
 
     if (changed) {
@@ -72,47 +57,169 @@ async function pollServerClosedTrades() {
       renderAll();
     }
   } catch (e) {
-    console.warn('poll error:', e.message);
+    console.warn('[poll]', e.message);
   }
 }
 
-/* ── WebSocket del servidor: push de TP/SL en tiempo real ───────────────── */
-// En lugar de polling cada 10s, el servidor notifica al instante via WS
+/* ── WebSocket del servidor — fuente única de verdad ───────────────────── */
 let serverWs, serverWsRetry;
 
 function connectServerWS() {
   clearTimeout(serverWsRetry);
-  const token    = getAuthToken();
+  const token = getAuthToken();
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url      = `${protocol}//${location.host}/ws${token ? '?token=' + token : ''}`;
+  const url = `${protocol}//${location.host}/ws${token ? '?token=' + token : ''}`;
   try { serverWs = new WebSocket(url); } catch { return; }
 
   serverWs.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'TRADE_CLOSED')   handleServerTradeClosed(msg.trade);
-      if (msg.type === 'SCANNER_ALERT')  handleServerScannerAlert(msg.alert);
-    } catch {}
+      switch (msg.type) {
+        case 'PRICES_SNAPSHOT': _handlePricesSnapshot(msg.prices); break;
+        case 'TRADE_CLOSED': _handleServerTradeClosed(msg.trade); break;
+        case 'PARTIAL_CLOSE': _handlePartialClose(msg); break;
+        case 'BREAKEVEN': _handleBreakeven(msg.trade); break;
+        case 'SCANNER_ALERT': handleServerScannerAlert(msg.alert); break;
+      }
+    } catch { }
   };
-  serverWs.onclose = () => { serverWsRetry = setTimeout(connectServerWS, 8000); };
-  serverWs.onerror = () => {};
+
+  serverWs.onclose = () => {
+    serverWsRetry = setTimeout(connectServerWS, 8000);
+  };
+  serverWs.onerror = () => { };
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   HANDLERS DE EVENTOS WS
+   ───────────────────────────────────────────────────────────────────────── */
+
+function _handlePricesSnapshot(prices) {
+  if (!prices) return;
+  Object.assign(state.prices, prices);
+  updateTradesPnl();
+  renderBalanceWidget();
+}
+
+/**
+ * TRADE_CLOSED — el servidor cerró un trade (TP o SL alcanzado).
+ * El cliente actualiza su estado local y la UI.
+ */
+function _handleServerTradeClosed(closed) {
+  if (!closed?.id) return;
+
+  // Evitar duplicados
+  if (state.closedTrades.some(t => t.id === closed.id)) return;
+
+  // Eliminar de activos
+  const idx = state.activeTrades.findIndex(t => t.id === closed.id);
+  if (idx !== -1) state.activeTrades.splice(idx, 1);
+
+  // Limpiar gráfico inline si estaba abierto
+  if (window._tradeChartInstances?.[closed.id]) {
+    try { window._tradeChartInstances[closed.id].remove(); } catch { }
+    delete window._tradeChartInstances[closed.id];
+    delete window._tradeChartTimeframes?.[closed.id];
+  }
+
+  state.closedTrades.unshift(closed);
+  saveKey('activeTrades', state.activeTrades);
+  saveKey('closedTrades', state.closedTrades);
+
+  _toastTradeClosed(closed);
+
+  // Confirmar recepción al servidor
+  authFetch('/api/trades/confirm-closed', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [closed.id] }),
+  }).catch(() => { });
+
+  renderAll();
+}
+
+/**
+ * PARTIAL_CLOSE — TP1 alcanzado: 50% cerrado, SL movido a breakeven.
+ * El cliente actualiza el trade activo con los nuevos valores.
+ */
+function _handlePartialClose(msg) {
+  const { trade, partialQty, partialPnl, partialFees, newSL, bitunixOk } = msg;
+  if (!trade?.id) return;
+
+  // Actualizar el trade activo en estado local
+  const idx = state.activeTrades.findIndex(t => t.id === trade.id);
+  if (idx !== -1) {
+    // Aplicar los cambios del servidor
+    Object.assign(state.activeTrades[idx], {
+      size: trade.size,          // 50% restante
+      stopLoss: trade.stopLoss,      // breakeven con fees
+      tp1Hit: true,
+      breakevenSet: true,
+      partialClosed: true,
+      partialCloseQty: trade.partialCloseQty,
+      partialClosePnl: trade.partialClosePnl,
+      partialClosePrice: trade.partialClosePrice,
+    });
+    saveKey('activeTrades', state.activeTrades);
+  }
+
+  // Toast informativo
+  const coin = coinOf(trade.par || '');
+  const pnlStr = partialPnl != null ? `+$${Math.abs(partialPnl).toFixed(2)}` : '';
+  showToast(
+    `✂️ ${trade.par} — TP1 alcanzado! 50% cerrado ${pnlStr ? '(' + pnlStr + ' neto)' : ''}` +
+    ` | SL → BE $${fmtP(newSL, coin)}` +
+    `${!bitunixOk && window.bitunix?.configured ? ' ⚠️ Error Bitunix' : ''}`
+  );
+
+  if (state.currentTab === 'ops') renderOps();
+  if (state.currentTab === 'dash') renderDash();
+}
+
+/**
+ * BREAKEVEN — SL movido manualmente a breakeven por el servidor.
+ */
+function _handleBreakeven(trade) {
+  if (!trade?.id) return;
+  const idx = state.activeTrades.findIndex(t => t.id === trade.id);
+  if (idx !== -1) {
+    state.activeTrades[idx].stopLoss = trade.stopLoss;
+    state.activeTrades[idx].breakevenSet = true;
+    saveKey('activeTrades', state.activeTrades);
+  }
+  const coin = coinOf(trade.par || '');
+  showToast(`🔒 ${trade.par} — SL → breakeven $${fmtP(trade.stopLoss, coin)}`);
+  if (state.currentTab === 'ops') renderOps();
 }
 
 function handleServerScannerAlert(alert) {
-  // Evitar duplicados
+  if (!alert?.id) return;
   if (state.alerts.some(a => a.id === alert.id)) return;
-  // Añadir a la lista de alertas con status pending
   state.alerts.unshift({ ...alert, status: 'pending' });
   if (state.alerts.length > 30) state.alerts.pop();
   saveKey('alerts', state.alerts);
-  // Notificación visual inmediata
   showScreenNotif(alert);
-  renderAlerts();
-  // Actualizar badge del tab
+  if (state.currentTab === 'alerts') renderAlerts();
   updateScannerBadge();
+  updateAlertBadge();
 }
 
-/* ── Control del escáner server-side desde el frontend ─────────────────── */
+/* ── Toast helper ──────────────────────────────────────────────────────── */
+function _toastTradeClosed(closed) {
+  if (closed.result === 'WIN') {
+    const label = closed.partialClosed
+      ? `TP2 alcanzado! Neto total: +$${Math.abs(closed.pnl).toFixed(2)}`
+      : `TP alcanzado! Neto: +$${Math.abs(closed.pnl).toFixed(2)}`;
+    showToast(`✅ ${closed.par} — ${label}`);
+  } else if (closed.result === 'BREAKEVEN') {
+    showToast(`↔ ${closed.par} — Breakeven. P&L real: $${closed.pnl.toFixed(2)}`);
+  } else {
+    const be = closed.breakevenSet ? ' (BE activo, pérdida por fees)' : '';
+    showToast(`❌ ${closed.par} — SL: -$${Math.abs(closed.pnl).toFixed(2)}${be}`, true);
+  }
+}
+
+/* ── Control del escáner server-side ─────────────────────────────────── */
 async function startServerScanner() {
   try {
     const res = await authFetch('/api/scanner/start', {
@@ -124,8 +231,8 @@ async function startServerScanner() {
     if (data.ok) {
       state.scannerActive = true;
       saveKey('scannerActive', true);
-      logActivity('scanner_on', `Escáner activado — cada ${data.intervalMin} min`);
-      showToast(`🔍 Escáner SERVER activo — cada ${data.intervalMin} min (24/7)`);
+      logActivity('scanner_on', `Escáner activado — cada ${data.intervalMin}min`);
+      showToast(`🔍 Escáner SERVER activo (24/7) — cada ${data.intervalMin}min`);
       updateScannerBadge();
     }
   } catch (e) {
@@ -141,72 +248,29 @@ async function stopServerScanner() {
     logActivity('scanner_off', 'Escáner detenido');
     showToast('⏹ Escáner detenido');
     updateScannerBadge();
-  } catch {}
-}
-
-async function checkServerScannerStatus() {
-  if (!state.scannerActive) return;
-  try {
-    const res  = await authFetch('/api/scanner/status');
-    const data = await res.json();
-    if (data.ok) {
-      // Sincronizar estado
-      state.scannerActive = data.enabled;
-    }
-  } catch {}
-}
-
-function updateScannerBadge() {
-  const btn = document.getElementById('scanner-toggle-btn');
-  if (!btn) return;
-  btn.textContent  = state.scannerActive ? '⏹ DETENER ESCÁNER' : '▶ ESCÁNER 24/7';
-  btn.style.background = state.scannerActive ? 'rgba(255,59,88,.2)' : '';
-  btn.style.borderColor = state.scannerActive ? 'rgba(255,59,88,.5)' : '';
-  btn.style.color = state.scannerActive ? 'var(--red)' : '';
+  } catch { }
 }
 
 async function toggleServerScanner() {
-  if (state.scannerActive) {
-    await stopServerScanner();
-  } else {
-    await startServerScanner();
-  }
-  // Re-render del panel de alertas para reflejar el estado
+  if (state.scannerActive) await stopServerScanner();
+  else await startServerScanner();
   if (state.currentTab === 'alerts') renderAlerts();
 }
 
-
-function handleServerTradeClosed(closed) {
-  if (state.closedTrades.some(t => t.id === closed.id)) return; // ya cerrado localmente
-  const idx = state.activeTrades.findIndex(t => t.id === closed.id);
-  if (idx !== -1) state.activeTrades.splice(idx, 1);
-  state.closedTrades.unshift(closed);
-  saveKey('activeTrades', state.activeTrades);
-  saveKey('closedTrades', state.closedTrades);
-  showToast(
-    closed.result === 'WIN'
-      ? `✓ ${closed.par} cerrada en TP! +$${closed.pnl?.toFixed(2)}`
-      : `✕ ${closed.par} SL alcanzado. -$${Math.abs(closed.pnl || 0).toFixed(2)}`,
-    closed.result !== 'WIN'
-  );
-  authFetch('/api/trades/confirm-closed', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids: [closed.id] }),
-  }).catch(() => {});
-  // Limpiar gráfico del trade cerrado antes de re-renderizar
-  if (_tradeChartInstances[closed.id]) {
-    try { _tradeChartInstances[closed.id].remove(); } catch {}
-    delete _tradeChartInstances[closed.id];
-    delete _tradeChartTimeframes[closed.id];
-  }
-  renderAll();
+function updateScannerBadge() {
+  const btn = qs('#scanner-toggle-btn');
+  if (!btn) return;
+  btn.textContent = state.scannerActive ? '⏹ DETENER' : '▶ ESCÁNER 24/7';
+  btn.style.background = state.scannerActive ? 'rgba(242,54,69,.2)' : '';
+  btn.style.borderColor = state.scannerActive ? 'rgba(242,54,69,.5)' : '';
+  btn.style.color = state.scannerActive ? 'var(--red)' : '';
 }
 
-/* ── Binance WebSocket ───────────────────────────────────────────────────── */
+/* ── Binance WebSocket ─────────────────────────────────────────────────── */
 let ws, wsRetryTimer;
 
 function connectWS() {
-  if (ws) { try { ws.close(); } catch {} }
+  if (ws) { try { ws.close(); } catch { } }
   clearTimeout(wsRetryTimer);
   setWsStatus('connecting');
   ws = new WebSocket(buildWsUrl(state.watchedCoins));
@@ -216,14 +280,17 @@ function connectWS() {
   ws.onmessage = (e) => {
     const { data: d } = JSON.parse(e.data);
     if (!d) return;
-    const coin  = d.s.replace('USDT', '');
+    const coin = d.s.replace('USDT', '');
     const price = parseFloat(d.c);
     state.prevPrices[coin] = state.prices[coin] || price;
     state.prices[coin] = price;
+
+    // Dashboard: throttle para no re-renderizar en cada tick
     if (state.currentTab === 'dash') {
       clearTimeout(window._dashRefreshTimer);
       window._dashRefreshTimer = setTimeout(renderDash, 3000);
     }
+
     onPriceUpdate(coin, price);
   };
 
@@ -236,22 +303,23 @@ function connectWS() {
 
 function setWsStatus(s) {
   state.wsStatus = s;
-  const dot   = qs('.ws-dot');
+  const dot = qs('.ws-dot, #ws-dot-ref');
   const label = qs('#ws-label');
-  if (dot) { dot.className = 'ws-dot ' + s; }
+  if (dot) dot.className = 'ws-dot ' + s;
   if (label) {
-    label.textContent = s === 'live' ? 'BINANCE LIVE' : s === 'connecting' ? 'CONECTANDO...' : 'RECONECTANDO';
+    label.textContent = s === 'live' ? 'LIVE' : s === 'connecting' ? 'CONECTANDO' : 'RECONECTANDO';
     label.style.color = s === 'live' ? 'var(--green)' : s === 'connecting' ? 'var(--yellow)' : 'var(--red)';
   }
   const genBtn = qs('#btn-gen');
-  if (genBtn) genBtn.disabled = s !== 'live';
+  if (genBtn) genBtn.disabled = (s !== 'live') || state.readOnlyMode;
 }
 
+/**
+ * onPriceUpdate — SOLO actualiza UI y alertas de precio.
+ * NO llama a checkTPSL — eso es responsabilidad exclusiva del servidor.
+ */
 function onPriceUpdate(coin, price) {
-  renderTicker();
-  checkTPSL();
-  checkPriceAlerts();
   updateTradesPnl();
-  renderBalanceWidget();
+  checkPriceAlerts();
   if (state.currentTab === 'mkt') updateMarketPrice(coin, price);
 }
