@@ -6,6 +6,22 @@
   <title>CryptoPlan IA — Acceso</title>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap"/>
+  
+  <!-- Precarga de scripts de la app para que la redirección sea instantánea -->
+  <link rel="preload" href="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" as="script">
+  <link rel="preload" href="https://cdn.jsdelivr.net/npm/chart.js" as="script">
+  <link rel="preload" href="/js/core.js" as="script">
+  <link rel="preload" href="/js/indicators.js" as="script">
+  <link rel="preload" href="/js/network.js" as="script">
+  <link rel="preload" href="/js/claude.js" as="script">
+  <link rel="preload" href="/js/bitunix.js" as="script">
+  <link rel="preload" href="/js/trading.js" as="script">
+  <link rel="preload" href="/js/ui-market.js" as="script">
+  <link rel="preload" href="/js/ui-ops.js" as="script">
+  <link rel="preload" href="/js/ui-analysis.js" as="script">
+  <link rel="preload" href="/js/ui-config.js" as="script">
+  <link rel="preload" href="/js/app-init.js" as="script">
+  
   <style>
     :root {
       --bg:      #F4F1ED;
