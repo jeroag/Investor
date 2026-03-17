@@ -36,7 +36,8 @@ function renderDash() {
   const latentPnl = activeTrades.reduce((sum, t) => {
     const price = prices[t.par?.split('/')[0]];
     if (!price) return sum;
-    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1);
+    // CORRECCIÓN: sin × leverage — size ya es qty real en activo base
+    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0);
   }, 0);
 
   // ── Objetivo activo (primer goal pendiente)
@@ -282,15 +283,17 @@ function closeTradeAtMarket(tradeId) {
   function updatePreview() {
     const exitPrice = parseFloat(priceInput.value) || mktPrice;
     const lev  = trade.leverage || 1;
+    // CORRECCIÓN: PnL en USD sin × lev (size ya es qty real en activo base)
     const pnl  = trade.tipo === 'LONG'
-      ? (exitPrice - trade.entrada) * trade.size * lev
-      : (trade.entrada - exitPrice) * trade.size * lev;
+      ? (exitPrice - trade.entrada) * trade.size
+      : (trade.entrada - exitPrice) * trade.size;
+    // pct sí incluye lev — representa rentabilidad sobre margen (para display)
     const pct  = trade.tipo === 'LONG'
       ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
-    const posSize  = trade.entrada * trade.size * (trade.leverage || 1);
-    const feesOpen  = posSize * 0.0006; // taker apertura
-    const feesClose = exitPrice * trade.size * (trade.leverage || 1) * 0.0006; // taker cierre
+    // CORRECCIÓN: comisiones sobre nocional real, sin × lev
+    const feesOpen  = trade.entrada * trade.size * 0.0006;
+    const feesClose = exitPrice * trade.size * 0.0006;
     const totalFees = feesOpen + feesClose;
     const netPnl    = pnl - totalFees;
     const color     = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -320,11 +323,13 @@ function confirmCloseWithPrice(tradeId) {
   const exitPrice = parseFloat(qs('#cpm-price')?.value) || state.prices[coin] || trade.entrada;
   const notes     = qs('#cpm-notes')?.value?.trim() || '';
   const lev       = trade.leverage || 1;
+  // CORRECCIÓN: PnL en USD sin × lev (size ya es qty real en activo base)
   const rawPnl    = trade.tipo === 'LONG'
-    ? (exitPrice - trade.entrada) * trade.size * lev
-    : (trade.entrada - exitPrice) * trade.size * lev;
-  const feesOpen  = trade.entrada * trade.size * lev * 0.0006;
-  const feesClose = exitPrice    * trade.size * lev * 0.0006;
+    ? (exitPrice - trade.entrada) * trade.size
+    : (trade.entrada - exitPrice) * trade.size;
+  // CORRECCIÓN: comisiones sobre nocional real (precio × size), sin × lev
+  const feesOpen  = trade.entrada * trade.size * 0.0006;
+  const feesClose = exitPrice    * trade.size * 0.0006;
   const totalFees = feesOpen + feesClose;
   const netPnl    = rawPnl - totalFees;
   const result    = netPnl >= 0 ? 'WIN' : 'LOSS';
@@ -1417,8 +1422,8 @@ function renderGoals() {
   const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
   const activePnl = state.activeTrades.reduce((acc,t) => {
     const p = state.prices[coinOf(t.par)] || t.entrada;
-    const lev = t.leverage||1;
-    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size*lev : (t.entrada-p)*t.size*lev);
+    // CORRECCIÓN: sin × lev
+    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size : (t.entrada-p)*t.size);
   }, 0);
   const totalPnl = closedPnl + activePnl;
   const capital  = state.profile.capital;

@@ -1,3 +1,4 @@
+
 /* ═══════════════════════════════════════════════════
    CRYPTOPLAN IA — trading.js v3
    NOTA: buildTrade, checkTPSL, calcProposalMoney, calcSize
@@ -11,13 +12,15 @@
 function calcEquity() {
   const { profile, closedTrades, activeTrades, prices } = state;
   const closedPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  // CORRECCIÓN: leverage eliminado del PnL en USD.
+  // size = riskUSD / slDist → ya es la cantidad real en activo base.
+  // El leverage NO amplifica PnL cuando size ya está bien calculado.
   const activePnl = activeTrades.reduce((acc, t) => {
     const coin = coinOf(t.par);
     const p = prices[coin] || t.entrada;
-    const lev = t.leverage || 1;
     const pnl = t.tipo === 'LONG'
-      ? (p - t.entrada) * t.size * lev
-      : (t.entrada - p) * t.size * lev;
+      ? (p - t.entrada) * t.size
+      : (t.entrada - p) * t.size;
     return acc + pnl;
   }, 0);
   return { capital: profile.capital, closedPnl, activePnl, total: profile.capital + closedPnl + activePnl };
@@ -234,9 +237,11 @@ function updateTradesPnl() {
     const prev = state.prevPrices[coin];
     const lev = trade.leverage || 1;
     trade.currentPrice = price;
+    // CORRECCIÓN: PnL en USD sin × lev — size ya es qty real en activo base
     trade.pnl = trade.tipo === 'LONG'
-      ? (price - trade.entrada) * trade.size * lev
-      : (trade.entrada - price) * trade.size * lev;
+      ? (price - trade.entrada) * trade.size
+      : (trade.entrada - price) * trade.size;
+    // pnlPct sí incluye leverage: representa la rentabilidad sobre el MARGEN
     trade.pnlPct = trade.tipo === 'LONG'
       ? ((price - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - price) / trade.entrada) * 100 * lev;

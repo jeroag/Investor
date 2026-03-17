@@ -1,3 +1,4 @@
+
 /* ═══════════════════════════════════════════════════════════════════
    CRYPTOPLAN IA — strategy.js v3 (FINAL)
 
@@ -40,12 +41,13 @@ const STRATEGY = {
 function getCurrentEquity() {
     const { profile, closedTrades, activeTrades, prices } = state;
     const closedPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+    // CORRECCIÓN: leverage eliminado del PnL en USD.
+    // size = riskUSD / slDist → qty real en activo base. Leverage NO amplifica PnL$.
     const activePnl = activeTrades.reduce((acc, t) => {
         const p = prices[coinOf(t.par)] || t.entrada;
-        const lev = t.leverage || 1;
         return acc + (t.tipo === 'LONG'
-            ? (p - t.entrada) * t.size * lev
-            : (t.entrada - p) * t.size * lev);
+            ? (p - t.entrada) * t.size
+            : (t.entrada - p) * t.size);
     }, 0);
     return profile.capital + closedPnl + activePnl;
 }
@@ -87,9 +89,13 @@ function calcBreakevenWithFees(entry, tipo) {
 
 function calcNetPnL(trade, exitPrice, exitFeeType = 'maker') {
     const lev = trade.leverage || 1;
+    // CORRECCIÓN: leverage eliminado del PnL bruto en USD.
+    // pnlPct (rentabilidad sobre margen) sí se multiplica por lev, pero
+    // el P&L en dólares no: size ya es la cantidad real de activo.
     const gross = trade.tipo === 'LONG'
-        ? (exitPrice - trade.entrada) * trade.size * lev
-        : (trade.entrada - exitPrice) * trade.size * lev;
+        ? (exitPrice - trade.entrada) * trade.size
+        : (trade.entrada - exitPrice) * trade.size;
+    // Comisiones sobre nocional real (precio × size), sin × lev
     const feeOpen = trade.entrada * trade.size * STRATEGY.FEE_TAKER;
     const feeClose = exitPrice * trade.size * (exitFeeType === 'taker' ? STRATEGY.FEE_TAKER : STRATEGY.FEE_MAKER);
     const fees = feeOpen + feeClose;

@@ -1,7 +1,18 @@
 /* ═══════════════════════════════════════════════════
-   CRYPTOPLAN IA — network.js v3
-   Arquitectura: El SERVIDOR es el motor único de TP/SL.
-   El cliente solo escucha eventos WS y actualiza la UI.
+   CRYPTOPLAN IA — network.js v3.1 (AUDITADO)
+   ═══════════════════════════════════════════════════
+
+   CORRECCIÓN [ALTO] — Token de sesión en URL del WebSocket:
+   La versión original construía la URL del WS server-side incluyendo
+   el token como query param (?token=...). Este token queda expuesto en:
+   - Logs del servidor Railway y cualquier proxy/CDN
+   - Historial del navegador en algunos casos
+   Un atacante con acceso a logs podría robar sesiones activas.
+
+   SOLUCIÓN: El WebSocket autentica EXCLUSIVAMENTE via cookie httpOnly.
+   La cookie cp_token se envía automáticamente por el browser en el
+   handshake de upgrade (mismo dominio + SameSite=Strict).
+   Se elimina el fallback ?token= del cliente.
    ═══════════════════════════════════════════════════ */
 
 'use strict';
@@ -63,19 +74,32 @@ async function pollServerClosedTrades() {
 
 /* ── WebSocket del servidor — fuente única de verdad ───────────────────── */
 let serverWs, serverWsRetry;
+let serverWsReconnectAttempt = 0;
 
 function connectServerWS() {
   clearTimeout(serverWsRetry);
-  const token = getAuthToken();
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const url = `${protocol}//${location.host}/ws${token ? '?token=' + token : ''}`;
+
+  // CORRECCIÓN: eliminado ?token= de la URL.
+  // El browser envía la cookie cp_token automáticamente en el handshake WS
+  // cuando comparte el mismo dominio. SameSite=Strict + HttpOnly la protegen.
+  const url = `${protocol}//${location.host}/ws`;
   try { serverWs = new WebSocket(url); } catch { return; }
+
+  const connectTime = Date.now();
+
+  serverWs.onopen = () => {
+    // Conexión estable → reset backoff
+    if (Date.now() - connectTime > 10_000) serverWsReconnectAttempt = 0;
+    serverWsReconnectAttempt = 0;
+  };
 
   serverWs.onmessage = (e) => {
     try {
       const msg = JSON.parse(e.data);
       switch (msg.type) {
         case 'PRICES_SNAPSHOT': _handlePricesSnapshot(msg.prices); break;
+        case 'PRICE_UPDATE': _handlePriceUpdate(msg.coin, msg.price); break;
         case 'TRADE_CLOSED': _handleServerTradeClosed(msg.trade); break;
         case 'PARTIAL_CLOSE': _handlePartialClose(msg); break;
         case 'BREAKEVEN': _handleBreakeven(msg.trade); break;
@@ -85,7 +109,10 @@ function connectServerWS() {
   };
 
   serverWs.onclose = () => {
-    serverWsRetry = setTimeout(connectServerWS, 8000);
+    // Backoff exponencial: 8s, 16s, 32s, 64s, max 120s
+    serverWsReconnectAttempt++;
+    const delay = Math.min(8000 * Math.pow(2, serverWsReconnectAttempt - 1), 120_000);
+    serverWsRetry = setTimeout(connectServerWS, delay);
   };
   serverWs.onerror = () => { };
 }
@@ -101,21 +128,22 @@ function _handlePricesSnapshot(prices) {
   renderBalanceWidget();
 }
 
+function _handlePriceUpdate(coin, price) {
+  if (!coin || !price) return;
+  state.prevPrices[coin] = state.prices[coin] || price;
+  state.prices[coin] = price;
+  onPriceUpdate(coin, price);
+}
+
 /**
  * TRADE_CLOSED — el servidor cerró un trade (TP o SL alcanzado).
- * El cliente actualiza su estado local y la UI.
  */
 function _handleServerTradeClosed(closed) {
   if (!closed?.id) return;
-
-  // Evitar duplicados
   if (state.closedTrades.some(t => t.id === closed.id)) return;
-
-  // Eliminar de activos
   const idx = state.activeTrades.findIndex(t => t.id === closed.id);
   if (idx !== -1) state.activeTrades.splice(idx, 1);
 
-  // Limpiar gráfico inline si estaba abierto
   if (window._tradeChartInstances?.[closed.id]) {
     try { window._tradeChartInstances[closed.id].remove(); } catch { }
     delete window._tradeChartInstances[closed.id];
@@ -128,7 +156,6 @@ function _handleServerTradeClosed(closed) {
 
   _toastTradeClosed(closed);
 
-  // Confirmar recepción al servidor
   authFetch('/api/trades/confirm-closed', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -140,19 +167,16 @@ function _handleServerTradeClosed(closed) {
 
 /**
  * PARTIAL_CLOSE — TP1 alcanzado: 50% cerrado, SL movido a breakeven.
- * El cliente actualiza el trade activo con los nuevos valores.
  */
 function _handlePartialClose(msg) {
   const { trade, partialQty, partialPnl, partialFees, newSL, bitunixOk } = msg;
   if (!trade?.id) return;
 
-  // Actualizar el trade activo en estado local
   const idx = state.activeTrades.findIndex(t => t.id === trade.id);
   if (idx !== -1) {
-    // Aplicar los cambios del servidor
     Object.assign(state.activeTrades[idx], {
-      size: trade.size,          // 50% restante
-      stopLoss: trade.stopLoss,      // breakeven con fees
+      size: trade.size,
+      stopLoss: trade.stopLoss,
       tp1Hit: true,
       breakevenSet: true,
       partialClosed: true,
@@ -163,7 +187,6 @@ function _handlePartialClose(msg) {
     saveKey('activeTrades', state.activeTrades);
   }
 
-  // Toast informativo
   const coin = coinOf(trade.par || '');
   const pnlStr = partialPnl != null ? `+$${Math.abs(partialPnl).toFixed(2)}` : '';
   showToast(
@@ -268,6 +291,7 @@ function updateScannerBadge() {
 
 /* ── Binance WebSocket ─────────────────────────────────────────────────── */
 let ws, wsRetryTimer;
+let wsReconnectAttempt = 0;
 
 function connectWS() {
   if (ws) { try { ws.close(); } catch { } }
@@ -275,7 +299,13 @@ function connectWS() {
   setWsStatus('connecting');
   ws = new WebSocket(buildWsUrl(state.watchedCoins));
 
-  ws.onopen = () => setWsStatus('live');
+  const connectTime = Date.now();
+
+  ws.onopen = () => {
+    setWsStatus('live');
+    if (Date.now() - connectTime > 15_000) wsReconnectAttempt = 0;
+    wsReconnectAttempt = 0;
+  };
 
   ws.onmessage = (e) => {
     const { data: d } = JSON.parse(e.data);
@@ -285,7 +315,6 @@ function connectWS() {
     state.prevPrices[coin] = state.prices[coin] || price;
     state.prices[coin] = price;
 
-    // Dashboard: throttle para no re-renderizar en cada tick
     if (state.currentTab === 'dash') {
       clearTimeout(window._dashRefreshTimer);
       window._dashRefreshTimer = setTimeout(renderDash, 3000);
@@ -297,7 +326,10 @@ function connectWS() {
   ws.onerror = () => setWsStatus('error');
   ws.onclose = () => {
     setWsStatus('error');
-    wsRetryTimer = setTimeout(connectWS, 4000);
+    // Backoff exponencial: 4s, 8s, 16s, 32s, max 60s
+    wsReconnectAttempt++;
+    const delay = Math.min(4000 * Math.pow(2, wsReconnectAttempt - 1), 60_000);
+    wsRetryTimer = setTimeout(connectWS, delay);
   };
 }
 
@@ -316,7 +348,7 @@ function setWsStatus(s) {
 
 /**
  * onPriceUpdate — SOLO actualiza UI y alertas de precio.
- * NO llama a checkTPSL — eso es responsabilidad exclusiva del servidor.
+ * NO llama a checkTPSL — responsabilidad exclusiva del servidor.
  */
 function onPriceUpdate(coin, price) {
   updateTradesPnl();
