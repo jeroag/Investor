@@ -67,12 +67,23 @@ async function fetchBitunixAccount() {
       const realCapital = equity > 0 ? equity : available;
       if (realCapital > 0) {
         const prev = state.profile.capital;
-        state.profile.capital = parseFloat(realCapital.toFixed(2));
-        saveKey('profile', state.profile);
-        // Notificar si el capital cambió significativamente (>1%)
-        if (prev > 0 && Math.abs(realCapital - prev) / prev > 0.01) {
-          const diff = realCapital - prev;
-          showToast(`💼 Capital actualizado: $${realCapital.toFixed(2)} (${diff >= 0 ? '+' : ''}$${diff.toFixed(2)})`, false);
+
+        // CORRECCIÓN: no sobreescribir el capital con valores sospechosamente
+        // pequeños (<$5). Bitunix a veces devuelve un equity parcial o en proceso
+        // de actualización que no refleja el saldo real. Si el valor nuevo es
+        // < $5 Y el capital configurado era razonable (>$10), ignorarlo y avisar.
+        const MIN_CAPITAL_THRESHOLD = 5;
+        if (realCapital < MIN_CAPITAL_THRESHOLD && prev > 10) {
+          console.warn(`[Bitunix] Capital sospechosamente bajo ($${realCapital.toFixed(2)}) — ignorado para no sobreescribir el capital configurado ($${prev}). Comprueba tu cuenta.`);
+          showToast(`⚠️ Bitunix devolvió equity=$${realCapital.toFixed(2)} — revisa tu cuenta (capital no actualizado)`, true);
+        } else {
+          state.profile.capital = parseFloat(realCapital.toFixed(2));
+          saveKey('profile', state.profile);
+          // Notificar si el capital cambió significativamente (>1%)
+          if (prev > 0 && Math.abs(realCapital - prev) / prev > 0.01) {
+            const diff = realCapital - prev;
+            showToast(`💼 Capital actualizado: $${realCapital.toFixed(2)} (${diff >= 0 ? '+' : ''}$${diff.toFixed(2)})`, false);
+          }
         }
       }
     } else {

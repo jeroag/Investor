@@ -1,4 +1,3 @@
-
 /* ═══════════════════════════════════════════════════════════════════
    CRYPTOPLAN IA — strategy.js v3 (FINAL)
 
@@ -53,7 +52,8 @@ function getCurrentEquity() {
 }
 
 function getDynamicRiskUSD() {
-    return Math.max(0, getCurrentEquity() * STRATEGY.RISK_PCT / 100);
+    const riskPct = state.profile.risk_pct || STRATEGY.RISK_PCT;
+    return Math.max(0, getCurrentEquity() * riskPct / 100);
 }
 
 /* ═══════════════════════════════════════════════════
@@ -114,7 +114,9 @@ function buildTrade(proposal) {
     const tipo = proposal.tipo;
 
     const equity = getCurrentEquity();
-    const riskUSD = equity * STRATEGY.RISK_PCT / 100;
+    // CORRECCIÓN: usar profile.risk_pct en lugar del 1% hardcodeado
+    const riskPct = profile.risk_pct || STRATEGY.RISK_PCT;
+    const riskUSD = equity * riskPct / 100;
     const size = calcSize(riskUSD, realEntry, proposal.stopLoss);
 
     // Targets: usar el de la IA si es más ambicioso, si no calcular
@@ -316,7 +318,9 @@ function calcProposalMoney(proposal) {
     const coin = coinOf(proposal.par);
     const entry = state.prices[coin] || proposal.entrada;
     const equity = getCurrentEquity();
-    const riskUSD = equity * STRATEGY.RISK_PCT / 100;
+    // CORRECCIÓN: usar profile.risk_pct en lugar del 1% hardcodeado
+    const riskPct = state.profile.risk_pct || STRATEGY.RISK_PCT;
+    const riskUSD = equity * riskPct / 100;
 
     const size = calcSize(riskUSD, entry, proposal.stopLoss);
     const notional = size * entry;
@@ -340,7 +344,7 @@ function calcProposalMoney(proposal) {
 
     return {
         riskUSD: parseFloat(riskUSD.toFixed(2)),
-        riskPct: STRATEGY.RISK_PCT,
+        riskPct: riskPct,
         equity: parseFloat(equity.toFixed(2)),
         size: parseFloat(size.toFixed(6)),
         notional: parseFloat(notional.toFixed(2)),
