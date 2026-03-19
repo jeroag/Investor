@@ -36,8 +36,7 @@ function renderDash() {
   const latentPnl = activeTrades.reduce((sum, t) => {
     const price = prices[t.par?.split('/')[0]];
     if (!price) return sum;
-    // CORRECCIÓN: sin × leverage — size ya es qty real en activo base
-    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0);
+    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1);
   }, 0);
 
   // ── Objetivo activo (primer goal pendiente)
@@ -210,7 +209,7 @@ function dashKpi(label, value, color, icon, sub) {
 
 function setTab(id) {
   // Redirigir tabs antiguos a los nuevos fusionados
-  if (id === 'perf' || id === 'backtest') id = 'historial';
+  if (id === 'perf') id = 'historial';
   if (id === 'profile' || id === 'capital') id = 'config';
   if (id === 'dashboard') id = 'dash';
 
@@ -224,6 +223,7 @@ function setTab(id) {
     ops:      renderOps,
     alerts:   renderAlerts,
     historial:renderHistorial,
+    backtest: renderBacktester,
     mkt:      renderMkt,
     strat:    renderStrategy,
     config:   renderConfig,
@@ -283,15 +283,13 @@ function closeTradeAtMarket(tradeId) {
   function updatePreview() {
     const exitPrice = parseFloat(priceInput.value) || mktPrice;
     const lev  = trade.leverage || 1;
-    // CORRECCIÓN: PnL en USD sin × lev (size ya es qty real en activo base)
     const pnl  = trade.tipo === 'LONG'
       ? (exitPrice - trade.entrada) * trade.size
       : (trade.entrada - exitPrice) * trade.size;
-    // pct sí incluye lev — representa rentabilidad sobre margen (para display)
     const pct  = trade.tipo === 'LONG'
       ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
-    // CORRECCIÓN: comisiones sobre nocional real, sin × lev
+    // Comisiones sobre nocional real (precio × size), sin × leverage
     const feesOpen  = trade.entrada * trade.size * 0.0006;
     const feesClose = exitPrice * trade.size * 0.0006;
     const totalFees = feesOpen + feesClose;
@@ -323,13 +321,11 @@ function confirmCloseWithPrice(tradeId) {
   const exitPrice = parseFloat(qs('#cpm-price')?.value) || state.prices[coin] || trade.entrada;
   const notes     = qs('#cpm-notes')?.value?.trim() || '';
   const lev       = trade.leverage || 1;
-  // CORRECCIÓN: PnL en USD sin × lev (size ya es qty real en activo base)
   const rawPnl    = trade.tipo === 'LONG'
     ? (exitPrice - trade.entrada) * trade.size
     : (trade.entrada - exitPrice) * trade.size;
-  // CORRECCIÓN: comisiones sobre nocional real (precio × size), sin × lev
   const feesOpen  = trade.entrada * trade.size * 0.0006;
-  const feesClose = exitPrice    * trade.size * 0.0006;
+  const feesClose = exitPrice * trade.size * 0.0006;
   const totalFees = feesOpen + feesClose;
   const netPnl    = rawPnl - totalFees;
   const result    = netPnl >= 0 ? 'WIN' : 'LOSS';
@@ -393,16 +389,46 @@ function showTradeConfirmModal(trade) {
     const existing = document.getElementById('trade-confirm-modal');
     if (existing) existing.remove();
 
-    const coin    = coinOf(trade.par);
-    const lc      = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
-    const money   = calcProposalMoney(trade);
-    const tpLabel = trade.tp2 ? `TP1 🎯 ${fmtP(trade.tp1, coin)} → TP2 ${fmtP(trade.tp2, coin)}` : `TP1 🎯 ${fmtP(trade.tp1, coin)}`;
+    const coin = coinOf(trade.par);
+    const lc   = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+
+    // ── MEJORA: precio actualizado en tiempo real al abrir el modal ──────────
+    // Si el precio se ha movido >0.2% desde la propuesta, advertir y
+    // recalcular el R:R para que el trader sepa exactamente a qué entra.
+    const livePrice     = state.prices[coin] || trade.entrada;
+    const priceDrift    = Math.abs(livePrice - trade.entrada) / trade.entrada * 100;
+    const hasDrift      = priceDrift > 0.2;
+    const driftDir      = livePrice > trade.entrada ? '▲' : '▼';
+    const driftColor    = hasDrift ? 'var(--yellow)' : 'var(--green)';
+
+    // Recalcular R:R con el precio actual
+    const slDistLive    = Math.abs(livePrice - trade.stopLoss);
+    const tp1DistLive   = Math.abs(trade.tp1 - livePrice);
+    const rrLive        = slDistLive > 0 ? (tp1DistLive / slDistLive).toFixed(2) : trade.rr;
+    const rrOk          = parseFloat(rrLive) >= 2.0;
+
+    // Usar el precio live para los cálculos financieros del modal
+    const tradeWithLive = { ...trade, entrada: livePrice };
+    const money         = calcProposalMoney(tradeWithLive);
+    const tpLabel       = trade.tp2
+      ? `TP1 🎯 ${fmtP(trade.tp1, coin)} → TP2 ${fmtP(trade.tp2, coin)}`
+      : `TP1 🎯 ${fmtP(trade.tp1, coin)}`;
+
+    // ── MEJORA: bloqueo de correlaciones (no solo warning) ──────────────────
+    // Si ya hay 3+ posiciones correlacionadas del mismo lado → bloquear.
+    const CORR_COINS  = ['BTC','ETH','SOL','BNB','AVAX','LINK'];
+    const corrTrades  = state.activeTrades.filter(t =>
+      t.tipo === trade.tipo && CORR_COINS.includes(coinOf(t.par))
+    );
+    const corrBlocked = corrTrades.length >= 3;
+    const corrWarning = corrTrades.length >= 1 && !corrBlocked;
+    const corrRisk    = corrTrades.reduce((a, t) => a + (t.riskUSD || 0), 0);
 
     const div = document.createElement('div');
     div.id = 'trade-confirm-modal';
     div.innerHTML = `
-      <div style="position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease">
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);overflow:hidden">
+      <div style="position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease">
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:420px;box-shadow:var(--shadow-lg);overflow:hidden;max-height:90vh;overflow-y:auto">
 
           <!-- Header -->
           <div style="padding:16px 20px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px">
@@ -413,32 +439,49 @@ function showTradeConfirmModal(trade) {
             </div>
           </div>
 
-          <!-- Trade summary -->
           <div style="padding:16px 20px">
-            <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
+
+            <!-- Par + tipo -->
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
               <span style="font-family:var(--display);font-size:18px;font-weight:800;color:#fff">${trade.par}</span>
               <span style="font-size:11px;padding:3px 9px;border-radius:4px;border:1px solid ${lc}50;color:${lc};font-weight:600">${trade.tipo}</span>
               ${trade.leverage > 1 ? `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.3);color:var(--yellow)">${trade.leverage}x</span>` : ''}
+              ${!rrOk ? `<span style="font-size:10px;padding:2px 7px;border-radius:3px;background:rgba(255,68,85,.1);border:1px solid rgba(255,68,85,.3);color:var(--red)">R:R ${rrLive} ⚠️</span>` : `<span style="font-size:10px;color:var(--green)">R:R ${rrLive} ✓</span>`}
+            </div>
+
+            <!-- MEJORA: Precio en tiempo real con alerta de deslizamiento -->
+            <div style="padding:10px 14px;border-radius:8px;border:1px solid ${hasDrift ? 'rgba(245,197,66,.4)' : 'var(--border)'};background:${hasDrift ? 'rgba(245,197,66,.06)' : 'var(--s2)'};margin-bottom:12px">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <div style="font-size:9px;color:var(--muted);margin-bottom:2px">PRECIO PROPUESTO</div>
+                  <div style="font-size:12px;font-weight:600;color:var(--muted);text-decoration:line-through">${fmtP(trade.entrada, coin)}</div>
+                </div>
+                <div style="text-align:right">
+                  <div style="font-size:9px;color:var(--muted);margin-bottom:2px">PRECIO ACTUAL (LIVE)</div>
+                  <div style="font-size:14px;font-weight:700;color:${driftColor}">${driftDir} ${fmtP(livePrice, coin)}</div>
+                </div>
+              </div>
+              ${hasDrift ? `<div style="font-size:10px;color:var(--yellow);margin-top:6px">⚠️ Deslizamiento de ${priceDrift.toFixed(2)}% desde la propuesta. R:R recalculado: ${rrLive}${!rrOk ? ' — por debajo del mínimo de 2.0' : ''}</div>` : `<div style="font-size:10px;color:var(--green);margin-top:4px">✓ Precio estable — sin deslizamiento significativo</div>`}
             </div>
 
             <!-- Niveles -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
-              <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--accent)">
-                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">ENTRADA (mercado)</div>
-                <div style="font-size:13px;font-weight:700;color:var(--accent)">${fmtP(trade.entrada, coin)}</div>
-              </div>
               <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--red)">
                 <div style="font-size:9px;color:var(--muted);margin-bottom:2px">STOP LOSS</div>
                 <div style="font-size:13px;font-weight:700;color:var(--red)">${fmtP(trade.stopLoss, coin)}</div>
               </div>
+              <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--green)">
+                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">SL DIST</div>
+                <div style="font-size:13px;font-weight:700;color:var(--text)">${fmtP(slDistLive, coin)}</div>
+              </div>
               <div style="padding:8px 12px;background:var(--s2);border-radius:8px;border-left:3px solid var(--green);grid-column:span 2">
-                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">TAKE PROFIT (Bitunix cierra aquí)</div>
+                <div style="font-size:9px;color:var(--muted);margin-bottom:2px">TAKE PROFIT</div>
                 <div style="font-size:13px;font-weight:700;color:var(--green)">${tpLabel}</div>
               </div>
             </div>
 
-            <!-- Dinero -->
-            <div style="padding:10px 14px;background:rgba(0,0,0,.25);border-radius:8px;border:1px solid var(--border);margin-bottom:14px">
+            <!-- Resumen financiero -->
+            <div style="padding:10px 14px;background:rgba(0,0,0,.25);border-radius:8px;border:1px solid var(--border);margin-bottom:12px">
               <div style="font-size:9px;color:var(--muted);letter-spacing:.5px;margin-bottom:8px">💰 RESUMEN FINANCIERO</div>
               <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
                 <div>
@@ -460,17 +503,37 @@ function showTradeConfirmModal(trade) {
               </div>
             </div>
 
-            ${money.warnings.length ? `<div style="margin-bottom:12px">${money.warnings.map(w=>`<div style="font-size:11px;color:var(--red);padding:4px 0">${w}</div>`).join('')}</div>` : ''}
+            <!-- MEJORA: Advertencia/bloqueo de correlaciones -->
+            ${corrBlocked ? `
+            <div style="padding:10px 14px;border-radius:8px;border:1px solid rgba(255,68,85,.4);background:rgba(255,68,85,.08);margin-bottom:12px">
+              <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:4px">🛑 Límite de correlación alcanzado</div>
+              <div style="font-size:11px;color:var(--text);line-height:1.5">
+                Ya tienes ${corrTrades.length} posiciones ${trade.tipo} en activos correlacionados
+                (${corrTrades.map(t=>coinOf(t.par)).join(', ')}) con un riesgo acumulado de $${corrRisk.toFixed(2)}.
+                Máximo 3 posiciones correlacionadas simultáneas. Cierra alguna antes de abrir esta.
+              </div>
+            </div>` : corrWarning ? `
+            <div style="padding:10px 14px;border-radius:8px;border:1px solid rgba(245,197,66,.3);background:rgba(245,197,66,.06);margin-bottom:12px">
+              <div style="font-size:11px;font-weight:600;color:var(--yellow);margin-bottom:3px">⚠️ ${corrTrades.length} posición(es) correlacionada(s) activa(s)</div>
+              <div style="font-size:10px;color:var(--muted)">${corrTrades.map(t=>coinOf(t.par)).join(', ')} — Riesgo acumulado: $${corrRisk.toFixed(2)}</div>
+            </div>` : ''}
+
+            ${money.warnings.filter(w => !w.includes('Posición')).length ? `
+            <div style="margin-bottom:12px">${money.warnings.filter(w=>!w.includes('Posición')).map(w=>`<div style="font-size:11px;color:var(--red);padding:2px 0">${w}</div>`).join('')}</div>` : ''}
 
             <!-- Aviso legal -->
             <div style="font-size:10px;color:var(--muted);padding:8px 12px;background:rgba(255,200,0,.05);border:1px solid rgba(255,200,0,.15);border-radius:6px;margin-bottom:14px;line-height:1.5">
-              ⚠️ Esta orden se ejecutará <b style="color:var(--yellow)">inmediatamente al precio de mercado</b>. El precio de entrada puede diferir ligeramente del mostrado.
+              ⚠️ Esta orden se ejecutará <b style="color:var(--yellow)">al precio de mercado actual</b>.
+              El deslizamiento final puede diferir ligeramente.
             </div>
 
             <!-- Botones -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <button id="confirm-cancel-btn" class="btn" style="padding:10px;font-size:12px;font-weight:600">✕ Cancelar</button>
-              <button id="confirm-execute-btn" class="btn btng" style="padding:10px;font-size:12px;font-weight:600">📡 Ejecutar ahora</button>
+              <button id="confirm-execute-btn" class="btn btng" style="padding:10px;font-size:12px;font-weight:600"
+                ${corrBlocked ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>
+                📡 Ejecutar ahora
+              </button>
             </div>
           </div>
         </div>
@@ -478,12 +541,30 @@ function showTradeConfirmModal(trade) {
 
     document.body.appendChild(div);
 
-    const close = (result) => { div.remove(); resolve(result); };
+    // Actualizar precio en tiempo real mientras el modal está abierto
+    let priceInterval = setInterval(() => {
+      const newPrice    = state.prices[coin];
+      if (!newPrice) return;
+      const newDrift    = Math.abs(newPrice - trade.entrada) / trade.entrada * 100;
+      const liveEl      = div.querySelector('#modal-live-price');
+      if (liveEl) liveEl.textContent = (newPrice > trade.entrada ? '▲ ' : '▼ ') + fmtP(newPrice, coin);
+    }, 2000);
+
+    const close = (result) => {
+      clearInterval(priceInterval);
+      div.remove();
+      resolve(result);
+    };
+
     document.getElementById('confirm-cancel-btn').onclick  = () => close(false);
-    document.getElementById('confirm-execute-btn').onclick = () => close(true);
-    // Click fuera del modal = cancelar
+    if (!corrBlocked) {
+      document.getElementById('confirm-execute-btn').onclick = () => close(true);
+    }
     div.querySelector('div[style*="inset:0"]').addEventListener('click', e => {
       if (e.target === e.currentTarget) close(false);
+    });
+    document.addEventListener('keydown', function onKey(e) {
+      if (e.key === 'Escape') { close(false); document.removeEventListener('keydown', onKey); }
     });
   });
 }
@@ -1422,8 +1503,8 @@ function renderGoals() {
   const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
   const activePnl = state.activeTrades.reduce((acc,t) => {
     const p = state.prices[coinOf(t.par)] || t.entrada;
-    // CORRECCIÓN: sin × lev
-    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size : (t.entrada-p)*t.size);
+    const lev = t.leverage||1;
+    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size*lev : (t.entrada-p)*t.size*lev);
   }, 0);
   const totalPnl = closedPnl + activePnl;
   const capital  = state.profile.capital;

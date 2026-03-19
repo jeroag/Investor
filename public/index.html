@@ -1,6 +1,9 @@
 <!doctype html>
 <html lang="es">
 
+<!doctype html>
+<html lang="es">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -86,6 +89,7 @@
       <div class="ns">Análisis</div>
       <button class="nb" data-tab="diary">📓 Diario</button>
       <button class="nb" data-tab="historial">📈 Historial</button>
+      <button class="nb" data-tab="backtest">🔬 Backtest</button>
       <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
       <button class="nb" data-tab="goals">🎯 Objetivos</button>
 
@@ -109,6 +113,7 @@
       <div id="sec-mkt" class="sec"></div>
       <div id="sec-diary" class="sec"></div>
       <div id="sec-historial" class="sec"></div>
+      <div id="sec-backtest" class="sec"></div>
       <div id="sec-strat" class="sec"></div>
       <div id="sec-goals" class="sec"></div>
       <div id="sec-config" class="sec"></div>
@@ -134,6 +139,7 @@
   <script src="js/ui-ops.js" defer></script>
   <script src="js/ui-analysis.js" defer></script>
   <script src="js/ui-config.js" defer></script>
+  <script src="js/backtester.js" defer></script>
   <script src="js/app-init.js" defer></script>
 
   <!-- Sidebar toggle (no deps needed, runs immediately) -->

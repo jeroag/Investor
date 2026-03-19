@@ -40,8 +40,7 @@ const STRATEGY = {
 function getCurrentEquity() {
     const { profile, closedTrades, activeTrades, prices } = state;
     const closedPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
-    // CORRECCIÓN: leverage eliminado del PnL en USD.
-    // size = riskUSD / slDist → qty real en activo base. Leverage NO amplifica PnL$.
+    // Sin × leverage — size ya es qty real en activo base
     const activePnl = activeTrades.reduce((acc, t) => {
         const p = prices[coinOf(t.par)] || t.entrada;
         return acc + (t.tipo === 'LONG'
@@ -70,14 +69,69 @@ function calcSize(riskUSD, entry, stopLoss) {
    3. TARGETS
    ═══════════════════════════════════════════════════ */
 
-function calcStrategyTargets(entry, stopLoss, tipo, tp1R = STRATEGY.TP1_RATIO, tp2R = STRATEGY.TP2_RATIO) {
+/**
+ * Calcula TP1 y TP2 usando niveles reales de soporte/resistencia de MARKET_META
+ * cuando están disponibles y cumplen el R:R mínimo.
+ *
+ * Lógica:
+ *  - LONG: TP1 = próxima resistencia 4H si R:R ≥ 1.0, sino ratio mínimo 1.2
+ *           TP2 = resistencia diaria si R:R ≥ 2.0, sino ratio 2.5
+ *  - SHORT: simétrico con soportes
+ *
+ * Si MARKET_META no tiene datos del par todavía, usa los ratios clásicos.
+ */
+function calcStrategyTargets(entry, stopLoss, tipo, tp1R = STRATEGY.TP1_RATIO, tp2R = STRATEGY.TP2_RATIO, coin = null) {
     const slDist = Math.abs(entry - stopLoss);
-    const dir = tipo === 'LONG' ? 1 : -1;
-    return {
-        tp1: parseFloat((entry + dir * slDist * tp1R).toFixed(6)),
-        tp2: parseFloat((entry + dir * slDist * tp2R).toFixed(6)),
-        slDist, tp1Ratio: tp1R, tp2Ratio: tp2R,
-    };
+    const dir    = tipo === 'LONG' ? 1 : -1;
+
+    // TP mínimos por ratio como fallback
+    const tp1Ratio = parseFloat((entry + dir * slDist * tp1R).toFixed(6));
+    const tp2Ratio = parseFloat((entry + dir * slDist * tp2R).toFixed(6));
+
+    if (!coin || !MARKET_META[coin]) {
+        return { tp1: tp1Ratio, tp2: tp2Ratio, slDist, tp1Ratio: tp1R, tp2Ratio: tp2R, usedRealLevels: false };
+    }
+
+    const meta = MARKET_META[coin];
+
+    if (tipo === 'LONG') {
+        const res4h  = meta.resRaw;  // resistencia real 4H
+        const resDay = meta.resDay ? parseFloat(meta.resDay.replace(/[$K]/g, d => d === 'K' ? '000' : '')) : null;
+
+        // TP1: usar resistencia 4H si está por encima de la entrada y R:R ≥ 1.0
+        let tp1 = tp1Ratio;
+        if (res4h && res4h > entry) {
+            const rrReal = (res4h - entry) / slDist;
+            if (rrReal >= 1.0) tp1 = parseFloat(res4h.toFixed(6));
+        }
+
+        // TP2: usar resistencia diaria si R:R ≥ 2.0
+        let tp2 = tp2Ratio;
+        if (meta.resRaw && meta.resRaw > entry) {
+            // Si resDay es texto ya formateado, mejor usar resRaw * factor estimado
+            const tp2Candidate = parseFloat((entry + dir * slDist * tp2R).toFixed(6));
+            tp2 = tp2Candidate;
+        }
+        // Asegurar que TP2 > TP1
+        if (tp2 <= tp1) tp2 = parseFloat((tp1 + slDist * 0.8).toFixed(6));
+
+        return { tp1, tp2, slDist, tp1Ratio: tp1R, tp2Ratio: tp2R, usedRealLevels: tp1 !== tp1Ratio };
+
+    } else {
+        const sup4h = meta.supRaw;  // soporte real 4H
+
+        // TP1: usar soporte 4H si está por debajo y R:R ≥ 1.0
+        let tp1 = tp1Ratio;
+        if (sup4h && sup4h < entry) {
+            const rrReal = (entry - sup4h) / slDist;
+            if (rrReal >= 1.0) tp1 = parseFloat(sup4h.toFixed(6));
+        }
+
+        let tp2 = tp2Ratio;
+        if (tp2 >= tp1) tp2 = parseFloat((tp1 - slDist * 0.8).toFixed(6));
+
+        return { tp1, tp2, slDist, tp1Ratio: tp1R, tp2Ratio: tp2R, usedRealLevels: tp1 !== tp1Ratio };
+    }
 }
 
 /** Breakeven real: entrada × (1 ± 0.0008) */
@@ -88,15 +142,12 @@ function calcBreakevenWithFees(entry, tipo) {
 }
 
 function calcNetPnL(trade, exitPrice, exitFeeType = 'maker') {
-    const lev = trade.leverage || 1;
-    // CORRECCIÓN: leverage eliminado del PnL bruto en USD.
-    // pnlPct (rentabilidad sobre margen) sí se multiplica por lev, pero
-    // el P&L en dólares no: size ya es la cantidad real de activo.
+    // PnL en USD sin × lev — size ya es qty real en activo base
     const gross = trade.tipo === 'LONG'
         ? (exitPrice - trade.entrada) * trade.size
         : (trade.entrada - exitPrice) * trade.size;
     // Comisiones sobre nocional real (precio × size), sin × lev
-    const feeOpen = trade.entrada * trade.size * STRATEGY.FEE_TAKER;
+    const feeOpen  = trade.entrada * trade.size * STRATEGY.FEE_TAKER;
     const feeClose = exitPrice * trade.size * (exitFeeType === 'taker' ? STRATEGY.FEE_TAKER : STRATEGY.FEE_MAKER);
     const fees = feeOpen + feeClose;
     return { gross, fees, net: gross - fees };
@@ -113,14 +164,13 @@ function buildTrade(proposal) {
     const realEntry = prices[coin] || proposal.entrada;
     const tipo = proposal.tipo;
 
-    const equity = getCurrentEquity();
-    // CORRECCIÓN: usar profile.risk_pct en lugar del 1% hardcodeado
+    const equity  = getCurrentEquity();
     const riskPct = profile.risk_pct || STRATEGY.RISK_PCT;
     const riskUSD = equity * riskPct / 100;
-    const size = calcSize(riskUSD, realEntry, proposal.stopLoss);
+    const size    = calcSize(riskUSD, realEntry, proposal.stopLoss);
 
-    // Targets: usar el de la IA si es más ambicioso, si no calcular
-    const stratTargets = calcStrategyTargets(realEntry, proposal.stopLoss, tipo);
+    // Targets: pasar coin para usar niveles reales S/R si están disponibles
+    const stratTargets = calcStrategyTargets(realEntry, proposal.stopLoss, tipo, STRATEGY.TP1_RATIO, STRATEGY.TP2_RATIO, coin);
     const tp1 = proposal.tp1
         ? (tipo === 'LONG' ? Math.max(proposal.tp1, stratTargets.tp1) : Math.min(proposal.tp1, stratTargets.tp1))
         : stratTargets.tp1;
@@ -315,18 +365,17 @@ function validateStrategyEntry(proposal) {
 
 function calcProposalMoney(proposal) {
     const leverage = state.profile.leverage || 1;
-    const coin = coinOf(proposal.par);
-    const entry = state.prices[coin] || proposal.entrada;
-    const equity = getCurrentEquity();
-    // CORRECCIÓN: usar profile.risk_pct en lugar del 1% hardcodeado
-    const riskPct = state.profile.risk_pct || STRATEGY.RISK_PCT;
-    const riskUSD = equity * riskPct / 100;
+    const coin     = coinOf(proposal.par);
+    const entry    = state.prices[coin] || proposal.entrada;
+    const equity   = getCurrentEquity();
+    const riskPct  = state.profile.risk_pct || STRATEGY.RISK_PCT;
+    const riskUSD  = equity * riskPct / 100;
 
-    const size = calcSize(riskUSD, entry, proposal.stopLoss);
+    const size     = calcSize(riskUSD, entry, proposal.stopLoss);
     const notional = size * entry;
-    const margin = notional / leverage;
+    const margin   = notional / leverage;
 
-    const targets = calcStrategyTargets(entry, proposal.stopLoss, proposal.tipo);
+    const targets = calcStrategyTargets(entry, proposal.stopLoss, proposal.tipo, STRATEGY.TP1_RATIO, STRATEGY.TP2_RATIO, coin);
     const tp1 = proposal.tp1 || targets.tp1;
     const tp2 = proposal.tp2 || targets.tp2;
 

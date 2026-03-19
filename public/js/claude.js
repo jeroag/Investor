@@ -60,10 +60,15 @@ function parseJSON(raw) {
 
 /* ── Contexto técnico completo para prompts ──────────────────────────────── */
 function buildTechContext() {
-  const btcMeta = MARKET_META['BTC'];
+  return buildTechContextForCoins(state.watchedCoins);
+}
+
+/** Versión parametrizada — permite pasar solo los coins pre-filtrados */
+function buildTechContextForCoins(coins) {
+  const btcMeta  = MARKET_META['BTC'];
   const btcTrend = btcMeta ? `BTC tendencia macro: ${btcMeta.macroTrend} (RSI 1D: ${btcMeta.rsi1d})` : '';
 
-  const lines = state.watchedCoins.map(coin => {
+  const lines = coins.map(coin => {
     const meta  = MARKET_META[coin];
     const price = state.prices[coin];
     if (!meta || !price) return null;
@@ -195,10 +200,36 @@ Responde SOLO JSON sin markdown:
 
 async function aiScanMarket() {
   const { profile, strategy, alerts, activeTrades } = state;
-  const techCtx      = buildTechContext();
   const tradeHistory = buildTradeHistory();
   const recentAlerts = alerts.slice(0, 5).map(a => `${a.par} ${a.tipo} entrada=${a.entrada} (${a.timestamp})`).join(' | ');
   const feasibleCtx  = buildFeasibleCoinsContext();
+
+  // ── PRE-FILTRO: solo enviar a Claude los pares con señal técnica real ──────
+  // Reduce tokens, mejora precisión. Criterios (al menos 2 de 3):
+  //   1. RSI < 35 o RSI > 65 (zona extrema)
+  //   2. Volumen > 1.0× media (confirma el movimiento)
+  //   3. Precio cerca de S/R (dentro del 1%)
+  const preFilteredCoins = state.watchedCoins.filter(coin => {
+    const meta  = MARKET_META[coin];
+    const price = state.prices[coin];
+    if (!meta || !price) return false;
+
+    const rsiExtreme = typeof meta.rsi === 'number' && (meta.rsi < 38 || meta.rsi > 62);
+    const volOk      = meta.vol && meta.vol.ratio >= 1.0;
+    const nearLevel  = (meta.supRaw && Math.abs(price - meta.supRaw) / price < 0.015) ||
+                       (meta.resRaw && Math.abs(price - meta.resRaw) / price < 0.015);
+
+    const signals = [rsiExtreme, volOk, nearLevel].filter(Boolean).length;
+    return signals >= 2;
+  });
+
+  // Si ningún par pasa el filtro, no molestar a Claude — mercado sin señales
+  if (preFilteredCoins.length === 0) {
+    return { hay_oportunidad: false, razon: 'Sin señales técnicas relevantes en ningún par (RSI neutro + volumen bajo + precio alejado de S/R). Mercado en consolidación.' };
+  }
+
+  // Construir contexto técnico solo con los pares pre-filtrados
+  const techCtx = buildTechContextForCoins(preFilteredCoins);
 
   const raw = await callClaude(
     `Eres un escáner de mercado automático. Analiza los datos técnicos AHORA y decide si existe una oportunidad de trading de ALTA CALIDAD.

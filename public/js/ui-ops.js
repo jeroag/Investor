@@ -17,7 +17,7 @@ function renderDashboard() {
   const day  = 86_400_000;
   const week = 7 * day;
 
-  // P&L activo — CORRECCIÓN: sin × leverage en USD
+  // P&L activo
   const activePnl = activeTrades.reduce((acc, t) => {
     const p = prices[coinOf(t.par)] || t.entrada;
     return acc + (t.tipo === 'LONG' ? p - t.entrada : t.entrada - p) * (t.size||0);
@@ -42,7 +42,6 @@ function renderDashboard() {
   const activeCards = activeTrades.map(t => {
     const coin  = coinOf(t.par);
     const price = prices[coin] || t.entrada;
-    // CORRECCIÓN: sin × leverage en PnL USD — size ya es qty real en activo base
     const pnl   = (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size||0);
     const dir   = t.tipo === 'LONG' ? '🟢' : '🔴';
     const pnlColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
@@ -283,11 +282,9 @@ function renderOps() {
     const price    = state.prices[coin] || o.entrada;
     const prev     = state.prevPrices[coin];
     const lev      = o.leverage || 1;
-    // CORRECCIÓN: PnL en USD sin × lev — size ya es qty real en activo base
     const pnl      = o.tipo === 'LONG'
       ? (price - o.entrada) * o.size
       : (o.entrada - price) * o.size;
-    // pnlPct sí incluye lev — representa rentabilidad sobre el margen (display)
     const pnlPct   = o.tipo === 'LONG'
       ? ((price - o.entrada)/o.entrada)*100 * lev
       : ((o.entrada - price)/o.entrada)*100 * lev;
