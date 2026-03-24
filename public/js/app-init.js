@@ -12,25 +12,25 @@ function renderDash() {
   if (!root) return;
 
   const { closedTrades, activeTrades, prices, profile, scannerOn, alerts } = state;
-  const now  = Date.now();
-  const day  = 86_400_000;
+  const now = Date.now();
+  const day = 86_400_000;
   const week = 7 * day;
 
   // ── Métricas generales
-  const totalPnl   = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
-  const totalWins  = closedTrades.filter(t => t.result === 'WIN').length;
-  const winRate    = closedTrades.length > 0 ? ((totalWins / closedTrades.length) * 100).toFixed(0) : '—';
+  const totalPnl = closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const totalWins = closedTrades.filter(t => t.result === 'WIN').length;
+  const winRate = closedTrades.length > 0 ? ((totalWins / closedTrades.length) * 100).toFixed(0) : '—';
 
   // ── Hoy
   const todayTrades = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < day);
-  const todayPnl    = todayTrades.reduce((a, t) => a + (t.pnl || 0), 0);
-  const todayWins   = todayTrades.filter(t => t.result === 'WIN').length;
+  const todayPnl = todayTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const todayWins = todayTrades.filter(t => t.result === 'WIN').length;
 
   // ── Esta semana
-  const weekTrades  = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < week);
-  const weekPnl     = weekTrades.reduce((a, t) => a + (t.pnl || 0), 0);
-  const weekWins    = weekTrades.filter(t => t.result === 'WIN').length;
-  const weekWR      = weekTrades.length > 0 ? ((weekWins / weekTrades.length) * 100).toFixed(0) : '—';
+  const weekTrades = closedTrades.filter(t => (now - new Date(t.closedAt || 0).getTime()) < week);
+  const weekPnl = weekTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const weekWins = weekTrades.filter(t => t.result === 'WIN').length;
+  const weekWR = weekTrades.length > 0 ? ((weekWins / weekTrades.length) * 100).toFixed(0) : '—';
 
   // ── P&L latente (trades abiertos)
   const latentPnl = activeTrades.reduce((sum, t) => {
@@ -49,19 +49,19 @@ function renderDash() {
   // ── Precios top 4
   const topCoins = state.watchedCoins.slice(0, 4);
 
-  const pnlColor  = v => v >= 0 ? 'var(--green)' : 'var(--red)';
-  const fmtPnl    = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+  const pnlColor = v => v >= 0 ? 'var(--green)' : 'var(--red)';
+  const fmtPnl = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
   // Scanner badge con health check
-  const scanLastMs   = state.lastScan ? (Date.now() - new Date(state.lastScan).getTime()) : null;
-  const scanStalled  = scanLastMs && scannerOn && scanLastMs > (state.scanInterval || 15) * 60_000 * 2.5;
-  const scanLastStr  = scanLastMs
-    ? (scanLastMs < 60_000 ? 'hace <1min' : scanLastMs < 3_600_000 ? `hace ${Math.floor(scanLastMs/60_000)}min` : `hace ${Math.floor(scanLastMs/3_600_000)}h`)
+  const scanLastMs = state.lastScan ? (Date.now() - new Date(state.lastScan).getTime()) : null;
+  const scanStalled = scanLastMs && scannerOn && scanLastMs > (state.scanInterval || 15) * 60_000 * 2.5;
+  const scanLastStr = scanLastMs
+    ? (scanLastMs < 60_000 ? 'hace <1min' : scanLastMs < 3_600_000 ? `hace ${Math.floor(scanLastMs / 60_000)}min` : `hace ${Math.floor(scanLastMs / 3_600_000)}h`)
     : null;
   const scanDot = scannerOn
-    ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${scanStalled?'var(--yellow)':'var(--green)'};margin-right:4px;box-shadow:0 0 6px ${scanStalled?'var(--yellow)':'var(--green)'}"></span>`
+    ? `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${scanStalled ? 'var(--yellow)' : 'var(--green)'};margin-right:4px;box-shadow:0 0 6px ${scanStalled ? 'var(--yellow)' : 'var(--green)'}"></span>`
     : '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--muted);margin-right:4px"></span>';
   const scanBadge = scanDot + (scannerOn
-    ? (scanStalled ? `⚠️ POSIBLE FALLO${scanLastStr?' ('+scanLastStr+')':''}` : `ACTIVO${scanLastStr?' · '+scanLastStr:''}`)
+    ? (scanStalled ? `⚠️ POSIBLE FALLO${scanLastStr ? ' (' + scanLastStr + ')' : ''}` : `ACTIVO${scanLastStr ? ' · ' + scanLastStr : ''}`)
     : 'INACTIVO');
 
   root.innerHTML = `
@@ -74,7 +74,7 @@ function renderDash() {
         <div style="flex:1">
           <div style="font-size:13px;font-weight:700;color:var(--red)">Circuit Breaker activo</div>
           <div style="font-size:11px;color:var(--muted);margin-top:2px">
-            Has superado el límite de pérdida diaria de <b style="color:var(--red)">$${Math.abs(profile.daily_loss_limit||0).toFixed(2)}</b>.
+            Has superado el límite de pérdida diaria de <b style="color:var(--red)">$${Math.abs(profile.daily_loss_limit || 0).toFixed(2)}</b>.
             No puedes abrir nuevas operaciones hoy.
           </div>
         </div>
@@ -89,10 +89,10 @@ function renderDash() {
           ${getGreeting()} 👋
         </div>
         <div style="font-size:12px;color:var(--muted);margin-top:2px">
-          ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
+          ${new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}
           &nbsp;·&nbsp; Escáner: ${scanBadge}
           &nbsp;·&nbsp; ${activeTrades.length} trade${activeTrades.length !== 1 ? 's' : ''} abierto${activeTrades.length !== 1 ? 's' : ''}
-          &nbsp;·&nbsp; <span style="font-weight:600;color:${bitunix.configured?'var(--green)':'var(--yellow)'}" title="${bitunix.configured?'Órdenes reales en Bitunix':'Modo simulación — no se ejecutan órdenes reales'}">${bitunix.configured?'🔗 Real':'📋 Paper'}</span>
+          &nbsp;·&nbsp; <span style="font-weight:600;color:${bitunix.configured ? 'var(--green)' : 'var(--yellow)'}" title="${bitunix.configured ? 'Órdenes reales en Bitunix' : 'Modo simulación — no se ejecutan órdenes reales'}">${bitunix.configured ? '🔗 Real' : '📋 Paper'}</span>
         </div>
       </div>
 
@@ -128,14 +128,14 @@ function renderDash() {
         <div class="card">
           <div class="stl" style="margin-bottom:10px">💰 Precios</div>
           ${topCoins.map(coin => {
-            const p    = prices[coin];
-            const meta = MARKET_META[coin] || {};
-            const chg  = meta.change24h;
-            const fmt  = p ? (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6)) : '…';
-            const chgStr = chg != null
-              ? `<span style="font-size:10px;color:${chg>=0?'var(--green)':'var(--red)'}">${chg>=0?'▲ +':'▼ '}${Math.abs(chg).toFixed(2)}%</span>`
-              : '';
-            return `
+    const p = prices[coin];
+    const meta = MARKET_META[coin] || {};
+    const chg = meta.change24h;
+    const fmt = p ? (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6)) : '…';
+    const chgStr = chg != null
+      ? `<span style="font-size:10px;color:${chg >= 0 ? 'var(--green)' : 'var(--red)'}">${chg >= 0 ? '▲ +' : '▼ '}${Math.abs(chg).toFixed(2)}%</span>`
+      : '';
+    return `
               <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
                 <span style="font-size:12px;font-weight:600;color:var(--text)">${coin}</span>
                 <div style="text-align:right">
@@ -143,7 +143,7 @@ function renderDash() {
                   ${chgStr}
                 </div>
               </div>`;
-          }).join('')}
+  }).join('')}
           <button class="btn" style="width:100%;justify-content:center;font-size:10px;margin-top:10px;padding:5px" onclick="setTab('mkt')">
             Ver mercado completo →
           </button>
@@ -153,20 +153,20 @@ function renderDash() {
         <div class="card">
           <div class="stl" style="margin-bottom:10px">🕒 Últimas operaciones</div>
           ${recentTrades.length === 0
-            ? '<div style="font-size:11px;color:var(--muted);text-align:center;padding:20px 0">Sin operaciones cerradas</div>'
-            : recentTrades.map(t => {
-                const emoji = t.result === 'WIN' ? '✅' : '❌';
-                const pnl   = t.pnl != null ? (t.pnl >= 0 ? '+$' + t.pnl.toFixed(2) : '-$' + Math.abs(t.pnl).toFixed(2)) : '?';
-                return `
+      ? '<div style="font-size:11px;color:var(--muted);text-align:center;padding:20px 0">Sin operaciones cerradas</div>'
+      : recentTrades.map(t => {
+        const emoji = t.result === 'WIN' ? '✅' : '❌';
+        const pnl = t.pnl != null ? (t.pnl >= 0 ? '+$' + t.pnl.toFixed(2) : '-$' + Math.abs(t.pnl).toFixed(2)) : '?';
+        return `
                   <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
                     <div>
                       <span style="font-size:11px;font-weight:600;color:var(--text)">${emoji} ${t.par}</span>
                       <span style="font-size:10px;color:var(--muted);margin-left:4px">${t.tipo}</span>
                     </div>
-                    <span style="font-size:11px;font-weight:700;color:${t.pnl>=0?'var(--green)':'var(--red)'}">${pnl}</span>
+                    <span style="font-size:11px;font-weight:700;color:${t.pnl >= 0 ? 'var(--green)' : 'var(--red)'}">${pnl}</span>
                   </div>`;
-              }).join('')
-          }
+      }).join('')
+    }
           <button class="btn" style="width:100%;justify-content:center;font-size:10px;margin-top:10px;padding:5px" onclick="setTab('historial')">
             Ver historial completo →
           </button>
@@ -191,7 +191,7 @@ function renderDash() {
 
 function getGreeting() {
   const h = new Date().getHours();
-  if (h < 6)  return 'Buenas noches';
+  if (h < 6) return 'Buenas noches';
   if (h < 12) return 'Buenos días';
   if (h < 20) return 'Buenas tardes';
   return 'Buenas noches';
@@ -218,16 +218,16 @@ function setTab(id) {
   qsa('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + id));
 
   const renders = {
-    dash:     renderDash,
-    diary:    renderDiary,
-    ops:      renderOps,
-    alerts:   renderAlerts,
-    historial:renderHistorial,
+    dash: renderDash,
+    diary: renderDiary,
+    ops: renderOps,
+    alerts: renderAlerts,
+    historial: renderHistorial,
     backtest: renderBacktester,
-    mkt:      renderMkt,
-    strat:    renderStrategy,
-    config:   renderConfig,
-    goals:    renderGoals,
+    mkt: renderMkt,
+    strat: renderStrategy,
+    config: renderConfig,
+    goals: renderGoals,
   };
   if (renders[id]) renders[id]();
 }
@@ -237,8 +237,8 @@ function closeTradeAtMarket(tradeId) {
   const trade = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
 
-  const coin      = coinOf(trade.par);
-  const mktPrice  = state.prices[coin] || trade.entrada;
+  const coin = coinOf(trade.par);
+  const mktPrice = state.prices[coin] || trade.entrada;
 
   // Mostrar mini-modal de cierre
   const existing = qs('#close-price-modal');
@@ -282,19 +282,19 @@ function closeTradeAtMarket(tradeId) {
   const priceInput = qs('#cpm-price');
   function updatePreview() {
     const exitPrice = parseFloat(priceInput.value) || mktPrice;
-    const lev  = trade.leverage || 1;
-    const pnl  = trade.tipo === 'LONG'
+    const lev = trade.leverage || 1;
+    const pnl = trade.tipo === 'LONG'
       ? (exitPrice - trade.entrada) * trade.size
       : (trade.entrada - exitPrice) * trade.size;
-    const pct  = trade.tipo === 'LONG'
+    const pct = trade.tipo === 'LONG'
       ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
     // Comisiones sobre nocional real (precio × size), sin × leverage
-    const feesOpen  = trade.entrada * trade.size * 0.0006;
+    const feesOpen = trade.entrada * trade.size * 0.0006;
     const feesClose = exitPrice * trade.size * 0.0006;
     const totalFees = feesOpen + feesClose;
-    const netPnl    = pnl - totalFees;
-    const color     = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const netPnl = pnl - totalFees;
+    const color = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
     const grossColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     qs('#cpm-preview').innerHTML = `
       <div style="display:flex;justify-content:space-between;margin-bottom:5px">
@@ -315,20 +315,20 @@ function closeTradeAtMarket(tradeId) {
 }
 
 function confirmCloseWithPrice(tradeId) {
-  const trade     = state.activeTrades.find(t => t.id === tradeId);
+  const trade = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
-  const coin      = coinOf(trade.par);
+  const coin = coinOf(trade.par);
   const exitPrice = parseFloat(qs('#cpm-price')?.value) || state.prices[coin] || trade.entrada;
-  const notes     = qs('#cpm-notes')?.value?.trim() || '';
-  const lev       = trade.leverage || 1;
-  const rawPnl    = trade.tipo === 'LONG'
+  const notes = qs('#cpm-notes')?.value?.trim() || '';
+  const lev = trade.leverage || 1;
+  const rawPnl = trade.tipo === 'LONG'
     ? (exitPrice - trade.entrada) * trade.size
     : (trade.entrada - exitPrice) * trade.size;
-  const feesOpen  = trade.entrada * trade.size * 0.0006;
+  const feesOpen = trade.entrada * trade.size * 0.0006;
   const feesClose = exitPrice * trade.size * 0.0006;
   const totalFees = feesOpen + feesClose;
-  const netPnl    = rawPnl - totalFees;
-  const result    = netPnl >= 0 ? 'WIN' : 'LOSS';
+  const netPnl = rawPnl - totalFees;
+  const result = netPnl >= 0 ? 'WIN' : 'LOSS';
 
   const idx = state.activeTrades.findIndex(t => t.id === tradeId);
   if (idx === -1) return;
@@ -390,39 +390,39 @@ function showTradeConfirmModal(trade) {
     if (existing) existing.remove();
 
     const coin = coinOf(trade.par);
-    const lc   = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const lc = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
 
     // ── MEJORA: precio actualizado en tiempo real al abrir el modal ──────────
     // Si el precio se ha movido >0.2% desde la propuesta, advertir y
     // recalcular el R:R para que el trader sepa exactamente a qué entra.
-    const livePrice     = state.prices[coin] || trade.entrada;
-    const priceDrift    = Math.abs(livePrice - trade.entrada) / trade.entrada * 100;
-    const hasDrift      = priceDrift > 0.2;
-    const driftDir      = livePrice > trade.entrada ? '▲' : '▼';
-    const driftColor    = hasDrift ? 'var(--yellow)' : 'var(--green)';
+    const livePrice = state.prices[coin] || trade.entrada;
+    const priceDrift = Math.abs(livePrice - trade.entrada) / trade.entrada * 100;
+    const hasDrift = priceDrift > 0.2;
+    const driftDir = livePrice > trade.entrada ? '▲' : '▼';
+    const driftColor = hasDrift ? 'var(--yellow)' : 'var(--green)';
 
     // Recalcular R:R con el precio actual
-    const slDistLive    = Math.abs(livePrice - trade.stopLoss);
-    const tp1DistLive   = Math.abs(trade.tp1 - livePrice);
-    const rrLive        = slDistLive > 0 ? (tp1DistLive / slDistLive).toFixed(2) : trade.rr;
-    const rrOk          = parseFloat(rrLive) >= 2.0;
+    const slDistLive = Math.abs(livePrice - trade.stopLoss);
+    const tp1DistLive = Math.abs(trade.tp1 - livePrice);
+    const rrLive = slDistLive > 0 ? (tp1DistLive / slDistLive).toFixed(2) : trade.rr;
+    const rrOk = parseFloat(rrLive) >= 2.0;
 
     // Usar el precio live para los cálculos financieros del modal
     const tradeWithLive = { ...trade, entrada: livePrice };
-    const money         = calcProposalMoney(tradeWithLive);
-    const tpLabel       = trade.tp2
+    const money = calcProposalMoney(tradeWithLive);
+    const tpLabel = trade.tp2
       ? `TP1 🎯 ${fmtP(trade.tp1, coin)} → TP2 ${fmtP(trade.tp2, coin)}`
       : `TP1 🎯 ${fmtP(trade.tp1, coin)}`;
 
     // ── MEJORA: bloqueo de correlaciones (no solo warning) ──────────────────
     // Si ya hay 3+ posiciones correlacionadas del mismo lado → bloquear.
-    const CORR_COINS  = ['BTC','ETH','SOL','BNB','AVAX','LINK'];
-    const corrTrades  = state.activeTrades.filter(t =>
+    const CORR_COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'AVAX', 'LINK'];
+    const corrTrades = state.activeTrades.filter(t =>
       t.tipo === trade.tipo && CORR_COINS.includes(coinOf(t.par))
     );
     const corrBlocked = corrTrades.length >= 3;
     const corrWarning = corrTrades.length >= 1 && !corrBlocked;
-    const corrRisk    = corrTrades.reduce((a, t) => a + (t.riskUSD || 0), 0);
+    const corrRisk = corrTrades.reduce((a, t) => a + (t.riskUSD || 0), 0);
 
     const div = document.createElement('div');
     div.id = 'trade-confirm-modal';
@@ -509,17 +509,17 @@ function showTradeConfirmModal(trade) {
               <div style="font-size:12px;font-weight:700;color:var(--red);margin-bottom:4px">🛑 Límite de correlación alcanzado</div>
               <div style="font-size:11px;color:var(--text);line-height:1.5">
                 Ya tienes ${corrTrades.length} posiciones ${trade.tipo} en activos correlacionados
-                (${corrTrades.map(t=>coinOf(t.par)).join(', ')}) con un riesgo acumulado de $${corrRisk.toFixed(2)}.
+                (${corrTrades.map(t => coinOf(t.par)).join(', ')}) con un riesgo acumulado de $${corrRisk.toFixed(2)}.
                 Máximo 3 posiciones correlacionadas simultáneas. Cierra alguna antes de abrir esta.
               </div>
             </div>` : corrWarning ? `
             <div style="padding:10px 14px;border-radius:8px;border:1px solid rgba(245,197,66,.3);background:rgba(245,197,66,.06);margin-bottom:12px">
               <div style="font-size:11px;font-weight:600;color:var(--yellow);margin-bottom:3px">⚠️ ${corrTrades.length} posición(es) correlacionada(s) activa(s)</div>
-              <div style="font-size:10px;color:var(--muted)">${corrTrades.map(t=>coinOf(t.par)).join(', ')} — Riesgo acumulado: $${corrRisk.toFixed(2)}</div>
+              <div style="font-size:10px;color:var(--muted)">${corrTrades.map(t => coinOf(t.par)).join(', ')} — Riesgo acumulado: $${corrRisk.toFixed(2)}</div>
             </div>` : ''}
 
             ${money.warnings.filter(w => !w.includes('Posición')).length ? `
-            <div style="margin-bottom:12px">${money.warnings.filter(w=>!w.includes('Posición')).map(w=>`<div style="font-size:11px;color:var(--red);padding:2px 0">${w}</div>`).join('')}</div>` : ''}
+            <div style="margin-bottom:12px">${money.warnings.filter(w => !w.includes('Posición')).map(w => `<div style="font-size:11px;color:var(--red);padding:2px 0">${w}</div>`).join('')}</div>` : ''}
 
             <!-- Aviso legal -->
             <div style="font-size:10px;color:var(--muted);padding:8px 12px;background:rgba(255,200,0,.05);border:1px solid rgba(255,200,0,.15);border-radius:6px;margin-bottom:14px;line-height:1.5">
@@ -543,10 +543,10 @@ function showTradeConfirmModal(trade) {
 
     // Actualizar precio en tiempo real mientras el modal está abierto
     let priceInterval = setInterval(() => {
-      const newPrice    = state.prices[coin];
+      const newPrice = state.prices[coin];
       if (!newPrice) return;
-      const newDrift    = Math.abs(newPrice - trade.entrada) / trade.entrada * 100;
-      const liveEl      = div.querySelector('#modal-live-price');
+      const newDrift = Math.abs(newPrice - trade.entrada) / trade.entrada * 100;
+      const liveEl = div.querySelector('#modal-live-price');
       if (liveEl) liveEl.textContent = (newPrice > trade.entrada ? '▲ ' : '▼ ') + fmtP(newPrice, coin);
     }, 2000);
 
@@ -556,7 +556,7 @@ function showTradeConfirmModal(trade) {
       resolve(result);
     };
 
-    document.getElementById('confirm-cancel-btn').onclick  = () => close(false);
+    document.getElementById('confirm-cancel-btn').onclick = () => close(false);
     if (!corrBlocked) {
       document.getElementById('confirm-execute-btn').onclick = () => close(true);
     }
@@ -572,8 +572,8 @@ function showTradeConfirmModal(trade) {
 function checkCircuitBreaker() {
   const limit = parseFloat(state.profile.daily_loss_limit) || 0;
   if (!limit) return false;
-  const now        = Date.now();
-  const todayLoss  = state.closedTrades
+  const now = Date.now();
+  const todayLoss = state.closedTrades
     .filter(t => (now - new Date(t.closedAt || 0).getTime()) < 86_400_000)
     .reduce((a, t) => a + (t.pnl || 0), 0);
   if (todayLoss <= -Math.abs(limit)) {
@@ -639,9 +639,9 @@ async function onAcceptProposal(i) {
     }
   } else {
     // Paper trading: mostrar confirmación con el precio actual
-    const coin    = coinOf(trade.par);
+    const coin = coinOf(trade.par);
     const current = state.prices[coin];
-    const dist    = current ? Math.abs((current - trade.entrada) / trade.entrada * 100).toFixed(2) : null;
+    const dist = current ? Math.abs((current - trade.entrada) / trade.entrada * 100).toFixed(2) : null;
     const distTxt = dist ? `<div style="font-size:11px;color:var(--yellow);margin-top:4px">⚠️ Precio actual: ${fmtP(current, coin)} (${dist}% de diferencia con entrada propuesta)</div>` : '';
     const ok = await new Promise(resolve => {
       const ov = document.createElement('div');
@@ -655,7 +655,7 @@ async function onAcceptProposal(i) {
             ${distTxt}
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Stop Loss</span><b style="color:var(--red)">${fmtP(trade.stopLoss, coin)}</b></div>
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Take Profit</span><b style="color:var(--green)">${fmtP(trade.tp1, coin)}</b></div>
-            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Riesgo</span><b style="color:var(--red)">-$${(trade.riskUSD||0).toFixed(2)}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Riesgo</span><b style="color:var(--red)">-$${(trade.riskUSD || 0).toFixed(2)}</b></div>
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">R:R</span><b>${trade.rr}</b></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
@@ -689,9 +689,9 @@ function setScanIntervalVal(m) {
 
 /* ── Onboarding (stub — marca como completado la primera vez) ─────── */
 function showOnboarding() { state.onboarded = true; saveKey('onboarded', true); }
-function onboardNext()    { state.onboarded = true; saveKey('onboarded', true); }
-function onboardBack()    {}
-function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state.profile); syncProfileToServer(); }
+function onboardNext() { state.onboarded = true; saveKey('onboarded', true); }
+function onboardBack() { }
+function setObRisk(v) { state.profile.risk_pct = v; saveKey('profile', state.profile); syncProfileToServer(); }
 
 
 /* ── Header buttons ──────────────────────────────────────────────────────── */
@@ -724,7 +724,7 @@ async function onGenerate() {
     }
 
     state.pending = proposals;
-    state.aiMsg   = { market: data.analisis_mercado, rec: data.recomendacion_ia };
+    state.aiMsg = { market: data.analisis_mercado, rec: data.recomendacion_ia };
     setTab('ops');
     showToast(`✓ IA generó ${proposals.length} propuesta(s) ejecutables con tu capital.`);
   } catch (e) {
@@ -777,18 +777,18 @@ function renderConfig() {
   if (!root) return;
 
   const tabs = [
-    { id: 'perfil',    label: '👤 Perfil' },
-    { id: 'capital',   label: '💰 Capital' },
-    { id: 'sizing',    label: '📐 Sizing' },
-    { id: 'bitunix',   label: '🔗 Bitunix' },
-    { id: 'avanzado',  label: '⚙️ Avanzado' },
+    { id: 'perfil', label: '👤 Perfil' },
+    { id: 'capital', label: '💰 Capital' },
+    { id: 'sizing', label: '📐 Sizing' },
+    { id: 'bitunix', label: '🔗 Bitunix' },
+    { id: 'avanzado', label: '⚙️ Avanzado' },
   ];
   const active = state.configTab || 'perfil';
 
   const tabBar = tabs.map(t => `
     <button onclick="setConfigTab('${t.id}')"
-      style="padding:7px 14px;font-size:11px;border-radius:8px;border:1px solid ${active===t.id?'var(--accent)':'var(--border)'};
-             background:${active===t.id?'var(--accent)':'var(--s2)'};color:${active===t.id?'#fff':'var(--muted)'};
+      style="padding:7px 14px;font-size:11px;border-radius:8px;border:1px solid ${active === t.id ? 'var(--accent)' : 'var(--border)'};
+             background:${active === t.id ? 'var(--accent)' : 'var(--s2)'};color:${active === t.id ? '#fff' : 'var(--muted)'};
              cursor:pointer;white-space:nowrap;transition:all .15s">
       ${t.label}
     </button>`).join('');
@@ -869,12 +869,12 @@ function renderSizingCalc(root) {
 
 function calcSizing() {
   const capital = parseFloat(qs('#sz-capital')?.value) || 0;
-  const riskPct = parseFloat(qs('#sz-risk')?.value)    || 0;
-  const entry   = parseFloat(qs('#sz-entry')?.value)   || 0;
-  const sl      = parseFloat(qs('#sz-sl')?.value)      || 0;
-  const tp1     = parseFloat(qs('#sz-tp1')?.value)     || 0;
-  const lev     = parseFloat(qs('#sz-lev')?.value)     || 1;
-  const result  = qs('#sizing-result');
+  const riskPct = parseFloat(qs('#sz-risk')?.value) || 0;
+  const entry = parseFloat(qs('#sz-entry')?.value) || 0;
+  const sl = parseFloat(qs('#sz-sl')?.value) || 0;
+  const tp1 = parseFloat(qs('#sz-tp1')?.value) || 0;
+  const lev = parseFloat(qs('#sz-lev')?.value) || 1;
+  const result = qs('#sizing-result');
   if (!result) return;
 
   renderSizingTable();
@@ -884,24 +884,24 @@ function calcSizing() {
     return;
   }
 
-  const riskUSD     = capital * riskPct / 100;
-  const slDist      = Math.abs(entry - sl);
-  const slPct       = (slDist / entry) * 100;
+  const riskUSD = capital * riskPct / 100;
+  const slDist = Math.abs(entry - sl);
+  const slPct = (slDist / entry) * 100;
   if (slDist === 0) { result.style.display = 'none'; return; }
 
-  const direction   = entry > sl ? 'LONG' : 'SHORT';
-  const qty         = riskUSD / slDist;               // unidades sin apalancamiento
-  const posSize     = qty * entry;                    // valor nocional sin lev
-  const margin      = posSize / lev;                  // margen requerido
-  const rr          = tp1 > 0 ? (Math.abs(tp1 - entry) / slDist).toFixed(2) : null;
-  const potGain     = tp1 > 0 ? (Math.abs(tp1 - entry) * qty).toFixed(2) : null;
-  const feeOpen     = posSize * 0.0006;
-  const feeClose    = posSize * 0.0006;
-  const totalFees   = feeOpen + feeClose;
-  const netRisk     = riskUSD + totalFees;
+  const direction = entry > sl ? 'LONG' : 'SHORT';
+  const qty = riskUSD / slDist;               // unidades sin apalancamiento
+  const posSize = qty * entry;                    // valor nocional sin lev
+  const margin = posSize / lev;                  // margen requerido
+  const rr = tp1 > 0 ? (Math.abs(tp1 - entry) / slDist).toFixed(2) : null;
+  const potGain = tp1 > 0 ? (Math.abs(tp1 - entry) * qty).toFixed(2) : null;
+  const feeOpen = posSize * 0.0006;
+  const feeClose = posSize * 0.0006;
+  const totalFees = feeOpen + feeClose;
+  const netRisk = riskUSD + totalFees;
 
   const colors = {
-    LONG:  'var(--green)',
+    LONG: 'var(--green)',
     SHORT: 'var(--red)',
   };
 
@@ -936,16 +936,16 @@ function szKpi(label, value, color, sub) {
 }
 
 function renderSizingTable() {
-  const tbody   = qs('#sizing-table-body');
+  const tbody = qs('#sizing-table-body');
   if (!tbody) return;
   const capital = parseFloat(qs('#sz-capital')?.value) || state.profile.capital;
-  const risks   = [0.5, 1, 1.5, 2, 3, 5];
+  const risks = [0.5, 1, 1.5, 2, 3, 5];
   tbody.innerHTML = risks.map(r => {
-    const rUSD    = (capital * r / 100);
-    const pos1x   = rUSD.toFixed(2);
-    const pos5x   = (rUSD * 5).toFixed(2);
-    const pos10x  = (rUSD * 10).toFixed(2);
-    const color   = r <= 1 ? 'var(--green)' : r <= 3 ? 'var(--yellow)' : 'var(--red)';
+    const rUSD = (capital * r / 100);
+    const pos1x = rUSD.toFixed(2);
+    const pos5x = (rUSD * 5).toFixed(2);
+    const pos10x = (rUSD * 10).toFixed(2);
+    const color = r <= 1 ? 'var(--green)' : r <= 3 ? 'var(--yellow)' : 'var(--red)';
     return `
       <tr style="border-bottom:1px solid var(--border)${r === state.profile.risk_pct ? ';background:rgba(108,99,255,.08)' : ''}">
         <td style="padding:6px 10px;color:${color};font-weight:600">${r}%</td>
@@ -1086,10 +1086,10 @@ function setConfigTab(tabId) {
 function renderConfigTabContent(tab) {
   const root = qs('#config-tab-content');
   if (!root) return;
-  if (tab === 'perfil')   { root.innerHTML = '<div id="sec-profile"></div>'; renderProfile(); }
-  if (tab === 'capital')  { root.innerHTML = '<div id="sec-capital"></div>'; renderCapital(); }
-  if (tab === 'sizing')   { renderSizingCalc(root); }
-  if (tab === 'bitunix')  { renderConfigBitunix(root); }
+  if (tab === 'perfil') { root.innerHTML = '<div id="sec-profile"></div>'; renderProfile(); }
+  if (tab === 'capital') { root.innerHTML = '<div id="sec-capital"></div>'; renderCapital(); }
+  if (tab === 'sizing') { renderSizingCalc(root); }
+  if (tab === 'bitunix') { renderConfigBitunix(root); }
   if (tab === 'avanzado') { renderConfigAvanzado(root); }
 }
 
@@ -1100,14 +1100,14 @@ function renderAll() {
   updateAlertBadge();
 
   const id = state.currentTab;
-  if (id === 'ops')       renderOps();
-  if (id === 'alerts')    renderAlerts();
+  if (id === 'ops') renderOps();
+  if (id === 'alerts') renderAlerts();
   if (id === 'historial') renderHistorial();
-  if (id === 'mkt')       renderMkt();
-  if (id === 'strat')     renderStrategy();
-  if (id === 'config')    renderConfig();
-  if (id === 'goals')     renderGoals();
-  if (id === 'diary')     renderDiary();
+  if (id === 'mkt') renderMkt();
+  if (id === 'strat') renderStrategy();
+  if (id === 'config') renderConfig();
+  if (id === 'goals') renderGoals();
+  if (id === 'diary') renderDiary();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1141,11 +1141,11 @@ function toggleReadOnly() {
 function updateReadOnlyBadge() {
   const badge = qs('#ro-badge');
   if (!badge) return;
-  badge.textContent  = state.readOnlyMode ? '👁️ Solo lectura' : '✏️ Editar';
-  badge.title        = state.readOnlyMode ? 'Modo solo lectura activo — click para desactivar' : 'Click para activar solo lectura';
+  badge.textContent = state.readOnlyMode ? '👁️ Solo lectura' : '✏️ Editar';
+  badge.title = state.readOnlyMode ? 'Modo solo lectura activo — click para desactivar' : 'Click para activar solo lectura';
   badge.style.background = state.readOnlyMode ? 'rgba(251,191,36,.15)' : 'var(--s2)';
-  badge.style.color      = state.readOnlyMode ? 'var(--yellow)' : 'var(--muted)';
-  badge.style.border     = state.readOnlyMode ? '1px solid rgba(251,191,36,.4)' : '1px solid var(--border)';
+  badge.style.color = state.readOnlyMode ? 'var(--yellow)' : 'var(--muted)';
+  badge.style.border = state.readOnlyMode ? '1px solid rgba(251,191,36,.4)' : '1px solid var(--border)';
   // Deshabilitar botón generar
   const genBtn = qs('#btn-gen');
   if (genBtn) genBtn.disabled = state.readOnlyMode || state.wsStatus !== 'live';
@@ -1165,8 +1165,8 @@ function calcSRZones(highs, lows, closes, tolerance = 0.015) {
   const swingH = [], swingL = [];
   const n = Math.min(closes.length - 2, 100);
   for (let i = 1; i < n; i++) {
-    if (highs[i] > highs[i-1] && highs[i] > highs[i+1]) swingH.push(highs[i]);
-    if (lows[i]  < lows[i-1]  && lows[i]  < lows[i+1])  swingL.push(lows[i]);
+    if (highs[i] > highs[i - 1] && highs[i] > highs[i + 1]) swingH.push(highs[i]);
+    if (lows[i] < lows[i - 1] && lows[i] < lows[i + 1]) swingL.push(lows[i]);
   }
 
   function clusterLevels(levels) {
@@ -1176,12 +1176,12 @@ function calcSRZones(highs, lows, closes, tolerance = 0.015) {
       if (existing) { existing.touches++; existing.level = (existing.level + l) / 2; }
       else clusters.push({ level: l, touches: 1 });
     });
-    return clusters.filter(c => c.touches >= 1).sort((a,b) => b.touches - a.touches);
+    return clusters.filter(c => c.touches >= 1).sort((a, b) => b.touches - a.touches);
   }
 
   const price = closes[closes.length - 1];
-  const supZones = clusterLevels(swingL).filter(z => z.level < price).sort((a,b) => b.level - a.level);
-  const resZones = clusterLevels(swingH).filter(z => z.level > price).sort((a,b) => a.level - b.level);
+  const supZones = clusterLevels(swingL).filter(z => z.level < price).sort((a, b) => b.level - a.level);
+  const resZones = clusterLevels(swingH).filter(z => z.level > price).sort((a, b) => a.level - b.level);
 
   return {
     sup1: supZones[0] || null,
@@ -1206,19 +1206,19 @@ async function fetchEconomicCalendar() {
     if (!res.ok) throw new Error('no disponible');
     const data = await res.json();
     // Filtrar solo impacto alto y medio, próximas 48h
-    const now  = Date.now();
-    const end  = now + 48 * 3600 * 1000;
+    const now = Date.now();
+    const end = now + 48 * 3600 * 1000;
     calendarData = data
       .filter(e => {
         const ts = new Date(e.date).getTime();
         return ts >= now - 3600000 && ts <= end && (e.impact === 'High' || e.impact === 'Medium');
       })
       .map(e => ({
-        time:     new Date(e.date).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
-        date:     new Date(e.date).toLocaleDateString('es-ES',{weekday:'short',day:'numeric',month:'short'}),
+        time: new Date(e.date).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+        date: new Date(e.date).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }),
         currency: e.currency,
-        title:    e.title,
-        impact:   e.impact,
+        title: e.title,
+        impact: e.impact,
         forecast: e.forecast || '—',
         previous: e.previous || '—',
       }))
@@ -1235,10 +1235,10 @@ async function fetchEconomicCalendar() {
 function buildCalendarContext() {
   if (calendarData.length === 0) return 'Sin datos de calendario económico disponibles.';
   const high = calendarData.filter(e => e.impact === 'High');
-  const med  = calendarData.filter(e => e.impact === 'Medium');
+  const med = calendarData.filter(e => e.impact === 'Medium');
   const lines = [
-    high.length > 0 ? `⚠️ ALTO IMPACTO próx. 48h: ${high.map(e=>`${e.currency} ${e.title} (${e.date} ${e.time})`).join(' | ')}` : '',
-    med.length  > 0 ? `📋 Medio impacto: ${med.slice(0,3).map(e=>`${e.currency} ${e.title}`).join(' | ')}` : '',
+    high.length > 0 ? `⚠️ ALTO IMPACTO próx. 48h: ${high.map(e => `${e.currency} ${e.title} (${e.date} ${e.time})`).join(' | ')}` : '',
+    med.length > 0 ? `📋 Medio impacto: ${med.slice(0, 3).map(e => `${e.currency} ${e.title}`).join(' | ')}` : '',
   ].filter(Boolean);
   return lines.join('\n') || 'Sin eventos relevantes próximas 48h.';
 }
@@ -1271,7 +1271,7 @@ function renderCalendarSection() {
   root.innerHTML = `
     ${highEvents.length > 0 ? `
     <div style="padding:8px 12px;background:#F4EBEB;border:1px solid #D9BCBC;border-radius:8px;margin-bottom:10px;font-size:11px;color:#8A4A4A">
-      ⚠️ <b>${highEvents.length} evento${highEvents.length>1?'s':''} de ALTO impacto</b> en próximas 48h — considera reducir tamaño de posición
+      ⚠️ <b>${highEvents.length} evento${highEvents.length > 1 ? 's' : ''} de ALTO impacto</b> en próximas 48h — considera reducir tamaño de posición
     </div>` : `
     <div style="padding:7px 12px;background:#E9F4EC;border:1px solid #BCD9C5;border-radius:8px;margin-bottom:10px;font-size:11px;color:#4A7A5A">
       ✓ Sin eventos de alto impacto en próximas 48h
@@ -1293,31 +1293,31 @@ async function refreshCalendar() {
    BACKTESTING VISUAL
    ══════════════════════════════════════════════════════════ */
 const BT_FILTERS = {
-  minRR:   0,
+  minRR: 0,
   minConf: 0,
-  tipo:    'ALL',
-  setup:   '',
-  par:     'ALL',
+  tipo: 'ALL',
+  setup: '',
+  par: 'ALL',
 };
 
-function runBacktest(trades, filters = BT_FILTERS) {
+function runBtFilter(trades, filters = BT_FILTERS) {
   let filtered = trades.filter(t => {
     if (filters.tipo !== 'ALL' && t.tipo !== filters.tipo) return false;
-    if (filters.par  !== 'ALL' && t.par  !== filters.par)  return false;
+    if (filters.par !== 'ALL' && t.par !== filters.par) return false;
     if (filters.minConf > 0 && (t.confianza || 0) < filters.minConf) return false;
-    if (filters.minRR  > 0 && parseFloat(t.rr || 0) < filters.minRR) return false;
+    if (filters.minRR > 0 && parseFloat(t.rr || 0) < filters.minRR) return false;
     if (filters.setup && !(t.setup || '').toLowerCase().includes(filters.setup.toLowerCase())) return false;
     return true;
   });
 
-  const wins   = filtered.filter(t => t.result === 'WIN').length;
+  const wins = filtered.filter(t => t.result === 'WIN').length;
   const losses = filtered.filter(t => t.result === 'LOSS').length;
-  const totalPnl   = filtered.reduce((a,t) => a+(t.pnl||0), 0);
-  const grossWin   = filtered.filter(t=>t.result==='WIN').reduce((a,t)=>a+(t.pnl||0),0);
-  const grossLoss  = Math.abs(filtered.filter(t=>t.result==='LOSS').reduce((a,t)=>a+(t.pnl||0),0));
-  const winRate    = filtered.length > 0 ? (wins/filtered.length*100).toFixed(1) : 0;
-  const pf         = grossLoss > 0 ? (grossWin/grossLoss).toFixed(2) : grossWin > 0 ? '∞' : '0';
-  const avgPnl     = filtered.length > 0 ? (totalPnl/filtered.length).toFixed(2) : 0;
+  const totalPnl = filtered.reduce((a, t) => a + (t.pnl || 0), 0);
+  const grossWin = filtered.filter(t => t.result === 'WIN').reduce((a, t) => a + (t.pnl || 0), 0);
+  const grossLoss = Math.abs(filtered.filter(t => t.result === 'LOSS').reduce((a, t) => a + (t.pnl || 0), 0));
+  const winRate = filtered.length > 0 ? (wins / filtered.length * 100).toFixed(1) : 0;
+  const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? '∞' : '0';
+  const avgPnl = filtered.length > 0 ? (totalPnl / filtered.length).toFixed(2) : 0;
 
   return { filtered, wins, losses, total: filtered.length, totalPnl, winRate, pf, avgPnl };
 }
@@ -1327,30 +1327,30 @@ function renderBacktest() {
   if (!root) return;
 
   const { closedTrades } = state;
-  const allPairs  = [...new Set(closedTrades.map(t => t.par))];
-  const result    = runBacktest(closedTrades, BT_FILTERS);
+  const allPairs = [...new Set(closedTrades.map(t => t.par))];
+  const result = runBtFilter(closedTrades, BT_FILTERS);
 
   // Equity curve del backtest
   let cap = state.profile.capital;
-  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl || 0); return cap; })];
   const maxP = Math.max(...pts), minP = Math.min(...pts);
-  const bars = pts.map((v,i) => {
-    const h = maxP===minP ? 50 : ((v-minP)/(maxP-minP))*85+15;
-    const prev = pts[i-1];
-    const col = !prev ? 'var(--accent)' : v>=prev ? 'var(--green)' : 'var(--red)';
+  const bars = pts.map((v, i) => {
+    const h = maxP === minP ? 50 : ((v - minP) / (maxP - minP)) * 85 + 15;
+    const prev = pts[i - 1];
+    const col = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
     return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
   }).join('');
 
   const tradeRows = result.filtered.slice(0, 30).map(t => `
     <div class="hist-row" style="padding:7px 0">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
+        <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result}</span>
         <span style="font-weight:600">${t.par}</span>
         <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
-        <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
-        <span style="font-size:9px;color:var(--subtle)">${t.closedAt||''}</span>
+        <span style="font-size:10px;color:var(--muted)">R:R ${t.rr || '?'} · ${t.confianza || '?'}% conf</span>
+        <span style="font-size:9px;color:var(--subtle)">${t.closedAt || ''}</span>
       </div>
-      <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+      <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
     </div>`).join('');
 
   root.innerHTML = `
@@ -1373,7 +1373,7 @@ function renderBacktest() {
           <div class="lbl">Par</div>
           <select class="inp" id="bt-par" onchange="applyBtFilter()" style="font-size:12px">
             <option value="ALL">Todos</option>
-            ${allPairs.map(p=>`<option value="${p}">${p}</option>`).join('')}
+            ${allPairs.map(p => `<option value="${p}">${p}</option>`).join('')}
           </select>
         </div>
         <div>
@@ -1395,10 +1395,10 @@ function renderBacktest() {
     <!-- Resultados -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px" id="bt-stats">
       <div class="bt-stat"><div class="bt-stat-lbl">Ops filtradas</div><div class="bt-stat-val" id="bt-total">${result.total}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Win Rate</div><div class="bt-stat-val" style="color:${parseFloat(result.winRate)>=50?'var(--green)':'var(--red)'}" id="bt-wr">${result.winRate}%</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">P&L Total</div><div class="bt-stat-val" style="color:${result.totalPnl>=0?'var(--green)':'var(--red)'}" id="bt-pnl">${fmtUSD(result.totalPnl)}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Profit Factor</div><div class="bt-stat-val" style="color:${parseFloat(result.pf)>=1?'var(--green)':'var(--red)'}" id="bt-pf">${result.pf}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Media/op</div><div class="bt-stat-val" style="color:${parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)'}" id="bt-avg">${fmtUSD(parseFloat(result.avgPnl))}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Win Rate</div><div class="bt-stat-val" style="color:${parseFloat(result.winRate) >= 50 ? 'var(--green)' : 'var(--red)'}" id="bt-wr">${result.winRate}%</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">P&L Total</div><div class="bt-stat-val" style="color:${result.totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}" id="bt-pnl">${fmtUSD(result.totalPnl)}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Profit Factor</div><div class="bt-stat-val" style="color:${parseFloat(result.pf) >= 1 ? 'var(--green)' : 'var(--red)'}" id="bt-pf">${result.pf}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Media/op</div><div class="bt-stat-val" style="color:${parseFloat(result.avgPnl) >= 0 ? 'var(--green)' : 'var(--red)'}" id="bt-avg">${fmtUSD(parseFloat(result.avgPnl))}</div></div>
     </div>
 
     <!-- Curva -->
@@ -1415,34 +1415,34 @@ function renderBacktest() {
 }
 
 function applyBtFilter() {
-  BT_FILTERS.tipo    = qs('#bt-tipo')?.value  || 'ALL';
-  BT_FILTERS.par     = qs('#bt-par')?.value   || 'ALL';
+  BT_FILTERS.tipo = qs('#bt-tipo')?.value || 'ALL';
+  BT_FILTERS.par = qs('#bt-par')?.value || 'ALL';
   BT_FILTERS.minConf = parseFloat(qs('#bt-conf')?.value) || 0;
-  BT_FILTERS.minRR   = parseFloat(qs('#bt-rr')?.value)   || 0;
-  BT_FILTERS.setup   = qs('#bt-setup')?.value || '';
+  BT_FILTERS.minRR = parseFloat(qs('#bt-rr')?.value) || 0;
+  BT_FILTERS.setup = qs('#bt-setup')?.value || '';
 
-  const result = runBacktest(state.closedTrades, BT_FILTERS);
+  const result = runBtFilter(state.closedTrades, BT_FILTERS);
 
   // Update stats
   const set = (id, val, color) => {
-    const el = qs('#'+id);
+    const el = qs('#' + id);
     if (el) { el.textContent = val; if (color) el.style.color = color; }
   };
   set('bt-total', result.total);
-  set('bt-wr',    result.winRate+'%', parseFloat(result.winRate)>=50?'var(--green)':'var(--red)');
-  set('bt-pnl',   fmtUSD(result.totalPnl), result.totalPnl>=0?'var(--green)':'var(--red)');
-  set('bt-pf',    result.pf, parseFloat(result.pf)>=1?'var(--green)':'var(--red)');
-  set('bt-avg',   fmtUSD(parseFloat(result.avgPnl)), parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)');
+  set('bt-wr', result.winRate + '%', parseFloat(result.winRate) >= 50 ? 'var(--green)' : 'var(--red)');
+  set('bt-pnl', fmtUSD(result.totalPnl), result.totalPnl >= 0 ? 'var(--green)' : 'var(--red)');
+  set('bt-pf', result.pf, parseFloat(result.pf) >= 1 ? 'var(--green)' : 'var(--red)');
+  set('bt-avg', fmtUSD(parseFloat(result.avgPnl)), parseFloat(result.avgPnl) >= 0 ? 'var(--green)' : 'var(--red)');
 
   // Update curve
   let cap = state.profile.capital;
-  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl || 0); return cap; })];
   const maxP = Math.max(...pts), minP = Math.min(...pts);
   const curve = qs('#bt-curve');
   if (curve) {
-    curve.innerHTML = pts.map((v,i) => {
-      const h = maxP===minP?50:((v-minP)/(maxP-minP))*85+15;
-      const prev=pts[i-1], col=!prev?'var(--accent)':v>=prev?'var(--green)':'var(--red)';
+    curve.innerHTML = pts.map((v, i) => {
+      const h = maxP === minP ? 50 : ((v - minP) / (maxP - minP)) * 85 + 15;
+      const prev = pts[i - 1], col = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
       return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
     }).join('');
   }
@@ -1450,23 +1450,23 @@ function applyBtFilter() {
   // Update trades list
   const trd = qs('#bt-trades');
   if (trd) {
-    trd.innerHTML = result.filtered.slice(0,30).map(t => `
+    trd.innerHTML = result.filtered.slice(0, 30).map(t => `
       <div class="hist-row" style="padding:7px 0">
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
+          <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result}</span>
           <span style="font-weight:600">${t.par}</span>
           <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
-          <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
+          <span style="font-size:10px;color:var(--muted)">R:R ${t.rr || '?'} · ${t.confianza || '?'}% conf</span>
         </div>
-        <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+        <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
       </div>`).join('') || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>';
   }
 }
 
 function resetBtFilters() {
-  Object.assign(BT_FILTERS, { minRR:0, minConf:0, tipo:'ALL', setup:'', par:'ALL' });
-  const s = (id, v) => { const el=qs('#'+id); if(el) el.value=v; };
-  s('bt-tipo','ALL'); s('bt-par','ALL'); s('bt-conf','0'); s('bt-rr','0'); s('bt-setup','');
+  Object.assign(BT_FILTERS, { minRR: 0, minConf: 0, tipo: 'ALL', setup: '', par: 'ALL' });
+  const s = (id, v) => { const el = qs('#' + id); if (el) el.value = v; };
+  s('bt-tipo', 'ALL'); s('bt-par', 'ALL'); s('bt-conf', '0'); s('bt-rr', '0'); s('bt-setup', '');
   applyBtFilter();
 }
 
@@ -1475,7 +1475,7 @@ function resetBtFilters() {
    ══════════════════════════════════════════════════════════ */
 function addGoal(title, targetPnl, deadline) {
   const goal = {
-    id:        uid(),
+    id: uid(),
     title,
     targetPnl: parseFloat(targetPnl),
     deadline,
@@ -1500,27 +1500,27 @@ function renderGoals() {
   const root = qs('#sec-goals') || qs('#goals-section');
   if (!root) return;
 
-  const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
-  const activePnl = state.activeTrades.reduce((acc,t) => {
+  const closedPnl = state.closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
+  const activePnl = state.activeTrades.reduce((acc, t) => {
     const p = state.prices[coinOf(t.par)] || t.entrada;
-    const lev = t.leverage||1;
-    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size*lev : (t.entrada-p)*t.size*lev);
+    const lev = t.leverage || 1;
+    return acc + (t.tipo === 'LONG' ? (p - t.entrada) * t.size * lev : (t.entrada - p) * t.size * lev);
   }, 0);
   const totalPnl = closedPnl + activePnl;
-  const capital  = state.profile.capital;
+  const capital = state.profile.capital;
 
   const goalCards = state.goals.map(g => {
     const progress = g.targetPnl > 0 ? Math.min((totalPnl / g.targetPnl) * 100, 100) : 0;
     const remaining = g.targetPnl - totalPnl;
-    const daysLeft  = g.deadline ? Math.ceil((new Date(g.deadline) - new Date()) / 86400000) : null;
-    const achieved  = totalPnl >= g.targetPnl;
-    const color     = achieved ? 'var(--green)' : progress > 50 ? 'var(--yellow)' : 'var(--accent)';
+    const daysLeft = g.deadline ? Math.ceil((new Date(g.deadline) - new Date()) / 86400000) : null;
+    const achieved = totalPnl >= g.targetPnl;
+    const color = achieved ? 'var(--green)' : progress > 50 ? 'var(--yellow)' : 'var(--accent)';
 
     // Proyección: basada en ops/semana y avg pnl
     let projection = '';
     if (state.closedTrades.length >= 3) {
       const oldest = state.closedTrades[state.closedTrades.length - 1];
-      const days   = oldest?.closedAt ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.closedAt?.split(',')[0].split('/').reverse().join('-'))) / 86400000)) : 30;
+      const days = oldest?.closedAt ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.closedAt?.split(',')[0].split('/').reverse().join('-'))) / 86400000)) : 30;
       const dailyRate = (closedPnl / days);
       if (dailyRate > 0 && remaining > 0) {
         const daysNeeded = Math.ceil(remaining / dailyRate);
@@ -1536,7 +1536,7 @@ function renderGoals() {
             <div style="font-size:10px;color:var(--muted);margin-top:2px">
               Objetivo: <b style="color:var(--text)">+${fmtUSD(g.targetPnl)}</b>
               ${g.deadline ? ` · Fecha límite: ${new Date(g.deadline).toLocaleDateString('es-ES')}` : ''}
-              ${daysLeft !== null ? ` · <span style="color:${daysLeft<7?'var(--red)':'var(--muted)'}">${daysLeft}d restantes</span>` : ''}
+              ${daysLeft !== null ? ` · <span style="color:${daysLeft < 7 ? 'var(--red)' : 'var(--muted)'}">${daysLeft}d restantes</span>` : ''}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
@@ -1552,7 +1552,7 @@ function renderGoals() {
           <div class="goal-progress-fill" style="width:${progress}%;background:${color}"></div>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:5px">
-          <span>P&L actual: <b style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(totalPnl)}</b></span>
+          <span>P&L actual: <b style="color:${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(totalPnl)}</b></span>
           <span>Faltan: <b style="color:var(--text)">${fmtUSD(Math.max(0, remaining))}</b></span>
         </div>
         ${projection ? `<div style="font-size:10px;color:var(--accent);margin-top:5px">📈 ${projection}</div>` : ''}
@@ -1589,14 +1589,14 @@ function renderGoals() {
 }
 
 function submitGoal() {
-  const title  = qs('#goal-title')?.value?.trim();
-  const pnl    = parseFloat(qs('#goal-pnl')?.value);
-  const date   = qs('#goal-date')?.value || null;
+  const title = qs('#goal-title')?.value?.trim();
+  const pnl = parseFloat(qs('#goal-pnl')?.value);
+  const date = qs('#goal-date')?.value || null;
   if (!title || !pnl || pnl <= 0) { showToast('Rellena nombre y objetivo', true); return; }
   addGoal(title, pnl, date);
   if (qs('#goal-title')) qs('#goal-title').value = '';
-  if (qs('#goal-pnl'))   qs('#goal-pnl').value   = '';
-  if (qs('#goal-date'))  qs('#goal-date').value   = '';
+  if (qs('#goal-pnl')) qs('#goal-pnl').value = '';
+  if (qs('#goal-date')) qs('#goal-date').value = '';
 }
 
 
@@ -1688,8 +1688,8 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
 
-  qs('#btn-gen')            ?.addEventListener('click', onGenerate);
-  qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
+  qs('#btn-gen')?.addEventListener('click', onGenerate);
+  qs('#scanner-toggle-hdr')?.addEventListener('click', toggleScanner);
 
   initMarketMeta(state.watchedCoins);
   connectWS();
@@ -1744,32 +1744,32 @@ document.addEventListener('DOMContentLoaded', () => {
       // Re-renderizar si hay cambios relevantes
       renderAll();
     }
-  }).catch(() => {});
+  }).catch(() => { });
 
   syncTradesToServer();
   // Cargar price alerts desde Supabase y merge con localStorage
   authFetch('/api/price-alerts').then(r => r.json()).then(data => {
     if (!data.ok || !data.alerts?.length) return;
     const localIds = new Set((state.priceAlerts || []).map(a => a.id));
-    const merged   = [...(state.priceAlerts || [])];
+    const merged = [...(state.priceAlerts || [])];
     data.alerts.forEach(a => { if (!localIds.has(a.id) && !a.triggered) merged.push(a); });
     state.priceAlerts = merged;
     saveKey('priceAlerts', state.priceAlerts);
     if (state.currentTab === 'alerts') renderAlerts();
-  }).catch(() => {});
+  }).catch(() => { });
 
   // Cargar diary desde Supabase y merge con localStorage
   authFetch('/api/diary').then(r => r.json()).then(data => {
     if (!data.ok || !data.entries?.length) return;
     const localDiary = state.diary || [];
-    const localIds   = new Set(localDiary.map(e => e.id));
-    const merged     = [...localDiary];
+    const localIds = new Set(localDiary.map(e => e.id));
+    const merged = [...localDiary];
     data.entries.forEach(e => { if (!localIds.has(e.id)) merged.push(e); });
     merged.sort((a, b) => b.date.localeCompare(a.date));
     state.diary = merged;
     storage.set('cp:diary', state.diary);
     if (state.currentTab === 'diary') renderDiary();
-  }).catch(() => {});
+  }).catch(() => { });
   updateReadOnlyBadge();
   connectServerWS();   // WS push: reemplaza polling para TRADE_CLOSED
   setInterval(pollServerClosedTrades, 30000); // fallback por si WS se desconecta
@@ -1822,7 +1822,7 @@ Object.assign(window, {
    ══════════════════════════════════════════════════════════════════ */
 async function renderBitunixHistory() {
   const containerId = 'sec-bitunix-history';
-  const container   = qs('#' + containerId);
+  const container = qs('#' + containerId);
   if (!container) return;
 
   // Estado de carga
@@ -1835,7 +1835,7 @@ async function renderBitunixHistory() {
     </div>`;
 
   try {
-    const res  = await authFetch('/api/bitunix/history');
+    const res = await authFetch('/api/bitunix/history');
     const data = await res.json();
 
     if (!data.ok) {
@@ -1863,22 +1863,22 @@ async function renderBitunixHistory() {
     }
 
     // Calcular resumen
-    const filled  = orders.filter(o => o.status === 'FILLED' || o.status === 'filled');
-    const longs   = filled.filter(o => o.side === 'BUY'  || o.side === 'buy');
-    const shorts  = filled.filter(o => o.side === 'SELL' || o.side === 'sell');
+    const filled = orders.filter(o => o.status === 'FILLED' || o.status === 'filled');
+    const longs = filled.filter(o => o.side === 'BUY' || o.side === 'buy');
+    const shorts = filled.filter(o => o.side === 'SELL' || o.side === 'sell');
     const totalPnl = filled.reduce((a, o) => a + parseFloat(o.realizedPnl || o.pnl || 0), 0);
 
     // Filas de órdenes
     const rows = orders.map(o => {
-      const side      = (o.side || '').toUpperCase();
-      const isLong    = side === 'BUY';
-      const status    = (o.status || '').toUpperCase();
-      const isFilled  = status === 'FILLED';
-      const symbol    = (o.symbol || '').replace('USDT', '/USDT');
-      const qty       = parseFloat(o.qty || o.quantity || 0);
-      const price     = parseFloat(o.price || o.avgPrice || o.dealPrice || 0);
-      const pnl       = parseFloat(o.realizedPnl || o.pnl || 0);
-      const hasPnl    = o.realizedPnl != null || o.pnl != null;
+      const side = (o.side || '').toUpperCase();
+      const isLong = side === 'BUY';
+      const status = (o.status || '').toUpperCase();
+      const isFilled = status === 'FILLED';
+      const symbol = (o.symbol || '').replace('USDT', '/USDT');
+      const qty = parseFloat(o.qty || o.quantity || 0);
+      const price = parseFloat(o.price || o.avgPrice || o.dealPrice || 0);
+      const pnl = parseFloat(o.realizedPnl || o.pnl || 0);
+      const hasPnl = o.realizedPnl != null || o.pnl != null;
       const orderType = (o.orderType || o.type || 'MARKET').toUpperCase();
 
       // Formatear timestamp
@@ -1886,7 +1886,7 @@ async function renderBitunixHistory() {
       const ts = o.createTime || o.createdTime || o.time || o.timestamp;
       if (ts) {
         const d = new Date(typeof ts === 'string' ? parseInt(ts) : ts);
-        if (!isNaN(d)) dateStr = d.toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+        if (!isNaN(d)) dateStr = d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
       }
 
       return `
@@ -1906,7 +1906,7 @@ async function renderBitunixHistory() {
           <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
             <div style="text-align:right">
               <div style="font-size:11px;color:var(--muted)">Precio</div>
-              <div style="font-size:12px;font-weight:600">${price > 0 ? '$' + price.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:6}) : '—'}</div>
+              <div style="font-size:12px;font-weight:600">${price > 0 ? '$' + price.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '—'}</div>
             </div>
             <div style="text-align:right">
               <div style="font-size:11px;color:var(--muted)">Qty</div>
@@ -1984,8 +1984,8 @@ async function renderBitunixHistory() {
    ══════════════════════════════════════════════════════════════════ */
 function logActivity(action, detail) {
   const entry = {
-    id:     Date.now(),
-    ts:     new Date().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }),
+    id: Date.now(),
+    ts: new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
     action,
     detail: detail || '',
   };
@@ -2002,17 +2002,17 @@ function renderActivityLogHTML() {
   if (!log.length) return '<div style="font-size:11px;color:var(--muted)">Sin actividad registrada aún.</div>';
 
   const icons = {
-    'trade_open':    '🟢',
-    'trade_close':   '🔵',
-    'trade_cancel':  '⚫',
+    'trade_open': '🟢',
+    'trade_close': '🔵',
+    'trade_cancel': '⚫',
     'scanner_alert': '🔔',
-    'scanner_on':    '▶️',
-    'scanner_off':   '⏸',
-    'login':         '🔑',
-    'goal_add':      '🎯',
-    'goal_delete':   '🗑️',
-    'diary_entry':   '📓',
-    'config_save':   '⚙️',
+    'scanner_on': '▶️',
+    'scanner_off': '⏸',
+    'login': '🔑',
+    'goal_add': '🎯',
+    'goal_delete': '🗑️',
+    'diary_entry': '📓',
+    'config_save': '⚙️',
   };
 
   const rows = log.slice(0, 50).map(e => {
@@ -2035,8 +2035,8 @@ function renderActivityLogHTML() {
 function exportDiaryCSV() {
   const entries = state.diary || [];
   if (!entries.length) { showToast('Sin entradas en el diario.', true); return; }
-  const headers = ['Fecha','Ánimo','P&L($)','Operaciones','Notas','Lección','Tags'];
-  const moodLabels = { great:'Excelente', good:'Bueno', neutral:'Neutral', bad:'Malo', terrible:'Pésimo' };
+  const headers = ['Fecha', 'Ánimo', 'P&L($)', 'Operaciones', 'Notas', 'Lección', 'Tags'];
+  const moodLabels = { great: 'Excelente', good: 'Bueno', neutral: 'Neutral', bad: 'Malo', terrible: 'Pésimo' };
   const rows = entries.map(e => [
     e.date,
     moodLabels[e.mood] || e.mood || '',
@@ -2048,10 +2048,10 @@ function exportDiaryCSV() {
   ]);
   const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `diario_trading_${new Date().toISOString().slice(0,10)}.csv`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `diario_trading_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   showToast('📥 Diario exportado como CSV');
@@ -2062,7 +2062,7 @@ async function showWeeklySummary() {
   const origText = btn?.innerHTML || '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Generando...'; }
   try {
-    const r    = await authFetch('/api/diary/weekly-summary');
+    const r = await authFetch('/api/diary/weekly-summary');
     const data = await r.json();
     if (!data.ok) { showToast('Error generando resumen: ' + (data.error || ''), true); return; }
     const { summary, stats } = data;
@@ -2133,16 +2133,16 @@ function renderDiary() {
   const monthsHTML = Object.keys(byMonth).sort().reverse().map(month => {
     const [y, m] = month.split('-');
     const monthName = new Date(y, m - 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-    const cards = byMonth[month].sort((a,b) => b.date.localeCompare(a.date)).map(e => {
-      const mood  = moodEmojis[e.mood] || '😐';
-      const pnl   = e.pnl != null ? `<span style="color:${e.pnl>=0?'var(--green)':'var(--red)'};font-weight:600">${e.pnl>=0?'+':''}$${e.pnl.toFixed(2)}</span>` : '';
-      const date  = new Date(e.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'short' });
+    const cards = byMonth[month].sort((a, b) => b.date.localeCompare(a.date)).map(e => {
+      const mood = moodEmojis[e.mood] || '😐';
+      const pnl = e.pnl != null ? `<span style="color:${e.pnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${e.pnl >= 0 ? '+' : ''}$${e.pnl.toFixed(2)}</span>` : '';
+      const date = new Date(e.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' });
       return `
         <div class="card" style="margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
             <div>
               <div style="font-size:12px;font-weight:600;color:var(--text);text-transform:capitalize">${date}</div>
-              <div style="font-size:10px;color:var(--muted);margin-top:1px">${mood} ${moodLabels[e.mood]||''}${e.ops ? ' · ' + e.ops + ' operaciones' : ''}${e.pnl != null ? ' · P&L: ' : ''}${pnl}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:1px">${mood} ${moodLabels[e.mood] || ''}${e.ops ? ' · ' + e.ops + ' operaciones' : ''}${e.pnl != null ? ' · P&L: ' : ''}${pnl}</div>
             </div>
             <button onclick="deleteDiaryEntry('${e.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px">×</button>
           </div>
@@ -2171,7 +2171,7 @@ function renderDiary() {
     <!-- Nueva entrada -->
     <div class="card" style="margin-bottom:20px">
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">
-        ✏️ Entrada de hoy — ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
+        ✏️ Entrada de hoy — ${new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}
         ${todayEntry ? ' <span style="font-size:10px;color:var(--accent)">(ya existe, se sobreescribirá)</span>' : ''}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
@@ -2227,12 +2227,12 @@ function renderDiary() {
 }
 
 function saveDiaryEntry() {
-  const mood    = qs('#diary-mood')?.value    || 'neutral';
-  const notes   = qs('#diary-notes')?.value?.trim()   || '';
+  const mood = qs('#diary-mood')?.value || 'neutral';
+  const notes = qs('#diary-notes')?.value?.trim() || '';
   const lessons = qs('#diary-lessons')?.value?.trim() || '';
-  const tagsRaw = qs('#diary-tags')?.value?.trim()    || '';
-  const pnlRaw  = qs('#diary-pnl')?.value;
-  const pnl     = pnlRaw !== '' && pnlRaw != null ? parseFloat(pnlRaw) : null;
+  const tagsRaw = qs('#diary-tags')?.value?.trim() || '';
+  const pnlRaw = qs('#diary-pnl')?.value;
+  const pnl = pnlRaw !== '' && pnlRaw != null ? parseFloat(pnlRaw) : null;
 
   if (!notes) { showToast('Escribe algo en las notas antes de guardar', true); return; }
 
@@ -2243,12 +2243,13 @@ function saveDiaryEntry() {
   state.diary = state.diary.filter(e => e.date !== todayKey);
   // Borrar entrada anterior del día en Supabase si existe
   const prevEntry = state.diary.find(e => e.date === todayKey);
-  if (prevEntry) authFetch('/api/diary/' + prevEntry.id, { method: 'DELETE' }).catch(() => {});
+  if (prevEntry) authFetch('/api/diary/' + prevEntry.id, { method: 'DELETE' }).catch(() => { });
 
-  const entry = { id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
+  const entry = {
+    id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
     ops: state.closedTrades.filter(t => {
       const d = new Date(t.closedAt || 0);
-      return d.toISOString().slice(0,10) === todayKey;
+      return d.toISOString().slice(0, 10) === todayKey;
     }).length,
   };
   state.diary.unshift(entry);
@@ -2258,7 +2259,7 @@ function saveDiaryEntry() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entry }),
-  }).catch(() => {});
+  }).catch(() => { });
   logActivity('diary_entry', 'Entrada del diario — ' + new Date().toLocaleDateString('es-ES'));
   showToast('📓 Entrada guardada');
   renderDiary();
@@ -2268,6 +2269,6 @@ function deleteDiaryEntry(id) {
   if (!confirm('¿Eliminar esta entrada del diario?')) return;
   state.diary = state.diary.filter(e => String(e.id) !== String(id));
   storage.set('cp:diary', state.diary);
-  authFetch('/api/diary/' + id, { method: 'DELETE' }).catch(() => {});
+  authFetch('/api/diary/' + id, { method: 'DELETE' }).catch(() => { });
   renderDiary();
 }
