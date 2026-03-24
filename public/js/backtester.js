@@ -285,8 +285,12 @@ async function runBacktest(coin, interval, riskUSD, limit, useNYFilter, useVolFi
     // ── Señal de entrada ────────────────────────────────────────────────
     const price = closes[i];
     let tipo = null;
-    if (rsi <= BT.RSI_OVERSOLD && price > e200 && e20 > e50) tipo = 'LONG';
-    if (rsi >= BT.RSI_OVERBOUGHT && price < e200 && e20 < e50) tipo = 'SHORT';
+    // LONG: pullback (RSI bajo) en tendencia alcista (precio > EMA200)
+    // SHORT: rebote (RSI alto) en tendencia bajista (precio < EMA200)
+    // Nota: EMA20>EMA50 eliminado — contradictorio con RSI en zona extrema.
+    // Cuando RSI llega a 38, el precio lleva dias bajando y EMA20 < EMA50 siempre.
+    if (rsi <= BT.RSI_OVERSOLD && price > e200) tipo = 'LONG';
+    if (rsi >= BT.RSI_OVERBOUGHT && price < e200) tipo = 'SHORT';
     if (!tipo) continue;
 
     const slDist = atr * BT.ATR_SL_MULT;
@@ -560,7 +564,7 @@ function renderBacktestResults(r, container) {
       ${rejHtml}
 
       <div style="font-size:10px;color:var(--muted);line-height:1.7;margin-top:8px">
-        LONG: RSI≤${BT.RSI_OVERSOLD} + precio&gt;EMA200 + EMA20&gt;EMA50 · SHORT: RSI≥${BT.RSI_OVERBOUGHT} + precio&lt;EMA200 + EMA20&lt;EMA50<br>
+        LONG: RSI≤${BT.RSI_OVERSOLD} + precio&gt;EMA200 (pullback en tendencia alcista) · SHORT: RSI≥${BT.RSI_OVERBOUGHT} + precio&lt;EMA200<br>
         SL=${BT.ATR_SL_MULT}×ATR · TP1=${BT.TP1_RATIO}:1 (50% cierre + breakeven) · TP2=${BT.TP2_RATIO}:1 · R:R mín ${BT.MIN_RR}<br>
         Fees: ${(BT.FEE_TAKER * 100).toFixed(2)}% taker apertura + ${(BT.FEE_MAKER * 100).toFixed(2)}% maker cierre
       </div>
