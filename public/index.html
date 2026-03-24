@@ -21,96 +21,80 @@
 
   <!-- Header -->
   <header class="hdr">
-    <div class="hdr-left">
-      <button class="menu-toggle" id="menu-toggle" aria-label="Menú">
-        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="3" y1="7" x2="21" y2="7" />
-          <line x1="3" y1="12" x2="21" y2="12" />
-          <line x1="3" y1="17" x2="21" y2="17" />
-        </svg>
-      </button>
-
-      <div class="logo">Crypto<b>Plan</b> <small>AI</small></div>
-
-      <!-- Session badge — updated by strategy.js -->
-      <div id="session-badge" class="session-badge">
-        <span class="sb-dot"></span>
-        <span style="font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.5px">NY SESSION</span>
+    <div class="hdr-inner">
+      <div class="hdr-left" style="display:flex;align-items:center;gap:10px">
+        <div class="logo">Crypto<b>Plan</b></div>
+        <div id="session-badge" class="session-badge">
+          <span class="sb-dot"></span>
+          <span style="font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.5px">NY</span>
+        </div>
+        <div class="ws-status">
+          <span class="ws-dot connecting" id="ws-dot-ref"></span>
+          <span id="ws-label"
+            style="color:var(--yellow);font-family:var(--font-mono);font-size:9px;letter-spacing:.5px">CONECTANDO</span>
+        </div>
+      </div>
+      <div class="hdr-right">
+        <button id="scanner-toggle-hdr" class="scanner-btn off">📡 ESCÁNER</button>
+        <button id="btn-gen" class="btn-main" disabled><span style="font-size:12px">⚡</span> ANALIZAR</button>
+        <button id="sound-toggle-btn" onclick="toggleSound()" title="Sonido" class="dark-toggle">🔔</button>
+        <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro/claro">🌙</button>
+        <button class="btn-logout" onclick="doLogout()" title="Salir"><span>🔒</span></button>
       </div>
     </div>
-
-    <div class="hdr-right">
-      <!-- WS status -->
-      <div class="ws-status">
-        <span class="ws-dot connecting" id="ws-dot-ref"></span>
-        <span id="ws-label"
-          style="color:var(--yellow);font-family:var(--font-mono);font-size:9px;letter-spacing:.5px">CONECTANDO</span>
-      </div>
-
-      <!-- Scanner toggle -->
-      <button id="scanner-toggle-hdr" class="scanner-btn off">📡 ESCÁNER</button>
-
-      <!-- Analyze -->
-      <button id="btn-gen" class="btn-main" disabled>
-        <span style="font-size:12px">⚡</span> ANALIZAR
-      </button>
-
-      <!-- Sound toggle -->
-      <button id="sound-toggle-btn" onclick="toggleSound()" title="Activar/silenciar alertas de sonido"
-        class="dark-toggle">🔔</button>
-
-      <!-- Dark mode -->
-      <button class="dark-toggle" id="dark-toggle" onclick="toggleDarkMode()" title="Modo oscuro / claro">🌙</button>
-
-      <!-- Logout -->
-      <button class="btn-logout" onclick="doLogout()" title="Cerrar sesión">
-        <span>🔒</span> SALIR
-      </button>
+    <!-- Ticker de precios -->
+    <div id="hdr-ticker">
+      <span
+        style="font-size:8px;letter-spacing:1.5px;color:var(--subtle);font-weight:600;text-transform:uppercase;margin-right:4px">LIVE</span>
     </div>
   </header>
 
-  <!-- Balance / equity widget -->
-  <div id="balance-widget"></div>
+  <!-- Balance widget (hidden in new design, data shown in dashboard) -->
+  <div id="balance-widget" style="display:none"></div>
 
   <div class="layout">
     <div class="side-backdrop" id="side-backdrop"></div>
 
-    <!-- Sidebar navigation -->
+    <!-- Sidebar — icon + micro label -->
     <nav class="side" id="sidebar">
-
-      <button class="nb" data-tab="dash">🏠 Inicio</button>
-
-      <div class="ns">Trading</div>
+      <button class="nb" data-tab="dash">
+        <span class="nb-icon">◈</span><span class="nb-text">DASH</span>
+      </button>
       <button class="nb" data-tab="ops">
-        📊 Operaciones
+        <span class="nb-icon">◎</span><span class="nb-text">OPS</span>
+        <span class="nb-badge" id="alert-badge"
+          style="display:none;position:absolute;top:4px;right:4px;font-size:7px;padding:1px 3px">0</span>
       </button>
       <button class="nb" data-tab="alerts">
-        🔔 Alertas IA
-        <span class="nb-badge" id="alert-badge" style="display:none">0</span>
+        <span class="nb-icon">◬</span><span class="nb-text">SCAN</span>
       </button>
-      <button class="nb" data-tab="mkt">🌐 Mercado</button>
-
-      <div class="ns">Análisis</div>
-      <button class="nb" data-tab="diary">📓 Diario</button>
-      <button class="nb" data-tab="historial">📈 Historial</button>
-      <button class="nb" data-tab="backtest">🔬 Backtest</button>
-      <button class="nb" data-tab="strat">🧠 Estrategia IA</button>
-      <button class="nb" data-tab="goals">🎯 Objetivos</button>
-
-      <div class="ns">Ajustes</div>
-      <button class="nb" data-tab="config">⚙️ Configuración</button>
-
-      <!-- Scanner active indicator -->
-      <div class="scanner-mini" id="scanner-mini" style="display:none">
-        <div class="scanner-mini-title">
-          <span class="scanner-mini-dot"></span> Escáner activo
-        </div>
-        <div style="color:var(--muted);font-size:10px;margin-top:3px" id="scanner-mini-time"></div>
-      </div>
+      <button class="nb" data-tab="mkt">
+        <span class="nb-icon">◧</span><span class="nb-text">MKT</span>
+      </button>
+      <div class="nb-div"></div>
+      <button class="nb" data-tab="diary">
+        <span class="nb-icon">▤</span><span class="nb-text">DIARY</span>
+      </button>
+      <button class="nb" data-tab="historial">
+        <span class="nb-icon">▦</span><span class="nb-text">HIST</span>
+      </button>
+      <button class="nb" data-tab="backtest">
+        <span class="nb-icon">⊞</span><span class="nb-text">TEST</span>
+      </button>
+      <button class="nb" data-tab="strat">
+        <span class="nb-icon">◉</span><span class="nb-text">STRAT</span>
+      </button>
+      <button class="nb" data-tab="goals">
+        <span class="nb-icon">◎</span><span class="nb-text">GOALS</span>
+      </button>
+      <div class="nb-div"></div>
+      <button class="nb" data-tab="config">
+        <span class="nb-icon">⊙</span><span class="nb-text">CFG</span>
+      </button>
     </nav>
 
     <!-- Main content -->
-    <main class="cnt" style="height:calc(100vh - var(--hdr-h) - var(--bal-h, 46px))">
+    <main class="cnt" style="height:calc(100vh - var(--hdr-h))">
       <div id="sec-dash" class="sec on"></div>
       <div id="sec-ops" class="sec"></div>
       <div id="sec-alerts" class="sec"></div>

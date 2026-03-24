@@ -97,13 +97,26 @@ function renderDash() {
       </div>
 
       <!-- KPIs principales -->
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
-        ${dashKpi('P&L Total', fmtPnl(totalPnl), pnlColor(totalPnl), '📊', closedTrades.length + ' trades')}
-        ${dashKpi('Win Rate', winRate + '%', winRate >= 50 ? 'var(--green)' : 'var(--red)', '🎯', totalWins + 'W / ' + (closedTrades.length - totalWins) + 'L')}
-        ${dashKpi('P&L Hoy', fmtPnl(todayPnl), pnlColor(todayPnl), '📅', todayTrades.length + ' ops · ' + todayWins + 'W')}
-        ${dashKpi('P&L Semana', fmtPnl(weekPnl), pnlColor(weekPnl), '📆', 'WR ' + weekWR + '% · ' + weekTrades.length + ' ops')}
-        ${dashKpi('P&L Latente', fmtPnl(latentPnl), pnlColor(latentPnl), '⏳', activeTrades.length + ' posiciones abiertas')}
-        ${dashKpi('Capital', '$' + (profile.capital || 0).toFixed(2), 'var(--accent)', '💰', 'Riesgo/op ' + profile.risk_pct + '% · ' + (profile.leverage || 1) + 'x')}
+      <div class="kpi-grid" style="margin-bottom:14px">
+        ${(function () {
+      const weekPnls = [0, ...Array.from({ length: 7 }, (_, i) => {
+        const d = new Date(); d.setDate(d.getDate() - 6 + i);
+        const ds = d.toDateString();
+        return closedTrades.filter(t => new Date(t.closedAt || 0).toDateString() === ds).reduce((a, t) => a + (t.pnl || 0), 0);
+      })].reduce((acc, v, i) => { acc.push((acc[i - 1] || 0) + v); return acc; }, []);
+      return [
+        dashKpi('P&L Total', fmtPnl(totalPnl), pnlColor(totalPnl), '📊', closedTrades.length + ' trades', weekPnls),
+        dashKpi('Win Rate', winRate + '%', winRate >= 50 ? 'var(--green)' : 'var(--red)', '🎯', totalWins + 'W / ' + (closedTrades.length - totalWins) + 'L'),
+        dashKpi('P&L Hoy', fmtPnl(todayPnl), pnlColor(todayPnl), '📅', todayTrades.length + ' ops · ' + todayWins + 'W'),
+        dashKpi('P&L Latente', fmtPnl(latentPnl), pnlColor(latentPnl), '⏳', activeTrades.length + ' abiertas'),
+        dashKpi('Capital', '$' + (profile.capital || 0).toFixed(2), 'var(--accent)', '💰', 'Riesgo ' + profile.risk_pct + '% · ' + (profile.leverage || 1) + 'x'),
+        dashKpi('Profit Factor', (function () {
+          const gw = closedTrades.filter(t => t.result === 'WIN').reduce((a, t) => a + (t.pnl || 0), 0);
+          const gl = Math.abs(closedTrades.filter(t => t.result === 'LOSS').reduce((a, t) => a + (t.pnl || 0), 0));
+          return gl > 0 ? (gw / gl).toFixed(2) : '—';
+        })(), 'var(--text)', 'PF', '≥1.5 rentable'),
+      ].join('');
+    })()}
       </div>
 
       <!-- Objetivo activo -->
@@ -128,14 +141,14 @@ function renderDash() {
         <div class="card">
           <div class="stl" style="margin-bottom:10px">💰 Precios</div>
           ${topCoins.map(coin => {
-    const p = prices[coin];
-    const meta = MARKET_META[coin] || {};
-    const chg = meta.change24h;
-    const fmt = p ? (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6)) : '…';
-    const chgStr = chg != null
-      ? `<span style="font-size:10px;color:${chg >= 0 ? 'var(--green)' : 'var(--red)'}">${chg >= 0 ? '▲ +' : '▼ '}${Math.abs(chg).toFixed(2)}%</span>`
-      : '';
-    return `
+      const p = prices[coin];
+      const meta = MARKET_META[coin] || {};
+      const chg = meta.change24h;
+      const fmt = p ? (p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toFixed(6)) : '…';
+      const chgStr = chg != null
+        ? `<span style="font-size:10px;color:${chg >= 0 ? 'var(--green)' : 'var(--red)'}">${chg >= 0 ? '▲ +' : '▼ '}${Math.abs(chg).toFixed(2)}%</span>`
+        : '';
+      return `
               <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border)">
                 <span style="font-size:12px;font-weight:600;color:var(--text)">${coin}</span>
                 <div style="text-align:right">
@@ -143,7 +156,7 @@ function renderDash() {
                   ${chgStr}
                 </div>
               </div>`;
-  }).join('')}
+    }).join('')}
           <button class="btn" style="width:100%;justify-content:center;font-size:10px;margin-top:10px;padding:5px" onclick="setTab('mkt')">
             Ver mercado completo →
           </button>
@@ -225,13 +238,24 @@ function getGreeting() {
   return 'Buenas noches';
 }
 
-function dashKpi(label, value, color, icon, sub) {
-  return `
-    <div class="card" style="padding:12px 14px">
-      <div style="font-size:11px;color:var(--muted);margin-bottom:4px">${icon} ${label}</div>
-      <div style="font-family:var(--serif);font-size:18px;font-weight:700;color:${color};line-height:1.2">${value}</div>
-      ${sub ? `<div style="font-size:10px;color:var(--muted);margin-top:3px">${sub}</div>` : ''}
-    </div>`;
+function dashKpi(label, value, color, icon, sub, sparkPoints) {
+  let spark = '';
+  if (sparkPoints && sparkPoints.length > 1) {
+    const mn = Math.min(...sparkPoints), mx = Math.max(...sparkPoints), rng = mx - mn || 1;
+    const W = 70, H = 28;
+    const pts = sparkPoints.map((v, i) =>
+    \`\${((i/(sparkPoints.length-1))*W).toFixed(1)},\${(H-((v-mn)/rng*H*0.85+H*0.05)).toFixed(1)}\`
+    ).join(' ');
+    const sColor = sparkPoints[sparkPoints.length-1] >= sparkPoints[0] ? 'var(--green2)' : 'var(--red2)';
+    spark = \`<svg class="kpi-spark" width="\${W}" height="\${H}" viewBox="0 0 \${W} \${H}"><polyline points="\${pts}" fill="none" stroke="\${sColor}" stroke-width="1.5" stroke-linejoin="round"/></svg>\`;
+  }
+  return \`
+    <div class="kpi" style="position:relative;overflow:hidden">
+      <div class="kpi-lbl">\${label}</div>
+      <div class="kpi-val" style="color:\${color}">\${value}</div>
+      \${sub ? \`<div class="kpi-sub">\${sub}</div>\` : ''}
+      \${spark}
+    </div>\`;
 }
 
 
@@ -246,16 +270,16 @@ function setTab(id) {
   qsa('.sec').forEach(s => s.classList.toggle('on', s.id === 'sec-' + id));
 
   const renders = {
-    dash: renderDash,
-    diary: renderDiary,
-    ops: renderOps,
-    alerts: renderAlerts,
-    historial: renderHistorial,
+    dash:     renderDash,
+    diary:    renderDiary,
+    ops:      renderOps,
+    alerts:   renderAlerts,
+    historial:renderHistorial,
     backtest: renderBacktester,
-    mkt: renderMkt,
-    strat: renderStrategy,
-    config: renderConfig,
-    goals: renderGoals,
+    mkt:      renderMkt,
+    strat:    renderStrategy,
+    config:   renderConfig,
+    goals:    renderGoals,
   };
   if (renders[id]) renders[id]();
 }
@@ -265,8 +289,8 @@ function closeTradeAtMarket(tradeId) {
   const trade = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
 
-  const coin = coinOf(trade.par);
-  const mktPrice = state.prices[coin] || trade.entrada;
+  const coin      = coinOf(trade.par);
+  const mktPrice  = state.prices[coin] || trade.entrada;
 
   // Mostrar mini-modal de cierre
   const existing = qs('#close-price-modal');
@@ -275,60 +299,60 @@ function closeTradeAtMarket(tradeId) {
   const modal = el('div', '');
   modal.id = 'close-price-modal';
   modal.innerHTML = `
-    <div style="position:fixed;inset:0;background:rgba(44,40,37,.25);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease">
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:380px;box-shadow:var(--shadow-lg);overflow:hidden">
-        <div style="padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
-          <div>
-            <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text)">Cerrar ${trade.par}</div>
-            <div style="font-size:10px;color:var(--muted);margin-top:2px">${trade.tipo} · Entrada ${fmtP(trade.entrada, coin)}</div>
-          </div>
-          <button onclick="qs('#close-price-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:4px">×</button>
-        </div>
-        <div style="padding:16px 18px">
-          <div style="margin-bottom:14px">
-            <label class="lbl">Precio de ejecución real</label>
-            <input class="inp" type="number" id="cpm-price" value="${mktPrice}" step="any"
-              style="font-family:var(--serif);font-size:18px;font-weight:600;text-align:center"/>
-            <div style="font-size:10px;color:var(--muted);margin-top:5px;text-align:center">
-              Precio Binance ahora: <b style="color:var(--text)">${fmtP(mktPrice, coin)}</b> — edítalo si ejecutaste a otro precio
+      < div style = "position:fixed;inset:0;background:rgba(44,40,37,.25);backdrop-filter:blur(3px);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .2s ease" >
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:380px;box-shadow:var(--shadow-lg);overflow:hidden">
+          <div style="padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+            <div>
+              <div style="font-family:var(--serif);font-size:15px;font-weight:600;color:var(--text)">Cerrar ${trade.par}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:2px">${trade.tipo} · Entrada ${fmtP(trade.entrada, coin)}</div>
             </div>
+            <button onclick="qs('#close-price-modal').remove()" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:18px;line-height:1;padding:4px">×</button>
           </div>
-          <div style="margin-bottom:14px">
-            <label class="lbl">Notas del cierre (opcional)</label>
-            <textarea class="inp" id="cpm-notes" rows="2" placeholder="Ej: cerré antes del TP por noticias macro..."></textarea>
+          <div style="padding:16px 18px">
+            <div style="margin-bottom:14px">
+              <label class="lbl">Precio de ejecución real</label>
+              <input class="inp" type="number" id="cpm-price" value="${mktPrice}" step="any"
+                style="font-family:var(--serif);font-size:18px;font-weight:600;text-align:center" />
+              <div style="font-size:10px;color:var(--muted);margin-top:5px;text-align:center">
+                Precio Binance ahora: <b style="color:var(--text)">${fmtP(mktPrice, coin)}</b> — edítalo si ejecutaste a otro precio
+              </div>
+            </div>
+            <div style="margin-bottom:14px">
+              <label class="lbl">Notas del cierre (opcional)</label>
+              <textarea class="inp" id="cpm-notes" rows="2" placeholder="Ej: cerré antes del TP por noticias macro..."></textarea>
+            </div>
+            <div id="cpm-preview" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;text-align:center"></div>
+            <button class="btn btng" style="width:100%;justify-content:center;font-size:12px;padding:10px" onclick="confirmCloseWithPrice('${tradeId}')">
+              ✓ Confirmar cierre
+            </button>
           </div>
-          <div id="cpm-preview" style="background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;text-align:center"></div>
-          <button class="btn btng" style="width:100%;justify-content:center;font-size:12px;padding:10px" onclick="confirmCloseWithPrice('${tradeId}')">
-            ✓ Confirmar cierre
-          </button>
         </div>
-      </div>
-    </div>`;
+    </div > `;
   document.body.appendChild(modal);
 
   // Preview en tiempo real
   const priceInput = qs('#cpm-price');
   function updatePreview() {
     const exitPrice = parseFloat(priceInput.value) || mktPrice;
-    const lev = trade.leverage || 1;
-    const pnl = trade.tipo === 'LONG'
+    const lev  = trade.leverage || 1;
+    const pnl  = trade.tipo === 'LONG'
       ? (exitPrice - trade.entrada) * trade.size
       : (trade.entrada - exitPrice) * trade.size;
-    const pct = trade.tipo === 'LONG'
+    const pct  = trade.tipo === 'LONG'
       ? ((exitPrice - trade.entrada) / trade.entrada) * 100 * lev
       : ((trade.entrada - exitPrice) / trade.entrada) * 100 * lev;
     // Comisiones sobre nocional real (precio × size), sin × leverage
-    const feesOpen = trade.entrada * trade.size * 0.0006;
+    const feesOpen  = trade.entrada * trade.size * 0.0006;
     const feesClose = exitPrice * trade.size * 0.0006;
     const totalFees = feesOpen + feesClose;
-    const netPnl = pnl - totalFees;
-    const color = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
+    const netPnl    = pnl - totalFees;
+    const color     = netPnl >= 0 ? 'var(--green)' : 'var(--red)';
     const grossColor = pnl >= 0 ? 'var(--green)' : 'var(--red)';
     qs('#cpm-preview').innerHTML = `
-      <div style="display:flex;justify-content:space-between;margin-bottom:5px">
+      < div style = "display:flex;justify-content:space-between;margin-bottom:5px" >
         <span style="color:var(--muted)">P&L bruto</span>
         <span style="font-family:var(--serif);font-weight:600;color:${grossColor}">${fmtUSD(pnl)} <span style="font-size:10px">(${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)</span></span>
-      </div>
+      </div >
       <div style="display:flex;justify-content:space-between;margin-bottom:6px">
         <span style="color:var(--muted)">Comisiones taker (×2)</span>
         <span style="color:var(--red)">-${fmtUSD(totalFees)}</span>
@@ -343,20 +367,20 @@ function closeTradeAtMarket(tradeId) {
 }
 
 function confirmCloseWithPrice(tradeId) {
-  const trade = state.activeTrades.find(t => t.id === tradeId);
+  const trade     = state.activeTrades.find(t => t.id === tradeId);
   if (!trade) return;
-  const coin = coinOf(trade.par);
+  const coin      = coinOf(trade.par);
   const exitPrice = parseFloat(qs('#cpm-price')?.value) || state.prices[coin] || trade.entrada;
-  const notes = qs('#cpm-notes')?.value?.trim() || '';
-  const lev = trade.leverage || 1;
-  const rawPnl = trade.tipo === 'LONG'
+  const notes     = qs('#cpm-notes')?.value?.trim() || '';
+  const lev       = trade.leverage || 1;
+  const rawPnl    = trade.tipo === 'LONG'
     ? (exitPrice - trade.entrada) * trade.size
     : (trade.entrada - exitPrice) * trade.size;
-  const feesOpen = trade.entrada * trade.size * 0.0006;
+  const feesOpen  = trade.entrada * trade.size * 0.0006;
   const feesClose = exitPrice * trade.size * 0.0006;
   const totalFees = feesOpen + feesClose;
-  const netPnl = rawPnl - totalFees;
-  const result = netPnl >= 0 ? 'WIN' : 'LOSS';
+  const netPnl    = rawPnl - totalFees;
+  const result    = netPnl >= 0 ? 'WIN' : 'LOSS';
 
   const idx = state.activeTrades.findIndex(t => t.id === tradeId);
   if (idx === -1) return;
@@ -368,8 +392,8 @@ function confirmCloseWithPrice(tradeId) {
   syncTradesToServer();
 
   qs('#close-price-modal')?.remove();
-  logActivity('trade_close', `${result === 'WIN' ? '✅' : '❌'} ${trade.par} ${trade.tipo} cerrada @ ${exitPrice} · Neto: ${fmtUSD(netPnl)}`);
-  showToast(`${trade.par} cerrada — Neto: ${fmtUSD(netPnl)} (bruto ${fmtUSD(rawPnl)}, fees -${fmtUSD(totalFees)})`, result === 'LOSS');
+  logActivity('trade_close', `${ result === 'WIN' ? '✅' : '❌' } ${ trade.par } ${ trade.tipo } cerrada @${ exitPrice } · Neto: ${ fmtUSD(netPnl) } `);
+  showToast(`${ trade.par } cerrada — Neto: ${ fmtUSD(netPnl) } (bruto ${ fmtUSD(rawPnl) }, fees - ${ fmtUSD(totalFees) })`, result === 'LOSS');
   renderAll();
 
   // Guardar en Supabase (incluye notes, exitPrice, fees, pnlGross)
@@ -388,12 +412,12 @@ function confirmCloseWithPrice(tradeId) {
 }
 
 function toggleTradeNotes(id) {
-  const panel = qs(`#notes-panel-${id}`);
+  const panel = qs(`#notes - panel - ${ id } `);
   if (panel) panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
 }
 
 function saveTradeNotes(id) {
-  const input = qs(`#notes-input-${id}`);
+  const input = qs(`#notes - input - ${ id } `);
   if (!input) return;
   const trade = state.activeTrades.find(t => t.id === id);
   if (!trade) return;
@@ -418,44 +442,44 @@ function showTradeConfirmModal(trade) {
     if (existing) existing.remove();
 
     const coin = coinOf(trade.par);
-    const lc = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const lc   = trade.tipo === 'LONG' ? 'var(--green)' : 'var(--red)';
 
     // ── MEJORA: precio actualizado en tiempo real al abrir el modal ──────────
     // Si el precio se ha movido >0.2% desde la propuesta, advertir y
     // recalcular el R:R para que el trader sepa exactamente a qué entra.
-    const livePrice = state.prices[coin] || trade.entrada;
-    const priceDrift = Math.abs(livePrice - trade.entrada) / trade.entrada * 100;
-    const hasDrift = priceDrift > 0.2;
-    const driftDir = livePrice > trade.entrada ? '▲' : '▼';
-    const driftColor = hasDrift ? 'var(--yellow)' : 'var(--green)';
+    const livePrice     = state.prices[coin] || trade.entrada;
+    const priceDrift    = Math.abs(livePrice - trade.entrada) / trade.entrada * 100;
+    const hasDrift      = priceDrift > 0.2;
+    const driftDir      = livePrice > trade.entrada ? '▲' : '▼';
+    const driftColor    = hasDrift ? 'var(--yellow)' : 'var(--green)';
 
     // Recalcular R:R con el precio actual
-    const slDistLive = Math.abs(livePrice - trade.stopLoss);
-    const tp1DistLive = Math.abs(trade.tp1 - livePrice);
-    const rrLive = slDistLive > 0 ? (tp1DistLive / slDistLive).toFixed(2) : trade.rr;
-    const rrOk = parseFloat(rrLive) >= 2.0;
+    const slDistLive    = Math.abs(livePrice - trade.stopLoss);
+    const tp1DistLive   = Math.abs(trade.tp1 - livePrice);
+    const rrLive        = slDistLive > 0 ? (tp1DistLive / slDistLive).toFixed(2) : trade.rr;
+    const rrOk          = parseFloat(rrLive) >= 2.0;
 
     // Usar el precio live para los cálculos financieros del modal
     const tradeWithLive = { ...trade, entrada: livePrice };
-    const money = calcProposalMoney(tradeWithLive);
-    const tpLabel = trade.tp2
-      ? `TP1 🎯 ${fmtP(trade.tp1, coin)} → TP2 ${fmtP(trade.tp2, coin)}`
-      : `TP1 🎯 ${fmtP(trade.tp1, coin)}`;
+    const money         = calcProposalMoney(tradeWithLive);
+    const tpLabel       = trade.tp2
+      ? `TP1 🎯 ${ fmtP(trade.tp1, coin) } → TP2 ${ fmtP(trade.tp2, coin) } `
+      : `TP1 🎯 ${ fmtP(trade.tp1, coin) } `;
 
     // ── MEJORA: bloqueo de correlaciones (no solo warning) ──────────────────
     // Si ya hay 3+ posiciones correlacionadas del mismo lado → bloquear.
-    const CORR_COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'AVAX', 'LINK'];
-    const corrTrades = state.activeTrades.filter(t =>
+    const CORR_COINS  = ['BTC','ETH','SOL','BNB','AVAX','LINK'];
+    const corrTrades  = state.activeTrades.filter(t =>
       t.tipo === trade.tipo && CORR_COINS.includes(coinOf(t.par))
     );
     const corrBlocked = corrTrades.length >= 3;
     const corrWarning = corrTrades.length >= 1 && !corrBlocked;
-    const corrRisk = corrTrades.reduce((a, t) => a + (t.riskUSD || 0), 0);
+    const corrRisk    = corrTrades.reduce((a, t) => a + (t.riskUSD || 0), 0);
 
     const div = document.createElement('div');
     div.id = 'trade-confirm-modal';
     div.innerHTML = `
-      <div style="position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease">
+      < div style = "position:fixed;inset:0;background:rgba(0,0,0,.78);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease" >
         <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;width:100%;max-width:420px;box-shadow:var(--shadow-lg);overflow:hidden;max-height:90vh;overflow-y:auto">
 
           <!-- Header -->
@@ -566,14 +590,14 @@ function showTradeConfirmModal(trade) {
                 </div>
                 <label style="position:relative;width:36px;height:20px;flex-shrink:0;margin-left:12px">
                   <input type="checkbox" id="trailing-toggle" style="opacity:0;width:0;height:0;position:absolute">
-                  <span id="trailing-track" onclick="
+                    <span id="trailing-track" onclick="
                     const cb=document.getElementById('trailing-toggle');
                     cb.checked=!cb.checked;
                     document.getElementById('trailing-track').style.background=cb.checked?'var(--accent)':'var(--border)';
                     document.getElementById('trailing-thumb').style.transform=cb.checked?'translateX(16px)':'translateX(0)';
                   " style="position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:background .2s">
-                    <span id="trailing-thumb" style="position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s"></span>
-                  </span>
+                      <span id="trailing-thumb" style="position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s"></span>
+                    </span>
                 </label>
               </div>
             </div>
@@ -588,16 +612,16 @@ function showTradeConfirmModal(trade) {
             </div>
           </div>
         </div>
-      </div>`;
+      </div > `;
 
     document.body.appendChild(div);
 
     // Actualizar precio en tiempo real mientras el modal está abierto
     let priceInterval = setInterval(() => {
-      const newPrice = state.prices[coin];
+      const newPrice    = state.prices[coin];
       if (!newPrice) return;
-      const newDrift = Math.abs(newPrice - trade.entrada) / trade.entrada * 100;
-      const liveEl = div.querySelector('#modal-live-price');
+      const newDrift    = Math.abs(newPrice - trade.entrada) / trade.entrada * 100;
+      const liveEl      = div.querySelector('#modal-live-price');
       if (liveEl) liveEl.textContent = (newPrice > trade.entrada ? '▲ ' : '▼ ') + fmtP(newPrice, coin);
     }, 2000);
 
@@ -607,7 +631,7 @@ function showTradeConfirmModal(trade) {
       resolve(result);
     };
 
-    document.getElementById('confirm-cancel-btn').onclick = () => close({ confirmed: false });
+    document.getElementById('confirm-cancel-btn').onclick  = () => close({ confirmed: false });
     if (!corrBlocked) {
       document.getElementById('confirm-execute-btn').onclick = () => {
         const trailingEnabled = document.getElementById('trailing-toggle')?.checked || false;
@@ -626,8 +650,8 @@ function showTradeConfirmModal(trade) {
 function checkCircuitBreaker() {
   const limit = parseFloat(state.profile.daily_loss_limit) || 0;
   if (!limit) return false;
-  const now = Date.now();
-  const todayLoss = state.closedTrades
+  const now        = Date.now();
+  const todayLoss  = state.closedTrades
     .filter(t => (now - new Date(t.closedAt || 0).getTime()) < 86_400_000)
     .reduce((a, t) => a + (t.pnl || 0), 0);
   if (todayLoss <= -Math.abs(limit)) {
@@ -651,7 +675,7 @@ async function onAcceptProposal(i) {
   // Circuit Breaker
   if (checkCircuitBreaker()) {
     const limit = Math.abs(parseFloat(state.profile.daily_loss_limit) || 0);
-    showToast(`🛑 Circuit Breaker activo — pérdida diaria superó $${limit.toFixed(2)}. No puedes abrir nuevas operaciones hoy.`, true);
+    showToast(`🛑 Circuit Breaker activo — pérdida diaria superó $${ limit.toFixed(2) }. No puedes abrir nuevas operaciones hoy.`, true);
     return;
   }
 
@@ -665,7 +689,7 @@ async function onAcceptProposal(i) {
       const overlay = document.createElement('div');
       overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:3000;display:flex;align-items:center;justify-content:center;padding:20px';
       overlay.innerHTML = `
-        <div style="background:var(--card);border-radius:14px;padding:24px;max-width:400px;width:100%;border:1px solid var(--yellow)">
+      < div style = "background:var(--card);border-radius:14px;padding:24px;max-width:400px;width:100%;border:1px solid var(--yellow)" >
           <div style="font-size:14px;font-weight:700;color:var(--yellow);margin-bottom:12px">⚠️ Advertencia de Correlación</div>
           <div style="font-size:12px;color:var(--text);line-height:1.6;margin-bottom:16px">${corrWarning.warning}<br><br>
           Los activos crypto están altamente correlacionados. Una caída del mercado afectará a todos al mismo tiempo.</div>
@@ -697,15 +721,15 @@ async function onAcceptProposal(i) {
     }
   } else {
     // Paper trading: mostrar confirmación con el precio actual
-    const coin = coinOf(trade.par);
+    const coin    = coinOf(trade.par);
     const current = state.prices[coin];
-    const dist = current ? Math.abs((current - trade.entrada) / trade.entrada * 100).toFixed(2) : null;
-    const distTxt = dist ? `<div style="font-size:11px;color:var(--yellow);margin-top:4px">⚠️ Precio actual: ${fmtP(current, coin)} (${dist}% de diferencia con entrada propuesta)</div>` : '';
+    const dist    = current ? Math.abs((current - trade.entrada) / trade.entrada * 100).toFixed(2) : null;
+    const distTxt = dist ? `< div style = "font-size:11px;color:var(--yellow);margin-top:4px" >⚠️ Precio actual: ${ fmtP(current, coin) } (${ dist }% de diferencia con entrada propuesta)</div > ` : '';
     const ok = await new Promise(resolve => {
       const ov = document.createElement('div');
       ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px;animation:fadeIn .15s ease';
       ov.innerHTML = `
-        <div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;max-width:380px;width:100%;box-shadow:var(--shadow-lg)">
+      < div style = "background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;max-width:380px;width:100%;box-shadow:var(--shadow-lg)" >
           <div style="font-size:14px;font-weight:700;margin-bottom:14px">📋 Confirmar operación (Paper)</div>
           <div style="display:grid;gap:8px;margin-bottom:14px">
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Par</span><b>${trade.par} ${trade.tipo}</b></div>
@@ -713,14 +737,14 @@ async function onAcceptProposal(i) {
             ${distTxt}
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Stop Loss</span><b style="color:var(--red)">${fmtP(trade.stopLoss, coin)}</b></div>
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Take Profit</span><b style="color:var(--green)">${fmtP(trade.tp1, coin)}</b></div>
-            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Riesgo</span><b style="color:var(--red)">-$${(trade.riskUSD || 0).toFixed(2)}</b></div>
+            <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">Riesgo</span><b style="color:var(--red)">-$${(trade.riskUSD||0).toFixed(2)}</b></div>
             <div style="display:flex;justify-content:space-between;font-size:12px"><span style="color:var(--muted)">R:R</span><b>${trade.rr}</b></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
             <button onclick="this.closest('[style]').remove();window._paperResolve(false)" style="padding:9px;border-radius:8px;border:1px solid var(--border);background:var(--s2);color:var(--muted);cursor:pointer;font-size:12px">Cancelar</button>
             <button onclick="this.closest('[style]').remove();window._paperResolve(true)" style="padding:9px;border-radius:8px;border:none;background:var(--accent);color:#fff;cursor:pointer;font-weight:600;font-size:12px">✓ Confirmar</button>
           </div>
-        </div>`;
+        </div > `;
       window._paperResolve = resolve;
       document.body.appendChild(ov);
     });
@@ -747,16 +771,16 @@ function setScanIntervalVal(m) {
 
 /* ── Onboarding (stub — marca como completado la primera vez) ─────── */
 function showOnboarding() { state.onboarded = true; saveKey('onboarded', true); }
-function onboardNext() { state.onboarded = true; saveKey('onboarded', true); }
-function onboardBack() { }
-function setObRisk(v) { state.profile.risk_pct = v; saveKey('profile', state.profile); syncProfileToServer(); }
+function onboardNext()    { state.onboarded = true; saveKey('onboarded', true); }
+function onboardBack()    {}
+function setObRisk(v)     { state.profile.risk_pct = v; saveKey('profile', state.profile); syncProfileToServer(); }
 
 
 /* ── Header buttons ──────────────────────────────────────────────────────── */
 async function onGenerate() {
   if (checkCircuitBreaker()) {
     const limit = Math.abs(parseFloat(state.profile.daily_loss_limit) || 0);
-    showToast(`🛑 Circuit Breaker: límite diario de $${limit.toFixed(2)} alcanzado. Sin nuevas operaciones hoy.`, true);
+    showToast(`🛑 Circuit Breaker: límite diario de $${ limit.toFixed(2) } alcanzado.Sin nuevas operaciones hoy.`, true);
     return;
   }
   const btn = qs('#btn-gen');
@@ -777,14 +801,14 @@ async function onGenerate() {
       });
       const filtradas = antes - proposals.length;
       if (filtradas > 0) {
-        showToast(`⚠️ ${filtradas} propuesta(s) eliminadas — capital insuficiente para el mínimo de Bitunix`, true);
+        showToast(`⚠️ ${ filtradas } propuesta(s) eliminadas — capital insuficiente para el mínimo de Bitunix`, true);
       }
     }
 
     state.pending = proposals;
-    state.aiMsg = { market: data.analisis_mercado, rec: data.recomendacion_ia };
+    state.aiMsg   = { market: data.analisis_mercado, rec: data.recomendacion_ia };
     setTab('ops');
-    showToast(`✓ IA generó ${proposals.length} propuesta(s) ejecutables con tu capital.`);
+    showToast(`✓ IA generó ${ proposals.length } propuesta(s) ejecutables con tu capital.`);
   } catch (e) {
     showToast('Error IA: ' + e.message, true);
   }
@@ -821,9 +845,9 @@ function renderHistorial() {
   if (!root) return;
   // Inyectar sub-divs con IDs originales — renderPerf y renderBacktest los encontrarán
   root.innerHTML = `
-    <div id="sec-perf"     style="display:block"></div>
-    <div id="sec-backtest" style="display:block;margin-top:8px"></div>
-    ${state.bitunix?.configured !== false ? '<div id="sec-bitunix-history" style="display:block;margin-top:8px"></div>' : ''}`;
+      < div id = "sec-perf"     style = "display:block" ></div >
+        <div id="sec-backtest" style="display:block;margin-top:8px"></div>
+    ${ state.bitunix?.configured !== false ? '<div id="sec-bitunix-history" style="display:block;margin-top:8px"></div>' : '' } `;
   renderPerf();
   renderBacktest();
   if (state.bitunix?.configured !== false) renderBitunixHistory();
@@ -835,27 +859,27 @@ function renderConfig() {
   if (!root) return;
 
   const tabs = [
-    { id: 'perfil', label: '👤 Perfil' },
-    { id: 'capital', label: '💰 Capital' },
-    { id: 'sizing', label: '📐 Sizing' },
-    { id: 'bitunix', label: '🔗 Bitunix' },
-    { id: 'avanzado', label: '⚙️ Avanzado' },
+    { id: 'perfil',    label: '👤 Perfil' },
+    { id: 'capital',   label: '💰 Capital' },
+    { id: 'sizing',    label: '📐 Sizing' },
+    { id: 'bitunix',   label: '🔗 Bitunix' },
+    { id: 'avanzado',  label: '⚙️ Avanzado' },
   ];
   const active = state.configTab || 'perfil';
 
   const tabBar = tabs.map(t => `
-    <button onclick="setConfigTab('${t.id}')"
-      style="padding:7px 14px;font-size:11px;border-radius:8px;border:1px solid ${active === t.id ? 'var(--accent)' : 'var(--border)'};
-             background:${active === t.id ? 'var(--accent)' : 'var(--s2)'};color:${active === t.id ? '#fff' : 'var(--muted)'};
-             cursor:pointer;white-space:nowrap;transition:all .15s">
-      ${t.label}
-    </button>`).join('');
+      < button onclick = "setConfigTab('${t.id}')"
+    style = "padding:7px 14px;font-size:11px;border-radius:8px;border:1px solid ${active===t.id?'var(--accent)':'var(--border)'};
+    background:${ active === t.id ? 'var(--accent)' : 'var(--s2)' }; color:${ active === t.id ? '#fff' : 'var(--muted)' };
+    cursor: pointer; white - space: nowrap; transition:all .15s">
+      ${ t.label }
+    </button > `).join('');
 
   root.innerHTML = `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border)">
-      ${tabBar}
-    </div>
-    <div id="config-tab-content"></div>`;
+      < div style = "display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;padding-bottom:12px;border-bottom:1px solid var(--border)" >
+        ${ tabBar }
+    </div >
+      <div id="config-tab-content"></div>`;
 
   renderConfigTabContent(active);
 }
@@ -866,7 +890,7 @@ function renderConfig() {
 function renderSizingCalc(root) {
   const p = state.profile;
   root.innerHTML = `
-    <div class="stl">📐 Calculadora de Position Sizing</div>
+        < div class="stl" >📐 Calculadora de Position Sizing</div >
     <div style="font-size:11px;color:var(--muted);margin-bottom:16px">
       Calcula el tamaño exacto de cada operación según tu capital, riesgo y distancia al stop loss.
     </div>
@@ -927,12 +951,12 @@ function renderSizingCalc(root) {
 
 function calcSizing() {
   const capital = parseFloat(qs('#sz-capital')?.value) || 0;
-  const riskPct = parseFloat(qs('#sz-risk')?.value) || 0;
-  const entry = parseFloat(qs('#sz-entry')?.value) || 0;
-  const sl = parseFloat(qs('#sz-sl')?.value) || 0;
-  const tp1 = parseFloat(qs('#sz-tp1')?.value) || 0;
-  const lev = parseFloat(qs('#sz-lev')?.value) || 1;
-  const result = qs('#sizing-result');
+  const riskPct = parseFloat(qs('#sz-risk')?.value)    || 0;
+  const entry   = parseFloat(qs('#sz-entry')?.value)   || 0;
+  const sl      = parseFloat(qs('#sz-sl')?.value)      || 0;
+  const tp1     = parseFloat(qs('#sz-tp1')?.value)     || 0;
+  const lev     = parseFloat(qs('#sz-lev')?.value)     || 1;
+  const result  = qs('#sizing-result');
   if (!result) return;
 
   renderSizingTable();
@@ -942,30 +966,30 @@ function calcSizing() {
     return;
   }
 
-  const riskUSD = capital * riskPct / 100;
-  const slDist = Math.abs(entry - sl);
-  const slPct = (slDist / entry) * 100;
+  const riskUSD     = capital * riskPct / 100;
+  const slDist      = Math.abs(entry - sl);
+  const slPct       = (slDist / entry) * 100;
   if (slDist === 0) { result.style.display = 'none'; return; }
 
-  const direction = entry > sl ? 'LONG' : 'SHORT';
-  const qty = riskUSD / slDist;               // unidades sin apalancamiento
-  const posSize = qty * entry;                    // valor nocional sin lev
-  const margin = posSize / lev;                  // margen requerido
-  const rr = tp1 > 0 ? (Math.abs(tp1 - entry) / slDist).toFixed(2) : null;
-  const potGain = tp1 > 0 ? (Math.abs(tp1 - entry) * qty).toFixed(2) : null;
-  const feeOpen = posSize * 0.0006;
-  const feeClose = posSize * 0.0006;
-  const totalFees = feeOpen + feeClose;
-  const netRisk = riskUSD + totalFees;
+  const direction   = entry > sl ? 'LONG' : 'SHORT';
+  const qty         = riskUSD / slDist;               // unidades sin apalancamiento
+  const posSize     = qty * entry;                    // valor nocional sin lev
+  const margin      = posSize / lev;                  // margen requerido
+  const rr          = tp1 > 0 ? (Math.abs(tp1 - entry) / slDist).toFixed(2) : null;
+  const potGain     = tp1 > 0 ? (Math.abs(tp1 - entry) * qty).toFixed(2) : null;
+  const feeOpen     = posSize * 0.0006;
+  const feeClose    = posSize * 0.0006;
+  const totalFees   = feeOpen + feeClose;
+  const netRisk     = riskUSD + totalFees;
 
   const colors = {
-    LONG: 'var(--green)',
+    LONG:  'var(--green)',
     SHORT: 'var(--red)',
   };
 
   result.style.display = 'block';
   result.innerHTML = `
-    <div class="card" style="border-left:3px solid ${colors[direction]}">
+      < div class="card" style = "border-left:3px solid ${colors[direction]}" >
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
         <span style="font-size:13px;font-weight:700;color:${colors[direction]}">${direction}</span>
         <span style="font-size:11px;color:var(--muted)">· Entrada ${entry} · SL ${sl} · Lev ${lev}x</span>
@@ -980,38 +1004,38 @@ function calcSizing() {
         ${szKpi('Comisiones est.', '$' + totalFees.toFixed(2), 'var(--muted)', 'Taker 0.06% × 2')}
         ${szKpi('Riesgo neto', '$' + netRisk.toFixed(2), 'var(--red)', 'con comisiones')}
       </div>
-      ${margin > capital ? '<div style="margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.1);border-radius:6px;font-size:11px;color:var(--red)">⚠️ El margen requerido supera tu capital disponible. Reduce el apalancamiento o ajusta el SL.</div>' : ''}
-    </div>`;
+      ${ margin > capital ? '<div style="margin-top:12px;padding:8px 12px;background:rgba(239,68,68,.1);border-radius:6px;font-size:11px;color:var(--red)">⚠️ El margen requerido supera tu capital disponible. Reduce el apalancamiento o ajusta el SL.</div>' : '' }
+    </div > `;
 }
 
 function szKpi(label, value, color, sub) {
   return `
-    <div style="background:var(--s2);border-radius:8px;padding:10px 12px">
+      < div style = "background:var(--s2);border-radius:8px;padding:10px 12px" >
       <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${label}</div>
       <div style="font-size:14px;font-weight:700;color:${color}">${value}</div>
-      ${sub ? `<div style="font-size:9px;color:var(--muted);margin-top:1px">${sub}</div>` : ''}
-    </div>`;
+      ${ sub ? `<div style="font-size:9px;color:var(--muted);margin-top:1px">${sub}</div>` : '' }
+    </div > `;
 }
 
 function renderSizingTable() {
-  const tbody = qs('#sizing-table-body');
+  const tbody   = qs('#sizing-table-body');
   if (!tbody) return;
   const capital = parseFloat(qs('#sz-capital')?.value) || state.profile.capital;
-  const risks = [0.5, 1, 1.5, 2, 3, 5];
+  const risks   = [0.5, 1, 1.5, 2, 3, 5];
   tbody.innerHTML = risks.map(r => {
-    const rUSD = (capital * r / 100);
-    const pos1x = rUSD.toFixed(2);
-    const pos5x = (rUSD * 5).toFixed(2);
-    const pos10x = (rUSD * 10).toFixed(2);
-    const color = r <= 1 ? 'var(--green)' : r <= 3 ? 'var(--yellow)' : 'var(--red)';
+    const rUSD    = (capital * r / 100);
+    const pos1x   = rUSD.toFixed(2);
+    const pos5x   = (rUSD * 5).toFixed(2);
+    const pos10x  = (rUSD * 10).toFixed(2);
+    const color   = r <= 1 ? 'var(--green)' : r <= 3 ? 'var(--yellow)' : 'var(--red)';
     return `
-      <tr style="border-bottom:1px solid var(--border)${r === state.profile.risk_pct ? ';background:rgba(108,99,255,.08)' : ''}">
+      < tr style = "border-bottom:1px solid var(--border)${r === state.profile.risk_pct ? ';background:rgba(108,99,255,.08)' : ''}" >
         <td style="padding:6px 10px;color:${color};font-weight:600">${r}%</td>
         <td style="padding:6px 10px;text-align:right">$${rUSD.toFixed(2)}</td>
         <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos1x}</td>
         <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos5x}</td>
         <td style="padding:6px 10px;text-align:right;color:var(--muted)">$${pos10x}</td>
-      </tr>`;
+      </tr > `;
   }).join('');
 }
 
@@ -1020,7 +1044,7 @@ function renderSizingTable() {
    ══════════════════════════════════════════════════════════════════ */
 function renderConfigBitunix(root) {
   root.innerHTML = `
-    <div class="stl">🔗 Bitunix Exchange</div>
+      < div class="stl" >🔗 Bitunix Exchange</div >
     <div id="bitunix-config-status" style="margin-bottom:14px">
       <div style="font-size:11px;color:var(--muted)">Comprobando conexión...</div>
     </div>
@@ -1057,7 +1081,7 @@ function renderConfigBitunix(root) {
         if (!panel) return;
         const b = state.bitunixBalance || {};
         panel.innerHTML = `
-          <div class="card">
+      < div class="card" >
             <div class="stl" style="margin-bottom:10px">💰 Cuenta actual</div>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
               ${szKpi('Equity', '$' + (b.equity || '—'), 'var(--accent)', '')}
@@ -1065,7 +1089,7 @@ function renderConfigBitunix(root) {
               ${szKpi('Margen usado', '$' + (b.usedMargin || '—'), 'var(--yellow)', '')}
               ${szKpi('P&L no realizado', (b.unrealized >= 0 ? '+' : '') + '$' + (b.unrealized || '0'), b.unrealized >= 0 ? 'var(--green)' : 'var(--red)', '')}
             </div>
-          </div>`;
+          </div > `;
       });
       renderBitunixHistory().catch(() => {
         const hp = qs('#sec-bitunix-history');
@@ -1081,7 +1105,7 @@ function renderConfigBitunix(root) {
 function renderConfigAvanzado(root) {
   const scanInterval = state.profile.scan_interval || 15;
   root.innerHTML = `
-    <div class="stl">⚙️ Configuración avanzada</div>
+      < div class="stl" >⚙️ Configuración avanzada</div >
 
     <div class="card" style="margin-bottom:12px">
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">🔔 Monedas vigiladas</div>
@@ -1144,10 +1168,10 @@ function setConfigTab(tabId) {
 function renderConfigTabContent(tab) {
   const root = qs('#config-tab-content');
   if (!root) return;
-  if (tab === 'perfil') { root.innerHTML = '<div id="sec-profile"></div>'; renderProfile(); }
-  if (tab === 'capital') { root.innerHTML = '<div id="sec-capital"></div>'; renderCapital(); }
-  if (tab === 'sizing') { renderSizingCalc(root); }
-  if (tab === 'bitunix') { renderConfigBitunix(root); }
+  if (tab === 'perfil')   { root.innerHTML = '<div id="sec-profile"></div>'; renderProfile(); }
+  if (tab === 'capital')  { root.innerHTML = '<div id="sec-capital"></div>'; renderCapital(); }
+  if (tab === 'sizing')   { renderSizingCalc(root); }
+  if (tab === 'bitunix')  { renderConfigBitunix(root); }
   if (tab === 'avanzado') { renderConfigAvanzado(root); }
 }
 
@@ -1158,14 +1182,14 @@ function renderAll() {
   updateAlertBadge();
 
   const id = state.currentTab;
-  if (id === 'ops') renderOps();
-  if (id === 'alerts') renderAlerts();
+  if (id === 'ops')       renderOps();
+  if (id === 'alerts')    renderAlerts();
   if (id === 'historial') renderHistorial();
-  if (id === 'mkt') renderMkt();
-  if (id === 'strat') renderStrategy();
-  if (id === 'config') renderConfig();
-  if (id === 'goals') renderGoals();
-  if (id === 'diary') renderDiary();
+  if (id === 'mkt')       renderMkt();
+  if (id === 'strat')     renderStrategy();
+  if (id === 'config')    renderConfig();
+  if (id === 'goals')     renderGoals();
+  if (id === 'diary')     renderDiary();
 }
 
 /* ══════════════════════════════════════════════════════════
@@ -1199,11 +1223,11 @@ function toggleReadOnly() {
 function updateReadOnlyBadge() {
   const badge = qs('#ro-badge');
   if (!badge) return;
-  badge.textContent = state.readOnlyMode ? '👁️ Solo lectura' : '✏️ Editar';
-  badge.title = state.readOnlyMode ? 'Modo solo lectura activo — click para desactivar' : 'Click para activar solo lectura';
+  badge.textContent  = state.readOnlyMode ? '👁️ Solo lectura' : '✏️ Editar';
+  badge.title        = state.readOnlyMode ? 'Modo solo lectura activo — click para desactivar' : 'Click para activar solo lectura';
   badge.style.background = state.readOnlyMode ? 'rgba(251,191,36,.15)' : 'var(--s2)';
-  badge.style.color = state.readOnlyMode ? 'var(--yellow)' : 'var(--muted)';
-  badge.style.border = state.readOnlyMode ? '1px solid rgba(251,191,36,.4)' : '1px solid var(--border)';
+  badge.style.color      = state.readOnlyMode ? 'var(--yellow)' : 'var(--muted)';
+  badge.style.border     = state.readOnlyMode ? '1px solid rgba(251,191,36,.4)' : '1px solid var(--border)';
   // Deshabilitar botón generar
   const genBtn = qs('#btn-gen');
   if (genBtn) genBtn.disabled = state.readOnlyMode || state.wsStatus !== 'live';
@@ -1223,8 +1247,8 @@ function calcSRZones(highs, lows, closes, tolerance = 0.015) {
   const swingH = [], swingL = [];
   const n = Math.min(closes.length - 2, 100);
   for (let i = 1; i < n; i++) {
-    if (highs[i] > highs[i - 1] && highs[i] > highs[i + 1]) swingH.push(highs[i]);
-    if (lows[i] < lows[i - 1] && lows[i] < lows[i + 1]) swingL.push(lows[i]);
+    if (highs[i] > highs[i-1] && highs[i] > highs[i+1]) swingH.push(highs[i]);
+    if (lows[i]  < lows[i-1]  && lows[i]  < lows[i+1])  swingL.push(lows[i]);
   }
 
   function clusterLevels(levels) {
@@ -1234,12 +1258,12 @@ function calcSRZones(highs, lows, closes, tolerance = 0.015) {
       if (existing) { existing.touches++; existing.level = (existing.level + l) / 2; }
       else clusters.push({ level: l, touches: 1 });
     });
-    return clusters.filter(c => c.touches >= 1).sort((a, b) => b.touches - a.touches);
+    return clusters.filter(c => c.touches >= 1).sort((a,b) => b.touches - a.touches);
   }
 
   const price = closes[closes.length - 1];
-  const supZones = clusterLevels(swingL).filter(z => z.level < price).sort((a, b) => b.level - a.level);
-  const resZones = clusterLevels(swingH).filter(z => z.level > price).sort((a, b) => a.level - b.level);
+  const supZones = clusterLevels(swingL).filter(z => z.level < price).sort((a,b) => b.level - a.level);
+  const resZones = clusterLevels(swingH).filter(z => z.level > price).sort((a,b) => a.level - b.level);
 
   return {
     sup1: supZones[0] || null,
@@ -1264,19 +1288,19 @@ async function fetchEconomicCalendar() {
     if (!res.ok) throw new Error('no disponible');
     const data = await res.json();
     // Filtrar solo impacto alto y medio, próximas 48h
-    const now = Date.now();
-    const end = now + 48 * 3600 * 1000;
+    const now  = Date.now();
+    const end  = now + 48 * 3600 * 1000;
     calendarData = data
       .filter(e => {
         const ts = new Date(e.date).getTime();
         return ts >= now - 3600000 && ts <= end && (e.impact === 'High' || e.impact === 'Medium');
       })
       .map(e => ({
-        time: new Date(e.date).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-        date: new Date(e.date).toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' }),
+        time:     new Date(e.date).toLocaleTimeString('es-ES',{hour:'2-digit',minute:'2-digit'}),
+        date:     new Date(e.date).toLocaleDateString('es-ES',{weekday:'short',day:'numeric',month:'short'}),
         currency: e.currency,
-        title: e.title,
-        impact: e.impact,
+        title:    e.title,
+        impact:   e.impact,
         forecast: e.forecast || '—',
         previous: e.previous || '—',
       }))
@@ -1293,10 +1317,10 @@ async function fetchEconomicCalendar() {
 function buildCalendarContext() {
   if (calendarData.length === 0) return 'Sin datos de calendario económico disponibles.';
   const high = calendarData.filter(e => e.impact === 'High');
-  const med = calendarData.filter(e => e.impact === 'Medium');
+  const med  = calendarData.filter(e => e.impact === 'Medium');
   const lines = [
-    high.length > 0 ? `⚠️ ALTO IMPACTO próx. 48h: ${high.map(e => `${e.currency} ${e.title} (${e.date} ${e.time})`).join(' | ')}` : '',
-    med.length > 0 ? `📋 Medio impacto: ${med.slice(0, 3).map(e => `${e.currency} ${e.title}`).join(' | ')}` : '',
+    high.length > 0 ? `⚠️ ALTO IMPACTO próx. 48h: ${ high.map(e => `${e.currency} ${e.title} (${e.date} ${e.time})`).join(' | ') } ` : '',
+    med.length  > 0 ? `📋 Medio impacto: ${ med.slice(0, 3).map(e => `${e.currency} ${e.title}`).join(' | ') } ` : '',
   ].filter(Boolean);
   return lines.join('\n') || 'Sin eventos relevantes próximas 48h.';
 }
@@ -1306,15 +1330,15 @@ function renderCalendarSection() {
   if (!root) return;
 
   if (calendarData.length === 0) {
-    root.innerHTML = `<div style="font-size:11px;color:var(--muted);padding:10px 0">
+    root.innerHTML = `< div style = "font-size:11px;color:var(--muted);padding:10px 0" >
       Cargando calendario... <button class="btn" style="padding:3px 8px;font-size:10px" onclick="refreshCalendar()">↻ Cargar</button>
-    </div>`;
+    </div > `;
     return;
   }
 
   const highEvents = calendarData.filter(e => e.impact === 'High');
   const rows = calendarData.map(e => `
-    <div class="cal-event">
+      < div class="cal-event" >
       <div class="cal-impact ${e.impact === 'High' ? 'high' : 'medium'}" title="${e.impact} Impact"></div>
       <div style="flex:1;min-width:0">
         <div style="font-weight:500;color:var(--text);font-size:11px">${e.title}</div>
@@ -1324,17 +1348,18 @@ function renderCalendarSection() {
         <div>P: ${e.previous}</div>
         <div>E: ${e.forecast}</div>
       </div>
-    </div>`).join('');
+    </div > `).join('');
 
   root.innerHTML = `
-    ${highEvents.length > 0 ? `
+    ${
+      highEvents.length > 0 ? `
     <div style="padding:8px 12px;background:#F4EBEB;border:1px solid #D9BCBC;border-radius:8px;margin-bottom:10px;font-size:11px;color:#8A4A4A">
       ⚠️ <b>${highEvents.length} evento${highEvents.length > 1 ? 's' : ''} de ALTO impacto</b> en próximas 48h — considera reducir tamaño de posición
     </div>` : `
     <div style="padding:7px 12px;background:#E9F4EC;border:1px solid #BCD9C5;border-radius:8px;margin-bottom:10px;font-size:11px;color:#4A7A5A">
       ✓ Sin eventos de alto impacto en próximas 48h
     </div>`}
-    ${rows}
+    ${ rows }
     <div style="font-size:9px;color:var(--muted);margin-top:8px;text-align:right">
       Fuente: ForexFactory · Solo USD/BTC relevantes · <button onclick="refreshCalendar()" style="background:none;border:none;cursor:pointer;color:var(--accent);font-size:9px">↻ Actualizar</button>
     </div>`;
@@ -1351,31 +1376,31 @@ async function refreshCalendar() {
    BACKTESTING VISUAL
    ══════════════════════════════════════════════════════════ */
 const BT_FILTERS = {
-  minRR: 0,
+  minRR:   0,
   minConf: 0,
-  tipo: 'ALL',
-  setup: '',
-  par: 'ALL',
+  tipo:    'ALL',
+  setup:   '',
+  par:     'ALL',
 };
 
 function runBacktest(trades, filters = BT_FILTERS) {
   let filtered = trades.filter(t => {
     if (filters.tipo !== 'ALL' && t.tipo !== filters.tipo) return false;
-    if (filters.par !== 'ALL' && t.par !== filters.par) return false;
+    if (filters.par  !== 'ALL' && t.par  !== filters.par)  return false;
     if (filters.minConf > 0 && (t.confianza || 0) < filters.minConf) return false;
-    if (filters.minRR > 0 && parseFloat(t.rr || 0) < filters.minRR) return false;
+    if (filters.minRR  > 0 && parseFloat(t.rr || 0) < filters.minRR) return false;
     if (filters.setup && !(t.setup || '').toLowerCase().includes(filters.setup.toLowerCase())) return false;
     return true;
   });
 
-  const wins = filtered.filter(t => t.result === 'WIN').length;
+  const wins   = filtered.filter(t => t.result === 'WIN').length;
   const losses = filtered.filter(t => t.result === 'LOSS').length;
-  const totalPnl = filtered.reduce((a, t) => a + (t.pnl || 0), 0);
-  const grossWin = filtered.filter(t => t.result === 'WIN').reduce((a, t) => a + (t.pnl || 0), 0);
-  const grossLoss = Math.abs(filtered.filter(t => t.result === 'LOSS').reduce((a, t) => a + (t.pnl || 0), 0));
-  const winRate = filtered.length > 0 ? (wins / filtered.length * 100).toFixed(1) : 0;
-  const pf = grossLoss > 0 ? (grossWin / grossLoss).toFixed(2) : grossWin > 0 ? '∞' : '0';
-  const avgPnl = filtered.length > 0 ? (totalPnl / filtered.length).toFixed(2) : 0;
+  const totalPnl   = filtered.reduce((a,t) => a+(t.pnl||0), 0);
+  const grossWin   = filtered.filter(t=>t.result==='WIN').reduce((a,t)=>a+(t.pnl||0),0);
+  const grossLoss  = Math.abs(filtered.filter(t=>t.result==='LOSS').reduce((a,t)=>a+(t.pnl||0),0));
+  const winRate    = filtered.length > 0 ? (wins/filtered.length*100).toFixed(1) : 0;
+  const pf         = grossLoss > 0 ? (grossWin/grossLoss).toFixed(2) : grossWin > 0 ? '∞' : '0';
+  const avgPnl     = filtered.length > 0 ? (totalPnl/filtered.length).toFixed(2) : 0;
 
   return { filtered, wins, losses, total: filtered.length, totalPnl, winRate, pf, avgPnl };
 }
@@ -1385,37 +1410,37 @@ function renderBacktest() {
   if (!root) return;
 
   const { closedTrades } = state;
-  const allPairs = [...new Set(closedTrades.map(t => t.par))];
-  const result = runBacktest(closedTrades, BT_FILTERS);
+  const allPairs  = [...new Set(closedTrades.map(t => t.par))];
+  const result    = runBacktest(closedTrades, BT_FILTERS);
 
   // Equity curve del backtest
   let cap = state.profile.capital;
-  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl || 0); return cap; })];
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
   const maxP = Math.max(...pts), minP = Math.min(...pts);
-  const bars = pts.map((v, i) => {
-    const h = maxP === minP ? 50 : ((v - minP) / (maxP - minP)) * 85 + 15;
-    const prev = pts[i - 1];
-    const col = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
-    return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
+  const bars = pts.map((v,i) => {
+    const h = maxP===minP ? 50 : ((v-minP)/(maxP-minP))*85+15;
+    const prev = pts[i-1];
+    const col = !prev ? 'var(--accent)' : v>=prev ? 'var(--green)' : 'var(--red)';
+    return `< div class="equity-bar" style = "height:${h}%;background:${col}99" title = "$${v.toFixed(0)}" ></div > `;
   }).join('');
 
   const tradeRows = result.filtered.slice(0, 30).map(t => `
-    <div class="hist-row" style="padding:7px 0">
+      < div class="hist-row" style = "padding:7px 0" >
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result}</span>
+        <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
         <span style="font-weight:600">${t.par}</span>
         <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
-        <span style="font-size:10px;color:var(--muted)">R:R ${t.rr || '?'} · ${t.confianza || '?'}% conf</span>
-        <span style="font-size:9px;color:var(--subtle)">${t.closedAt || ''}</span>
+        <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
+        <span style="font-size:9px;color:var(--subtle)">${t.closedAt||''}</span>
       </div>
-      <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
-    </div>`).join('');
+      <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+    </div > `).join('');
 
   root.innerHTML = `
-    <div class="stl">◈ Backtesting Visual</div>
+      < div class="stl" >◈ Backtesting Visual</div >
     <div style="font-size:11px;color:var(--muted);margin-bottom:16px">Filtra tu historial real para descubrir qué setups, pares y condiciones funcionan mejor.</div>
 
-    <!-- Filtros -->
+    <!--Filtros -->
     <div class="card">
       <div class="stl">Filtros</div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px">
@@ -1431,7 +1456,7 @@ function renderBacktest() {
           <div class="lbl">Par</div>
           <select class="inp" id="bt-par" onchange="applyBtFilter()" style="font-size:12px">
             <option value="ALL">Todos</option>
-            ${allPairs.map(p => `<option value="${p}">${p}</option>`).join('')}
+            ${allPairs.map(p=>`<option value="${p}">${p}</option>`).join('')}
           </select>
         </div>
         <div>
@@ -1450,81 +1475,81 @@ function renderBacktest() {
       <button class="btn" onclick="resetBtFilters()" style="font-size:10px">↺ Limpiar filtros</button>
     </div>
 
-    <!-- Resultados -->
+    <!--Resultados -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px" id="bt-stats">
       <div class="bt-stat"><div class="bt-stat-lbl">Ops filtradas</div><div class="bt-stat-val" id="bt-total">${result.total}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Win Rate</div><div class="bt-stat-val" style="color:${parseFloat(result.winRate) >= 50 ? 'var(--green)' : 'var(--red)'}" id="bt-wr">${result.winRate}%</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">P&L Total</div><div class="bt-stat-val" style="color:${result.totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}" id="bt-pnl">${fmtUSD(result.totalPnl)}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Profit Factor</div><div class="bt-stat-val" style="color:${parseFloat(result.pf) >= 1 ? 'var(--green)' : 'var(--red)'}" id="bt-pf">${result.pf}</div></div>
-      <div class="bt-stat"><div class="bt-stat-lbl">Media/op</div><div class="bt-stat-val" style="color:${parseFloat(result.avgPnl) >= 0 ? 'var(--green)' : 'var(--red)'}" id="bt-avg">${fmtUSD(parseFloat(result.avgPnl))}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Win Rate</div><div class="bt-stat-val" style="color:${parseFloat(result.winRate)>=50?'var(--green)':'var(--red)'}" id="bt-wr">${result.winRate}%</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">P&L Total</div><div class="bt-stat-val" style="color:${result.totalPnl>=0?'var(--green)':'var(--red)'}" id="bt-pnl">${fmtUSD(result.totalPnl)}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Profit Factor</div><div class="bt-stat-val" style="color:${parseFloat(result.pf)>=1?'var(--green)':'var(--red)'}" id="bt-pf">${result.pf}</div></div>
+      <div class="bt-stat"><div class="bt-stat-lbl">Media/op</div><div class="bt-stat-val" style="color:${parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)'}" id="bt-avg">${fmtUSD(parseFloat(result.avgPnl))}</div></div>
     </div>
 
-    <!-- Curva -->
+    <!--Curva -->
     <div class="card">
       <div class="stl">Curva de Capital Filtrada</div>
       ${pts.length > 1 ? `<div class="equity-bars" id="bt-curve">${bars}</div>` : `<div class="empty" style="padding:20px"><div class="et">Sin datos para los filtros actuales.</div></div>`}
     </div>
 
-    <!-- Trades -->
-    <div class="card">
-      <div class="stl">Operaciones (${result.total})</div>
-      <div id="bt-trades">${tradeRows || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>'}</div>
-    </div>`;
+    <!--Trades -->
+      <div class="card">
+        <div class="stl">Operaciones (${result.total})</div>
+        <div id="bt-trades">${tradeRows || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>'}</div>
+      </div>`;
 }
 
 function applyBtFilter() {
-  BT_FILTERS.tipo = qs('#bt-tipo')?.value || 'ALL';
-  BT_FILTERS.par = qs('#bt-par')?.value || 'ALL';
+  BT_FILTERS.tipo    = qs('#bt-tipo')?.value  || 'ALL';
+  BT_FILTERS.par     = qs('#bt-par')?.value   || 'ALL';
   BT_FILTERS.minConf = parseFloat(qs('#bt-conf')?.value) || 0;
-  BT_FILTERS.minRR = parseFloat(qs('#bt-rr')?.value) || 0;
-  BT_FILTERS.setup = qs('#bt-setup')?.value || '';
+  BT_FILTERS.minRR   = parseFloat(qs('#bt-rr')?.value)   || 0;
+  BT_FILTERS.setup   = qs('#bt-setup')?.value || '';
 
   const result = runBacktest(state.closedTrades, BT_FILTERS);
 
   // Update stats
   const set = (id, val, color) => {
-    const el = qs('#' + id);
+    const el = qs('#'+id);
     if (el) { el.textContent = val; if (color) el.style.color = color; }
   };
   set('bt-total', result.total);
-  set('bt-wr', result.winRate + '%', parseFloat(result.winRate) >= 50 ? 'var(--green)' : 'var(--red)');
-  set('bt-pnl', fmtUSD(result.totalPnl), result.totalPnl >= 0 ? 'var(--green)' : 'var(--red)');
-  set('bt-pf', result.pf, parseFloat(result.pf) >= 1 ? 'var(--green)' : 'var(--red)');
-  set('bt-avg', fmtUSD(parseFloat(result.avgPnl)), parseFloat(result.avgPnl) >= 0 ? 'var(--green)' : 'var(--red)');
+  set('bt-wr',    result.winRate+'%', parseFloat(result.winRate)>=50?'var(--green)':'var(--red)');
+  set('bt-pnl',   fmtUSD(result.totalPnl), result.totalPnl>=0?'var(--green)':'var(--red)');
+  set('bt-pf',    result.pf, parseFloat(result.pf)>=1?'var(--green)':'var(--red)');
+  set('bt-avg',   fmtUSD(parseFloat(result.avgPnl)), parseFloat(result.avgPnl)>=0?'var(--green)':'var(--red)');
 
   // Update curve
   let cap = state.profile.capital;
-  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl || 0); return cap; })];
+  const pts = [cap, ...result.filtered.slice().reverse().map(t => { cap += (t.pnl||0); return cap; })];
   const maxP = Math.max(...pts), minP = Math.min(...pts);
   const curve = qs('#bt-curve');
   if (curve) {
-    curve.innerHTML = pts.map((v, i) => {
-      const h = maxP === minP ? 50 : ((v - minP) / (maxP - minP)) * 85 + 15;
-      const prev = pts[i - 1], col = !prev ? 'var(--accent)' : v >= prev ? 'var(--green)' : 'var(--red)';
-      return `<div class="equity-bar" style="height:${h}%;background:${col}99" title="$${v.toFixed(0)}"></div>`;
+    curve.innerHTML = pts.map((v,i) => {
+      const h = maxP===minP?50:((v-minP)/(maxP-minP))*85+15;
+      const prev=pts[i-1], col=!prev?'var(--accent)':v>=prev?'var(--green)':'var(--red)';
+      return `< div class="equity-bar" style = "height:${h}%;background:${col}99" title = "$${v.toFixed(0)}" ></div > `;
     }).join('');
   }
 
   // Update trades list
   const trd = qs('#bt-trades');
   if (trd) {
-    trd.innerHTML = result.filtered.slice(0, 30).map(t => `
-      <div class="hist-row" style="padding:7px 0">
+    trd.innerHTML = result.filtered.slice(0,30).map(t => `
+      < div class="hist-row" style = "padding:7px 0" >
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          <span class="tag ${t.result === 'WIN' ? 'tg' : 'tr'}">${t.result}</span>
+          <span class="tag ${t.result==='WIN'?'tg':'tr'}">${t.result}</span>
           <span style="font-weight:600">${t.par}</span>
           <span style="color:var(--muted);font-size:10px">${t.tipo}</span>
-          <span style="font-size:10px;color:var(--muted)">R:R ${t.rr || '?'} · ${t.confianza || '?'}% conf</span>
+          <span style="font-size:10px;color:var(--muted)">R:R ${t.rr||'?'} · ${t.confianza||'?'}% conf</span>
         </div>
-        <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(t.pnl || 0)}</span>
-      </div>`).join('') || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>';
+        <span style="font-family:var(--serif);font-weight:600;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">${fmtUSD(t.pnl||0)}</span>
+      </div > `).join('') || '<div style="color:var(--muted);font-size:11px;padding:10px 0">Sin operaciones para estos filtros.</div>';
   }
 }
 
 function resetBtFilters() {
-  Object.assign(BT_FILTERS, { minRR: 0, minConf: 0, tipo: 'ALL', setup: '', par: 'ALL' });
-  const s = (id, v) => { const el = qs('#' + id); if (el) el.value = v; };
-  s('bt-tipo', 'ALL'); s('bt-par', 'ALL'); s('bt-conf', '0'); s('bt-rr', '0'); s('bt-setup', '');
+  Object.assign(BT_FILTERS, { minRR:0, minConf:0, tipo:'ALL', setup:'', par:'ALL' });
+  const s = (id, v) => { const el=qs('#'+id); if(el) el.value=v; };
+  s('bt-tipo','ALL'); s('bt-par','ALL'); s('bt-conf','0'); s('bt-rr','0'); s('bt-setup','');
   applyBtFilter();
 }
 
@@ -1533,7 +1558,7 @@ function resetBtFilters() {
    ══════════════════════════════════════════════════════════ */
 function addGoal(title, targetPnl, deadline) {
   const goal = {
-    id: uid(),
+    id:        uid(),
     title,
     targetPnl: parseFloat(targetPnl),
     deadline,
@@ -1558,43 +1583,43 @@ function renderGoals() {
   const root = qs('#sec-goals') || qs('#goals-section');
   if (!root) return;
 
-  const closedPnl = state.closedTrades.reduce((a, t) => a + (t.pnl || 0), 0);
-  const activePnl = state.activeTrades.reduce((acc, t) => {
+  const closedPnl = state.closedTrades.reduce((a,t) => a+(t.pnl||0), 0);
+  const activePnl = state.activeTrades.reduce((acc,t) => {
     const p = state.prices[coinOf(t.par)] || t.entrada;
-    const lev = t.leverage || 1;
-    return acc + (t.tipo === 'LONG' ? (p - t.entrada) * t.size * lev : (t.entrada - p) * t.size * lev);
+    const lev = t.leverage||1;
+    return acc + (t.tipo==='LONG' ? (p-t.entrada)*t.size*lev : (t.entrada-p)*t.size*lev);
   }, 0);
   const totalPnl = closedPnl + activePnl;
-  const capital = state.profile.capital;
+  const capital  = state.profile.capital;
 
   const goalCards = state.goals.map(g => {
     const progress = g.targetPnl > 0 ? Math.min((totalPnl / g.targetPnl) * 100, 100) : 0;
     const remaining = g.targetPnl - totalPnl;
-    const daysLeft = g.deadline ? Math.ceil((new Date(g.deadline) - new Date()) / 86400000) : null;
-    const achieved = totalPnl >= g.targetPnl;
-    const color = achieved ? 'var(--green)' : progress > 50 ? 'var(--yellow)' : 'var(--accent)';
+    const daysLeft  = g.deadline ? Math.ceil((new Date(g.deadline) - new Date()) / 86400000) : null;
+    const achieved  = totalPnl >= g.targetPnl;
+    const color     = achieved ? 'var(--green)' : progress > 50 ? 'var(--yellow)' : 'var(--accent)';
 
     // Proyección: basada en ops/semana y avg pnl
     let projection = '';
     if (state.closedTrades.length >= 3) {
       const oldest = state.closedTrades[state.closedTrades.length - 1];
-      const days = oldest?.closedAt ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.closedAt?.split(',')[0].split('/').reverse().join('-'))) / 86400000)) : 30;
+      const days   = oldest?.closedAt ? Math.max(1, Math.ceil((Date.now() - new Date(oldest.closedAt?.split(',')[0].split('/').reverse().join('-'))) / 86400000)) : 30;
       const dailyRate = (closedPnl / days);
       if (dailyRate > 0 && remaining > 0) {
         const daysNeeded = Math.ceil(remaining / dailyRate);
-        projection = `A tu ritmo actual: ~${daysNeeded} días para alcanzarlo`;
+        projection = `A tu ritmo actual: ~${ daysNeeded } días para alcanzarlo`;
       }
     }
 
     return `
-      <div class="goal-card">
+      < div class="goal-card" >
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
           <div>
             <div style="font-weight:600;font-family:var(--serif);font-size:14px">${g.title}</div>
             <div style="font-size:10px;color:var(--muted);margin-top:2px">
               Objetivo: <b style="color:var(--text)">+${fmtUSD(g.targetPnl)}</b>
               ${g.deadline ? ` · Fecha límite: ${new Date(g.deadline).toLocaleDateString('es-ES')}` : ''}
-              ${daysLeft !== null ? ` · <span style="color:${daysLeft < 7 ? 'var(--red)' : 'var(--muted)'}">${daysLeft}d restantes</span>` : ''}
+              ${daysLeft !== null ? ` · <span style="color:${daysLeft<7?'var(--red)':'var(--muted)'}">${daysLeft}d restantes</span>` : ''}
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
@@ -1610,51 +1635,52 @@ function renderGoals() {
           <div class="goal-progress-fill" style="width:${progress}%;background:${color}"></div>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted);margin-top:5px">
-          <span>P&L actual: <b style="color:${totalPnl >= 0 ? 'var(--green)' : 'var(--red)'}">${fmtUSD(totalPnl)}</b></span>
+          <span>P&L actual: <b style="color:${totalPnl>=0?'var(--green)':'var(--red)'}">${fmtUSD(totalPnl)}</b></span>
           <span>Faltan: <b style="color:var(--text)">${fmtUSD(Math.max(0, remaining))}</b></span>
         </div>
-        ${projection ? `<div style="font-size:10px;color:var(--accent);margin-top:5px">📈 ${projection}</div>` : ''}
-      </div>`;
+        ${ projection ? `<div style="font-size:10px;color:var(--accent);margin-top:5px">📈 ${projection}</div>` : '' }
+      </div > `;
   }).join('');
 
   root.innerHTML = `
-    <div class="stl">🎯 Mis Objetivos</div>
+      < div class="stl" >🎯 Mis Objetivos</div >
     <div style="font-size:11px;color:var(--muted);margin-bottom:14px">Define una meta de P&L y sigue tu progreso en tiempo real.</div>
 
-    <!-- Crear objetivo -->
-    <div class="card" style="margin-bottom:14px">
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
-        <div>
-          <div class="lbl">Nombre del objetivo</div>
-          <input class="inp" type="text" id="goal-title" placeholder="Ej: Meta del mes" style="font-size:12px"/>
+    <!--Crear objetivo-- >
+      <div class="card" style="margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:8px;align-items:end">
+          <div>
+            <div class="lbl">Nombre del objetivo</div>
+            <input class="inp" type="text" id="goal-title" placeholder="Ej: Meta del mes" style="font-size:12px" />
+          </div>
+          <div>
+            <div class="lbl">P&L objetivo ($)</div>
+            <input class="inp" type="number" id="goal-pnl" placeholder="Ej: 500" step="any" style="font-size:12px" />
+          </div>
+          <div>
+            <div class="lbl">Fecha límite (opcional)</div>
+            <input class="inp" type="date" id="goal-date" style="font-size:12px" />
+          </div>
+          <button class="btn btng" style="padding:8px 14px;font-size:11px" onclick="submitGoal()">+ Añadir</button>
         </div>
-        <div>
-          <div class="lbl">P&L objetivo ($)</div>
-          <input class="inp" type="number" id="goal-pnl" placeholder="Ej: 500" step="any" style="font-size:12px"/>
-        </div>
-        <div>
-          <div class="lbl">Fecha límite (opcional)</div>
-          <input class="inp" type="date" id="goal-date" style="font-size:12px"/>
-        </div>
-        <button class="btn btng" style="padding:8px 14px;font-size:11px" onclick="submitGoal()">+ Añadir</button>
       </div>
-    </div>
 
-    ${state.goals.length === 0
-      ? `<div class="empty" style="padding:30px"><div class="ei">🎯</div><div class="et">Sin objetivos aún. Crea uno para seguir tu progreso.</div></div>`
-      : goalCards
-    }`;
+    ${
+      state.goals.length === 0
+        ? `<div class="empty" style="padding:30px"><div class="ei">🎯</div><div class="et">Sin objetivos aún. Crea uno para seguir tu progreso.</div></div>`
+        : goalCards
+    } `;
 }
 
 function submitGoal() {
-  const title = qs('#goal-title')?.value?.trim();
-  const pnl = parseFloat(qs('#goal-pnl')?.value);
-  const date = qs('#goal-date')?.value || null;
+  const title  = qs('#goal-title')?.value?.trim();
+  const pnl    = parseFloat(qs('#goal-pnl')?.value);
+  const date   = qs('#goal-date')?.value || null;
   if (!title || !pnl || pnl <= 0) { showToast('Rellena nombre y objetivo', true); return; }
   addGoal(title, pnl, date);
   if (qs('#goal-title')) qs('#goal-title').value = '';
-  if (qs('#goal-pnl')) qs('#goal-pnl').value = '';
-  if (qs('#goal-date')) qs('#goal-date').value = '';
+  if (qs('#goal-pnl'))   qs('#goal-pnl').value   = '';
+  if (qs('#goal-date'))  qs('#goal-date').value   = '';
 }
 
 
@@ -1667,7 +1693,7 @@ function showBitunixSetup() {
   modal.id = 'bitunix-setup-modal';
   modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeIn .2s ease';
   modal.innerHTML = `
-    <div style="background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:460px;box-shadow:var(--shadow-lg);overflow:hidden">
+      < div style = "background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:460px;box-shadow:var(--shadow-lg);overflow:hidden" >
       <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:var(--s2)">
         <div style="font-family:var(--serif);font-size:16px;font-weight:600">🔗 Conectar Bitunix</div>
         <div style="font-size:11px;color:var(--muted);margin-top:4px">Las claves se guardan como variables de entorno en el servidor — nunca en el navegador.</div>
@@ -1721,11 +1747,11 @@ function playSound(type) {
     gain.connect(ctx.destination);
 
     const sounds = {
-      alert: { freq: 880, type: 'sine', dur: 0.3, vol: 0.3 },  // nueva alerta del escáner
-      win: { freq: 660, type: 'triangle', dur: 0.5, vol: 0.4 },  // trade ganado
-      loss: { freq: 220, type: 'sawtooth', dur: 0.4, vol: 0.3 },  // trade perdido
-      trailing: { freq: 440, type: 'sine', dur: 0.15, vol: 0.2 }, // trailing stop actualizado
-      open: { freq: 550, type: 'sine', dur: 0.25, vol: 0.3 }, // trade abierto
+      alert:    { freq: 880, type: 'sine',     dur: 0.3, vol: 0.3 },  // nueva alerta del escáner
+      win:      { freq: 660, type: 'triangle', dur: 0.5, vol: 0.4 },  // trade ganado
+      loss:     { freq: 220, type: 'sawtooth', dur: 0.4, vol: 0.3 },  // trade perdido
+      trailing: { freq: 440, type: 'sine',     dur: 0.15, vol: 0.2 }, // trailing stop actualizado
+      open:     { freq: 550, type: 'sine',     dur: 0.25, vol: 0.3 }, // trade abierto
     };
     const s = sounds[type] || sounds.alert;
     osc.type = s.type;
@@ -1791,8 +1817,8 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
 
-  qs('#btn-gen')?.addEventListener('click', onGenerate);
-  qs('#scanner-toggle-hdr')?.addEventListener('click', toggleScanner);
+  qs('#btn-gen')            ?.addEventListener('click', onGenerate);
+  qs('#scanner-toggle-hdr') ?.addEventListener('click', toggleScanner);
 
   initMarketMeta(state.watchedCoins);
   connectWS();
@@ -1847,32 +1873,32 @@ document.addEventListener('DOMContentLoaded', () => {
       // Re-renderizar si hay cambios relevantes
       renderAll();
     }
-  }).catch(() => { });
+  }).catch(() => {});
 
   syncTradesToServer();
   // Cargar price alerts desde Supabase y merge con localStorage
   authFetch('/api/price-alerts').then(r => r.json()).then(data => {
     if (!data.ok || !data.alerts?.length) return;
     const localIds = new Set((state.priceAlerts || []).map(a => a.id));
-    const merged = [...(state.priceAlerts || [])];
+    const merged   = [...(state.priceAlerts || [])];
     data.alerts.forEach(a => { if (!localIds.has(a.id) && !a.triggered) merged.push(a); });
     state.priceAlerts = merged;
     saveKey('priceAlerts', state.priceAlerts);
     if (state.currentTab === 'alerts') renderAlerts();
-  }).catch(() => { });
+  }).catch(() => {});
 
   // Cargar diary desde Supabase y merge con localStorage
   authFetch('/api/diary').then(r => r.json()).then(data => {
     if (!data.ok || !data.entries?.length) return;
     const localDiary = state.diary || [];
-    const localIds = new Set(localDiary.map(e => e.id));
-    const merged = [...localDiary];
+    const localIds   = new Set(localDiary.map(e => e.id));
+    const merged     = [...localDiary];
     data.entries.forEach(e => { if (!localIds.has(e.id)) merged.push(e); });
     merged.sort((a, b) => b.date.localeCompare(a.date));
     state.diary = merged;
     storage.set('cp:diary', state.diary);
     if (state.currentTab === 'diary') renderDiary();
-  }).catch(() => { });
+  }).catch(() => {});
   updateReadOnlyBadge();
 
   // Inicializar estado del botón de sonido
@@ -1931,7 +1957,7 @@ Object.assign(window, {
    ══════════════════════════════════════════════════════════════════ */
 async function renderBitunixHistory() {
   const containerId = 'sec-bitunix-history';
-  const container = qs('#' + containerId);
+  const container   = qs('#' + containerId);
   if (!container) return;
 
   // Estado de carga
@@ -1944,7 +1970,7 @@ async function renderBitunixHistory() {
     </div>`;
 
   try {
-    const res = await authFetch('/api/bitunix/history');
+    const res  = await authFetch('/api/bitunix/history');
     const data = await res.json();
 
     if (!data.ok) {
@@ -1972,22 +1998,22 @@ async function renderBitunixHistory() {
     }
 
     // Calcular resumen
-    const filled = orders.filter(o => o.status === 'FILLED' || o.status === 'filled');
-    const longs = filled.filter(o => o.side === 'BUY' || o.side === 'buy');
-    const shorts = filled.filter(o => o.side === 'SELL' || o.side === 'sell');
+    const filled  = orders.filter(o => o.status === 'FILLED' || o.status === 'filled');
+    const longs   = filled.filter(o => o.side === 'BUY'  || o.side === 'buy');
+    const shorts  = filled.filter(o => o.side === 'SELL' || o.side === 'sell');
     const totalPnl = filled.reduce((a, o) => a + parseFloat(o.realizedPnl || o.pnl || 0), 0);
 
     // Filas de órdenes
     const rows = orders.map(o => {
-      const side = (o.side || '').toUpperCase();
-      const isLong = side === 'BUY';
-      const status = (o.status || '').toUpperCase();
-      const isFilled = status === 'FILLED';
-      const symbol = (o.symbol || '').replace('USDT', '/USDT');
-      const qty = parseFloat(o.qty || o.quantity || 0);
-      const price = parseFloat(o.price || o.avgPrice || o.dealPrice || 0);
-      const pnl = parseFloat(o.realizedPnl || o.pnl || 0);
-      const hasPnl = o.realizedPnl != null || o.pnl != null;
+      const side      = (o.side || '').toUpperCase();
+      const isLong    = side === 'BUY';
+      const status    = (o.status || '').toUpperCase();
+      const isFilled  = status === 'FILLED';
+      const symbol    = (o.symbol || '').replace('USDT', '/USDT');
+      const qty       = parseFloat(o.qty || o.quantity || 0);
+      const price     = parseFloat(o.price || o.avgPrice || o.dealPrice || 0);
+      const pnl       = parseFloat(o.realizedPnl || o.pnl || 0);
+      const hasPnl    = o.realizedPnl != null || o.pnl != null;
       const orderType = (o.orderType || o.type || 'MARKET').toUpperCase();
 
       // Formatear timestamp
@@ -1995,7 +2021,7 @@ async function renderBitunixHistory() {
       const ts = o.createTime || o.createdTime || o.time || o.timestamp;
       if (ts) {
         const d = new Date(typeof ts === 'string' ? parseInt(ts) : ts);
-        if (!isNaN(d)) dateStr = d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+        if (!isNaN(d)) dateStr = d.toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
       }
 
       return `
@@ -2015,7 +2041,7 @@ async function renderBitunixHistory() {
           <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
             <div style="text-align:right">
               <div style="font-size:11px;color:var(--muted)">Precio</div>
-              <div style="font-size:12px;font-weight:600">${price > 0 ? '$' + price.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 6 }) : '—'}</div>
+              <div style="font-size:12px;font-weight:600">${price > 0 ? '$' + price.toLocaleString('es-ES', {minimumFractionDigits:2, maximumFractionDigits:6}) : '—'}</div>
             </div>
             <div style="text-align:right">
               <div style="font-size:11px;color:var(--muted)">Qty</div>
@@ -2093,8 +2119,8 @@ async function renderBitunixHistory() {
    ══════════════════════════════════════════════════════════════════ */
 function logActivity(action, detail) {
   const entry = {
-    id: Date.now(),
-    ts: new Date().toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+    id:     Date.now(),
+    ts:     new Date().toLocaleString('es-ES', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' }),
     action,
     detail: detail || '',
   };
@@ -2111,17 +2137,17 @@ function renderActivityLogHTML() {
   if (!log.length) return '<div style="font-size:11px;color:var(--muted)">Sin actividad registrada aún.</div>';
 
   const icons = {
-    'trade_open': '🟢',
-    'trade_close': '🔵',
-    'trade_cancel': '⚫',
+    'trade_open':    '🟢',
+    'trade_close':   '🔵',
+    'trade_cancel':  '⚫',
     'scanner_alert': '🔔',
-    'scanner_on': '▶️',
-    'scanner_off': '⏸',
-    'login': '🔑',
-    'goal_add': '🎯',
-    'goal_delete': '🗑️',
-    'diary_entry': '📓',
-    'config_save': '⚙️',
+    'scanner_on':    '▶️',
+    'scanner_off':   '⏸',
+    'login':         '🔑',
+    'goal_add':      '🎯',
+    'goal_delete':   '🗑️',
+    'diary_entry':   '📓',
+    'config_save':   '⚙️',
   };
 
   const rows = log.slice(0, 50).map(e => {
@@ -2144,8 +2170,8 @@ function renderActivityLogHTML() {
 function exportDiaryCSV() {
   const entries = state.diary || [];
   if (!entries.length) { showToast('Sin entradas en el diario.', true); return; }
-  const headers = ['Fecha', 'Ánimo', 'P&L($)', 'Operaciones', 'Notas', 'Lección', 'Tags'];
-  const moodLabels = { great: 'Excelente', good: 'Bueno', neutral: 'Neutral', bad: 'Malo', terrible: 'Pésimo' };
+  const headers = ['Fecha','Ánimo','P&L($)','Operaciones','Notas','Lección','Tags'];
+  const moodLabels = { great:'Excelente', good:'Bueno', neutral:'Neutral', bad:'Malo', terrible:'Pésimo' };
   const rows = entries.map(e => [
     e.date,
     moodLabels[e.mood] || e.mood || '',
@@ -2157,10 +2183,10 @@ function exportDiaryCSV() {
   ]);
   const csv = [headers, ...rows].map(r => r.map(c => `"${c}"`).join(',')).join('\n');
   const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `diario_trading_${new Date().toISOString().slice(0, 10)}.csv`;
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `diario_trading_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
   showToast('📥 Diario exportado como CSV');
@@ -2171,7 +2197,7 @@ async function showWeeklySummary() {
   const origText = btn?.innerHTML || '';
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Generando...'; }
   try {
-    const r = await authFetch('/api/diary/weekly-summary');
+    const r    = await authFetch('/api/diary/weekly-summary');
     const data = await r.json();
     if (!data.ok) { showToast('Error generando resumen: ' + (data.error || ''), true); return; }
     const { summary, stats } = data;
@@ -2242,16 +2268,16 @@ function renderDiary() {
   const monthsHTML = Object.keys(byMonth).sort().reverse().map(month => {
     const [y, m] = month.split('-');
     const monthName = new Date(y, m - 1).toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-    const cards = byMonth[month].sort((a, b) => b.date.localeCompare(a.date)).map(e => {
-      const mood = moodEmojis[e.mood] || '😐';
-      const pnl = e.pnl != null ? `<span style="color:${e.pnl >= 0 ? 'var(--green)' : 'var(--red)'};font-weight:600">${e.pnl >= 0 ? '+' : ''}$${e.pnl.toFixed(2)}</span>` : '';
-      const date = new Date(e.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' });
+    const cards = byMonth[month].sort((a,b) => b.date.localeCompare(a.date)).map(e => {
+      const mood  = moodEmojis[e.mood] || '😐';
+      const pnl   = e.pnl != null ? `<span style="color:${e.pnl>=0?'var(--green)':'var(--red)'};font-weight:600">${e.pnl>=0?'+':''}$${e.pnl.toFixed(2)}</span>` : '';
+      const date  = new Date(e.date + 'T12:00:00').toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'short' });
       return `
         <div class="card" style="margin-bottom:10px">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
             <div>
               <div style="font-size:12px;font-weight:600;color:var(--text);text-transform:capitalize">${date}</div>
-              <div style="font-size:10px;color:var(--muted);margin-top:1px">${mood} ${moodLabels[e.mood] || ''}${e.ops ? ' · ' + e.ops + ' operaciones' : ''}${e.pnl != null ? ' · P&L: ' : ''}${pnl}</div>
+              <div style="font-size:10px;color:var(--muted);margin-top:1px">${mood} ${moodLabels[e.mood]||''}${e.ops ? ' · ' + e.ops + ' operaciones' : ''}${e.pnl != null ? ' · P&L: ' : ''}${pnl}</div>
             </div>
             <button onclick="deleteDiaryEntry('${e.id}')" style="background:none;border:none;cursor:pointer;color:var(--muted);font-size:14px;padding:2px">×</button>
           </div>
@@ -2280,7 +2306,7 @@ function renderDiary() {
     <!-- Nueva entrada -->
     <div class="card" style="margin-bottom:20px">
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:12px">
-        ✏️ Entrada de hoy — ${new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })}
+        ✏️ Entrada de hoy — ${new Date().toLocaleDateString('es-ES', { weekday:'long', day:'numeric', month:'long' })}
         ${todayEntry ? ' <span style="font-size:10px;color:var(--accent)">(ya existe, se sobreescribirá)</span>' : ''}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
@@ -2336,12 +2362,12 @@ function renderDiary() {
 }
 
 function saveDiaryEntry() {
-  const mood = qs('#diary-mood')?.value || 'neutral';
-  const notes = qs('#diary-notes')?.value?.trim() || '';
+  const mood    = qs('#diary-mood')?.value    || 'neutral';
+  const notes   = qs('#diary-notes')?.value?.trim()   || '';
   const lessons = qs('#diary-lessons')?.value?.trim() || '';
-  const tagsRaw = qs('#diary-tags')?.value?.trim() || '';
-  const pnlRaw = qs('#diary-pnl')?.value;
-  const pnl = pnlRaw !== '' && pnlRaw != null ? parseFloat(pnlRaw) : null;
+  const tagsRaw = qs('#diary-tags')?.value?.trim()    || '';
+  const pnlRaw  = qs('#diary-pnl')?.value;
+  const pnl     = pnlRaw !== '' && pnlRaw != null ? parseFloat(pnlRaw) : null;
 
   if (!notes) { showToast('Escribe algo en las notas antes de guardar', true); return; }
 
@@ -2352,13 +2378,12 @@ function saveDiaryEntry() {
   state.diary = state.diary.filter(e => e.date !== todayKey);
   // Borrar entrada anterior del día en Supabase si existe
   const prevEntry = state.diary.find(e => e.date === todayKey);
-  if (prevEntry) authFetch('/api/diary/' + prevEntry.id, { method: 'DELETE' }).catch(() => { });
+  if (prevEntry) authFetch('/api/diary/' + prevEntry.id, { method: 'DELETE' }).catch(() => {});
 
-  const entry = {
-    id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
+  const entry = { id: Date.now(), date: todayKey, mood, notes, lessons, tags, pnl,
     ops: state.closedTrades.filter(t => {
       const d = new Date(t.closedAt || 0);
-      return d.toISOString().slice(0, 10) === todayKey;
+      return d.toISOString().slice(0,10) === todayKey;
     }).length,
   };
   state.diary.unshift(entry);
@@ -2368,7 +2393,7 @@ function saveDiaryEntry() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ entry }),
-  }).catch(() => { });
+  }).catch(() => {});
   logActivity('diary_entry', 'Entrada del diario — ' + new Date().toLocaleDateString('es-ES'));
   showToast('📓 Entrada guardada');
   renderDiary();
@@ -2378,6 +2403,6 @@ function deleteDiaryEntry(id) {
   if (!confirm('¿Eliminar esta entrada del diario?')) return;
   state.diary = state.diary.filter(e => String(e.id) !== String(id));
   storage.set('cp:diary', state.diary);
-  authFetch('/api/diary/' + id, { method: 'DELETE' }).catch(() => { });
+  authFetch('/api/diary/' + id, { method: 'DELETE' }).catch(() => {});
   renderDiary();
 }

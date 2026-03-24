@@ -122,6 +122,32 @@ function _handlePriceUpdate(coin, price) {
   state.prevPrices[coin] = state.prices[coin] || price;
   state.prices[coin] = price;
   onPriceUpdate(coin, price);
+  _updateHeaderTicker(coin, price);
+}
+
+/* Update header ticker strip with live price */
+function _updateHeaderTicker(coin, price) {
+  const ticker = document.getElementById('hdr-ticker');
+  if (!ticker) return;
+  let item = ticker.querySelector(`[data-coin="${coin}"]`);
+  const prev = state.prevPrices[coin];
+  const up = prev ? price >= prev : true;
+  const chg = state.marketMeta?.[coin]?.change24h;
+  const fmt = price >= 1000
+    ? price.toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    : price >= 1
+      ? price.toFixed(4)
+      : price.toFixed(6);
+  const chgStr = chg != null
+    ? `<span class="${chg >= 0 ? 'hdr-tick-up' : 'hdr-tick-dn'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%</span>`
+    : '';
+  if (!item) {
+    item = document.createElement('span');
+    item.dataset.coin = coin;
+    item.className = 'hdr-tick';
+    ticker.appendChild(item);
+  }
+  item.innerHTML = `<span class="hdr-tick-sym">${coin}</span><span class="hdr-tick-prc">${fmt}</span>${chgStr}`;
 }
 
 /**
