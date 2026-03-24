@@ -19,8 +19,8 @@ const BT = {
   MIN_RR: 2.0,
   FEE_TAKER: 0.0006,
   FEE_MAKER: 0.0002,
-  RSI_OVERSOLD: 35,
-  RSI_OVERBOUGHT: 65,
+  RSI_OVERSOLD: 38,
+  RSI_OVERBOUGHT: 62,
   EMA_FAST: 20,
   EMA_SLOW: 50,
   EMA_TREND: 200,
@@ -97,22 +97,31 @@ function _btVolMaArray(volumes, period) {
 }
 
 /* ── Filtro sesión NY ───────────────────────────────────────────────────── */
-// Devuelve true si el timestamp (ms) está dentro de la sesión NY
-// La sesión NY es 13:30–20:00 UTC (≈ 14:30–21:00 hora española)
-// Para 4H y 1D relajamos el filtro (velas largas siempre solapan con NY)
+// Comprueba si la vela SOLAPA con la sesión NY (13:30–20:00 UTC)
+// en lugar de si simplemente abre dentro de ella.
+// Esto es correcto: una vela 4H que abre a las 12:00 UTC cubre hasta
+// las 16:00 UTC, solapando completamente con la apertura de NY.
+//
+// Duración de vela por timeframe (minutos):
+//   1h → 60 min  |  4h → 240 min  |  1d → siempre válida
+//
+// Lógica de solapamiento: la vela [open, open+dur) solapa con [nyOpen, nyClose)
+// si  open < nyClose  &&  open + dur > nyOpen
 function _isNYSession(timestampMs, interval) {
-  if (interval === '1d') return true; // velas diarias siempre válidas
-  const h = new Date(timestampMs).getUTCHours();
-  const m = new Date(timestampMs).getUTCMinutes();
-  const totalMin = h * 60 + m;
+  if (interval === '1d') return true;
+
+  const durMin = interval === '4h' ? 240 : 60; // minutos de la vela
+  const d = new Date(timestampMs);
+  const candleOpenMin = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const candleCloseMin = candleOpenMin + durMin;
+
   // NY: 13:30–20:00 UTC
-  const nyOpen = BT.NY_OPEN_UTC * 60 + 30;  // 810 min
-  const nyClose = BT.NY_CLOSE_UTC * 60;       // 1200 min
-  if (interval === '4h') {
-    // Para 4H aceptamos que la vela empiece hasta 2h antes del cierre NY
-    return totalMin >= (nyOpen - 120) && totalMin <= nyClose;
-  }
-  return totalMin >= nyOpen && totalMin < nyClose;
+  const nyOpen = BT.NY_OPEN_UTC * 60 + 30; // 810 min
+  const nyClose = BT.NY_CLOSE_UTC * 60;      // 1200 min
+
+  // Solapamiento: la vela toca la sesión NY si su cierre supera nyOpen
+  // y su apertura es anterior a nyClose
+  return candleCloseMin > nyOpen && candleOpenMin < nyClose;
 }
 
 /* ── Descarga Binance con validación ────────────────────────────────────── */
