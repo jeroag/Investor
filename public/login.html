@@ -1,54 +1,34 @@
 <!doctype html>
 <html lang="es">
+
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
   <title>CryptoPlan IA — Acceso</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap"/>
-  
-  <!-- Precarga de scripts de la app para que la redirección sea instantánea -->
-  <link rel="preload" href="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js" as="script">
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@300;400;500&family=Space+Grotesk:wght@300;400&display=swap" />
+
+  <link rel="preload" href="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"
+    as="script">
   <link rel="preload" href="https://cdn.jsdelivr.net/npm/chart.js" as="script">
   <link rel="preload" href="/js/core.js" as="script">
-  <link rel="preload" href="/js/indicators.js" as="script">
   <link rel="preload" href="/js/network.js" as="script">
-  <link rel="preload" href="/js/claude.js" as="script">
-  <link rel="preload" href="/js/bitunix.js" as="script">
-  <link rel="preload" href="/js/trading.js" as="script">
-  <link rel="preload" href="/js/ui-market.js" as="script">
-  <link rel="preload" href="/js/ui-ops.js" as="script">
-  <link rel="preload" href="/js/ui-analysis.js" as="script">
-  <link rel="preload" href="/js/ui-config.js" as="script">
   <link rel="preload" href="/js/app-init.js" as="script">
-  
+
   <style>
-    :root {
-      --bg:      #F4F1ED;
-      --surface: #FFFFFF;
-      --border:  #E5E0D8;
-      --text:    #2C2825;
-      --muted:   #9E9790;
-      --accent:  #7BA7BC;
-      --green:   #82AD8F;
-      --red:     #C97E7E;
-      --serif:   "Lora", Georgia, serif;
-      --sans:    "DM Sans", system-ui, sans-serif;
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
-    @media (prefers-color-scheme: dark) {
-      :root {
-        --bg:      #141210;
-        --surface: #1E1C19;
-        --border:  #2E2B27;
-        --text:    #E8E4DE;
-        --muted:   #7A756E;
-      }
-    }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
     body {
-      font-family: var(--sans);
-      background: var(--bg);
-      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #070707;
+      color: #888;
       min-height: 100vh;
       display: flex;
       align-items: center;
@@ -56,167 +36,274 @@
       padding: 20px;
       -webkit-font-smoothing: antialiased;
     }
-    @keyframes fadeUp { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
-    @keyframes shake  { 0%,100%{transform:none} 20%,60%{transform:translateX(-6px)} 40%,80%{transform:translateX(6px)} }
 
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 40px 36px;
+    @keyframes fadeUp {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+
+      to {
+        opacity: 1;
+        transform: none;
+      }
+    }
+
+    @keyframes shake {
+
+      0%,
+      100% {
+        transform: none;
+      }
+
+      20%,
+      60% {
+        transform: translateX(-5px);
+      }
+
+      40%,
+      80% {
+        transform: translateX(5px);
+      }
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .wrap {
       width: 100%;
-      max-width: 380px;
-      box-shadow: 0 8px 40px rgba(44,40,37,.12);
-      animation: fadeUp .4s ease;
+      max-width: 340px;
+      animation: fadeUp .35s ease;
     }
 
+    /* Logo */
     .logo {
-      font-family: var(--serif);
-      font-size: 24px;
-      font-weight: 600;
-      color: var(--text);
-      margin-bottom: 4px;
+      font-family: 'Syne', sans-serif;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: #E0E0E0;
+      margin-bottom: 6px;
     }
-    .logo b { color: var(--accent); font-style: italic; }
-    .subtitle {
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 32px;
+
+    .logo span {
+      color: #2A2A2A;
+    }
+
+    .tagline {
+      font-size: 9px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #2A2A2A;
+      font-weight: 500;
+      margin-bottom: 40px;
+    }
+
+    /* Form card */
+    .card {
+      background: #0A0A0A;
+      border: 1px solid #1A1A1A;
+      border-radius: 6px;
+      padding: 28px 24px;
     }
 
     label {
       display: block;
-      font-size: 10px;
-      font-weight: 500;
-      color: var(--muted);
+      font-size: 7px;
+      font-weight: 600;
+      color: #383838;
       text-transform: uppercase;
-      letter-spacing: 1px;
-      margin-bottom: 6px;
+      letter-spacing: 2px;
+      margin-bottom: 8px;
     }
 
-    .inp-wrap { position: relative; margin-bottom: 20px; }
-    input[type=password], input[type=text] {
+    .inp-wrap {
+      position: relative;
+      margin-bottom: 20px;
+    }
+
+    input[type=password],
+    input[type=text] {
       width: 100%;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 12px 44px 12px 14px;
-      color: var(--text);
-      font-family: var(--sans);
-      font-size: 15px;
+      background: #070707;
+      border: 1px solid #1A1A1A;
+      border-radius: 4px;
+      padding: 11px 40px 11px 13px;
+      color: #C0C0C0;
+      font-family: 'Space Grotesk', monospace;
+      font-size: 14px;
+      font-weight: 300;
+      letter-spacing: 2px;
       outline: none;
-      transition: border-color .2s, box-shadow .2s;
+      transition: border-color .15s;
     }
+
     input:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(123,167,188,.15);
+      border-color: #383838;
     }
+
+    input::placeholder {
+      color: #252525;
+      letter-spacing: 3px;
+    }
+
     .eye-btn {
       position: absolute;
-      right: 12px; top: 50%;
+      right: 10px;
+      top: 50%;
       transform: translateY(-50%);
-      background: none; border: none;
-      cursor: pointer; padding: 4px;
-      color: var(--muted); font-size: 16px;
-      line-height: 1; transition: color .2s;
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px;
+      color: #2A2A2A;
+      font-size: 14px;
+      line-height: 1;
+      transition: color .15s;
     }
-    .eye-btn:hover { color: var(--text); }
+
+    .eye-btn:hover {
+      color: #555;
+    }
 
     .btn-login {
       width: 100%;
-      background: var(--accent);
-      color: #fff;
-      border: none;
-      border-radius: 10px;
-      padding: 13px;
-      font-family: var(--sans);
-      font-size: 14px;
+      background: transparent;
+      color: #888;
+      border: 1px solid #242424;
+      border-radius: 4px;
+      padding: 11px;
+      font-family: 'Inter', sans-serif;
+      font-size: 9px;
       font-weight: 600;
+      letter-spacing: 2.5px;
+      text-transform: uppercase;
       cursor: pointer;
-      transition: all .2s;
-      box-shadow: 0 2px 10px rgba(123,167,188,.35);
+      transition: all .15s;
       display: flex;
       align-items: center;
       justify-content: center;
       gap: 8px;
     }
-    .btn-login:hover:not(:disabled) { background: #6A96AB; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(123,167,188,.4); }
-    .btn-login:active { transform: none; }
-    .btn-login:disabled { opacity: .6; cursor: not-allowed; transform: none; }
+
+    .btn-login:hover:not(:disabled) {
+      border-color: #383838;
+      color: #C0C0C0;
+    }
+
+    .btn-login:disabled {
+      opacity: .4;
+      cursor: not-allowed;
+    }
+
+    .btn-login.success {
+      border-color: rgba(106, 191, 122, .3);
+      color: #6ABF7A;
+    }
 
     .spinner {
-      width: 14px; height: 14px;
-      border: 2px solid rgba(255,255,255,.3);
-      border-top-color: #fff;
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid #282828;
+      border-top-color: #686868;
       border-radius: 50%;
       animation: spin .6s linear infinite;
       display: inline-block;
     }
-    @keyframes spin { to { transform: rotate(360deg); } }
 
     .error-msg {
-      background: #F4EBEB;
-      border: 1px solid #D9BCBC;
-      color: #8A4A4A;
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 12px;
-      margin-top: 14px;
+      background: rgba(138, 58, 58, .1);
+      border: 1px solid rgba(138, 58, 58, .25);
+      color: #A06060;
+      border-radius: 4px;
+      padding: 9px 12px;
+      font-size: 11px;
+      margin-top: 12px;
       display: none;
-      animation: shake .4s ease;
+      line-height: 1.5;
     }
-    .error-msg.show { display: block; }
 
-    .footer {
-      margin-top: 28px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border);
-      font-size: 10px;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      gap: 6px;
+    .error-msg.show {
+      display: block;
+      animation: shake .35s ease;
     }
-    .lock-icon { font-size: 14px; }
 
     .attempts {
-      font-size: 10px;
-      color: var(--red);
+      font-size: 9px;
+      color: #6A3A3A;
       text-align: center;
-      margin-top: 10px;
+      margin-top: 8px;
+      letter-spacing: 1px;
       display: none;
+    }
+
+    /* Footer */
+    .footer {
+      margin-top: 24px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 9px;
+      color: #222;
+      letter-spacing: 0.5px;
+    }
+
+    .footer-dot {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #1E1E1E;
+      flex-shrink: 0;
+    }
+
+    /* Version */
+    .version {
+      margin-top: 32px;
+      font-size: 8px;
+      letter-spacing: 2px;
+      color: #1A1A1A;
+      text-align: center;
+      text-transform: uppercase;
     }
   </style>
 </head>
-<body>
-  <div class="card" id="card">
-    <div class="logo">Crypto<b>Plan</b> <span style="font-size:14px;color:var(--muted);font-family:var(--sans);font-style:normal;font-weight:400">AI</span></div>
-    <div class="subtitle">Introduce tu clave de acceso para continuar</div>
 
-    <div>
-      <label for="pwd">Contraseña</label>
+<body>
+  <div class="wrap">
+
+    <div class="logo">CRYPTO<span>PLAN</span></div>
+    <div class="tagline">Terminal de trading · Acceso restringido</div>
+
+    <div class="card">
+      <label for="pwd">Clave de acceso</label>
       <div class="inp-wrap">
-        <input type="password" id="pwd" placeholder="••••••••••••" autocomplete="current-password" autofocus/>
-        <button class="eye-btn" id="eye" type="button" onclick="toggleEye()" title="Ver contraseña">👁</button>
+        <input type="password" id="pwd" placeholder="············" autocomplete="current-password" autofocus />
+        <button class="eye-btn" id="eye" type="button" onclick="toggleEye()" title="Ver">👁</button>
       </div>
       <button class="btn-login" id="login-btn" onclick="doLogin()">
-        <span id="btn-text">Entrar</span>
+        <span id="btn-text">ENTRAR</span>
       </button>
-      <div class="error-msg" id="error-msg">Contraseña incorrecta. Inténtalo de nuevo.</div>
+      <div class="error-msg" id="error-msg"></div>
       <div class="attempts" id="attempts-msg"></div>
     </div>
 
     <div class="footer">
-      <span class="lock-icon">🔒</span>
-      <span>Conexión segura · Sesión de 12 horas · Tus claves nunca salen del servidor</span>
+      <div class="footer-dot"></div>
+      <span>Conexión segura · Sesión 12h · Claves en servidor</span>
     </div>
+
+    <div class="version">CRYPTOPLAN IA · v2.0</div>
+
   </div>
 
   <script>
     let attempts = 0;
-    let blocked  = false;
+    let blocked = false;
 
-    // Enter para hacer login
     document.getElementById('pwd').addEventListener('keydown', e => {
       if (e.key === 'Enter') doLogin();
     });
@@ -231,32 +318,27 @@
     async function doLogin() {
       if (blocked) return;
       const password = document.getElementById('pwd').value;
-      if (!password) {
-        showError('Introduce tu contraseña.');
-        return;
-      }
+      if (!password) { showError('Introduce tu contraseña.'); return; }
 
-      const btn  = document.getElementById('login-btn');
+      const btn = document.getElementById('login-btn');
       const text = document.getElementById('btn-text');
       btn.disabled = true;
       text.innerHTML = '<span class="spinner"></span>';
       hideError();
 
       try {
-        const res  = await fetch('/auth/login', {
-          method:  'POST',
+        const res = await fetch('/auth/login', {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({ password }),
+          body: JSON.stringify({ password }),
         });
         const data = await res.json();
 
         if (data.ok) {
-          // Guardar token en sessionStorage como backup (la cookie httpOnly es la principal)
           sessionStorage.setItem('cp_token', data.token);
-          text.textContent = '✓ Acceso correcto';
-          btn.style.background = '#82AD8F';
-          // Añadir token a todas las peticiones futuras
-          setTimeout(() => { window.location.href = '/'; }, 600);
+          btn.classList.add('success');
+          text.textContent = '✓ ACCESO CORRECTO';
+          setTimeout(() => { window.location.href = '/'; }, 500);
         } else {
           attempts++;
           showError(data.error || 'Contraseña incorrecta.');
@@ -265,28 +347,28 @@
 
           if (attempts >= 5) {
             blocked = true;
-            const wait = 60;
-            showError(`Demasiados intentos fallidos. Espera ${wait} segundos.`);
-            let t = wait;
+            let t = 60;
+            showError('Demasiados intentos. Espera 60 segundos.');
             const interval = setInterval(() => {
               t--;
-              document.getElementById('attempts-msg').style.display = 'block';
-              document.getElementById('attempts-msg').textContent = `Bloqueado por ${t}s`;
+              const el = document.getElementById('attempts-msg');
+              el.style.display = 'block';
+              el.textContent = `BLOQUEADO · ${t}s`;
               if (t <= 0) {
                 clearInterval(interval);
                 blocked = false; attempts = 0;
-                document.getElementById('attempts-msg').style.display = 'none';
+                el.style.display = 'none';
                 hideError();
               }
             }, 1000);
           }
           btn.disabled = false;
-          text.textContent = 'Entrar';
+          text.textContent = 'ENTRAR';
         }
       } catch (e) {
         showError('Error de conexión. Inténtalo de nuevo.');
         btn.disabled = false;
-        text.textContent = 'Entrar';
+        text.textContent = 'ENTRAR';
       }
     }
 
@@ -294,9 +376,8 @@
       const el = document.getElementById('error-msg');
       el.textContent = msg;
       el.classList.add('show');
-      // Reiniciar animación shake
       el.style.animation = 'none';
-      el.offsetHeight; // reflow
+      el.offsetHeight;
       el.style.animation = '';
     }
     function hideError() {
@@ -304,4 +385,5 @@
     }
   </script>
 </body>
+
 </html>
