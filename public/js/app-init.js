@@ -244,18 +244,18 @@ function dashKpi(label, value, color, icon, sub, sparkPoints) {
     const mn = Math.min(...sparkPoints), mx = Math.max(...sparkPoints), rng = mx - mn || 1;
     const W = 70, H = 28;
     const pts = sparkPoints.map((v, i) =>
-    \`\${((i/(sparkPoints.length-1))*W).toFixed(1)},\${(H-((v-mn)/rng*H*0.85+H*0.05)).toFixed(1)}\`
+    `${((i/(sparkPoints.length-1))*W).toFixed(1)},${(H-((v-mn)/rng*H*0.85+H*0.05)).toFixed(1)}`
     ).join(' ');
     const sColor = sparkPoints[sparkPoints.length-1] >= sparkPoints[0] ? 'var(--green2)' : 'var(--red2)';
-    spark = \`<svg class="kpi-spark" width="\${W}" height="\${H}" viewBox="0 0 \${W} \${H}"><polyline points="\${pts}" fill="none" stroke="\${sColor}" stroke-width="1.5" stroke-linejoin="round"/></svg>\`;
+    spark = `<svg class="kpi-spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><polyline points="${pts}" fill="none" stroke="${sColor}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
   }
-  return \`
+  return `
     <div class="kpi" style="position:relative;overflow:hidden">
-      <div class="kpi-lbl">\${label}</div>
-      <div class="kpi-val" style="color:\${color}">\${value}</div>
-      \${sub ? \`<div class="kpi-sub">\${sub}</div>\` : ''}
-      \${spark}
-    </div>\`;
+      <div class="kpi-lbl">${label}</div>
+      <div class="kpi-val" style="color:${color}">${value}</div>
+      ${sub ? `<div class="kpi-sub">${sub}</div>` : ''}
+      ${spark}
+    </div>`;
 }
 
 
