@@ -19,8 +19,8 @@ const BT = {
   MIN_RR: 2.0,
   FEE_TAKER: 0.0006,
   FEE_MAKER: 0.0002,
-  RSI_OVERSOLD: 38,
-  RSI_OVERBOUGHT: 62,
+  RSI_OVERSOLD: 40,
+  RSI_OVERBOUGHT: 60,
   EMA_FAST: 20,
   EMA_SLOW: 50,
   EMA_TREND: 200,
@@ -148,7 +148,9 @@ async function runBacktest(coin, interval, riskUSD, limit, useNYFilter, useVolFi
   if (!limit) limit = 500;
 
   // Flags de filtros (por defecto activados — coinciden con la estrategia real)
-  if (useNYFilter === undefined) useNYFilter = (interval !== '1d');
+  // NY filter solo tiene sentido en 1H (scalping intradía). En 4H/1D filtra
+  // demasiadas velas válidas — la señal se toma al cierre de la vela, no dentro de NY.
+  if (useNYFilter === undefined) useNYFilter = (interval === '1h');
   if (useVolFilter === undefined) useVolFilter = true;
   if (useCB === undefined) useCB = true;
 
@@ -389,8 +391,8 @@ function renderBacktester() {
           <div><div class="lbl">Periodo</div>
             <select class="inp" id="bt-limit">
               <option value="300">Corto (~50d)</option>
-              <option value="500" selected>Medio (~83d)</option>
-              <option value="750">Largo (~125d)</option>
+              <option value="500">Medio (~83d)</option>
+              <option value="750" selected>Largo (~125d)</option>
             </select></div>
           <button class="btn btng" style="padding:9px 18px;font-size:12px;font-weight:600" onclick="startBacktest()">▶ Ejecutar</button>
         </div>
@@ -400,8 +402,8 @@ function renderBacktester() {
           <div style="font-size:11px;font-weight:600;color:var(--text);margin-bottom:10px">⚙️ Filtros de la estrategia real</div>
           <div style="display:flex;flex-wrap:wrap;gap:10px">
             <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
-              <input type="checkbox" id="bt-ny" checked style="accent-color:var(--accent)">
-              🕐 Sesión NY (14:30–21:00 ES)
+              <input type="checkbox" id="bt-ny" style="accent-color:var(--accent)">
+              🕐 Sesión NY <span style="font-size:10px;color:var(--muted)">(recomendado solo en 1H)</span>
             </label>
             <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
               <input type="checkbox" id="bt-vol" checked style="accent-color:var(--accent)">
