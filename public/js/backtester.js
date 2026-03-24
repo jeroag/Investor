@@ -1,12 +1,13 @@
 /* ═══════════════════════════════════════════════════════════════════
-   CRYPTOPLAN IA — backtester.js v1.1
-   v1.1: Corrige crash "trades.filter is not a function".
-   Causa raíz: el bucle anterior era O(n²) — recalculaba EMA200, RSI
-   y ATR desde cero en cada una de las 500 iteraciones, creando arrays
-   de hasta 1000 elementos × 500 veces = 500 000 operaciones solo para
-   slicing, más el coste de los indicadores. Esto congelaba el hilo
-   principal del browser y corrompía la ejecución del loop.
-   Solución: precomputar todos los indicadores en O(n) antes del bucle.
+   CRYPTOPLAN IA — backtester.js v2.0
+   Alineado 100% con la estrategia real:
+   ✓ Sesión NY (14:30–21:00 hora española, UTC+1/+2)
+   ✓ Filtro de volumen (ratio > 1.0× media 20 velas)
+   ✓ Circuit breaker (para tras 2 pérdidas consecutivas)
+   ✓ RSI 35/65 + EMA200 + EMA20>EMA50 + ATR SL
+   ✓ TP1 50% cierre parcial + breakeven real
+   ✓ TP2 cierre total + R:R mínimo 2.0
+   ✓ Riesgo dinámico 1% capital
    ═══════════════════════════════════════════════════════════════════ */
 'use strict';
 
@@ -18,14 +19,21 @@ const BT = {
   MIN_RR: 2.0,
   FEE_TAKER: 0.0006,
   FEE_MAKER: 0.0002,
-  RSI_OVERSOLD: 40,
-  RSI_OVERBOUGHT: 60,
+  RSI_OVERSOLD: 35,
+  RSI_OVERBOUGHT: 65,
   EMA_FAST: 20,
   EMA_SLOW: 50,
   EMA_TREND: 200,
   RSI_PERIOD: 14,
   ATR_PERIOD: 14,
   MIN_CANDLES: 220,
+  // Nuevos filtros estrategia real
+  VOL_MA_PERIOD: 20,     // media de volumen para ratio
+  VOL_MIN_RATIO: 1.0,    // volumen mínimo vs media
+  MAX_CONSEC_LOSSES: 2,      // circuit breaker
+  // Sesión NY en UTC (hora española -1 en invierno, -2 en verano)
+  NY_OPEN_UTC: 13,     // 14:30 ES invierno ≈ 13:30 UTC → usamos 13h
+  NY_CLOSE_UTC: 20,     // 21:00 ES ≈ 20:00 UTC
 };
 
 /* ── Indicadores — arrays completos en O(n) ─────────────────────────────── */
@@ -77,6 +85,36 @@ function _btAtrArray(highs, lows, closes, period) {
   return out;
 }
 
+/* ── Media móvil simple de volumen ─────────────────────────────────────── */
+function _btVolMaArray(volumes, period) {
+  const out = new Array(volumes.length).fill(null);
+  for (let i = period - 1; i < volumes.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += volumes[j];
+    out[i] = sum / period;
+  }
+  return out;
+}
+
+/* ── Filtro sesión NY ───────────────────────────────────────────────────── */
+// Devuelve true si el timestamp (ms) está dentro de la sesión NY
+// La sesión NY es 13:30–20:00 UTC (≈ 14:30–21:00 hora española)
+// Para 4H y 1D relajamos el filtro (velas largas siempre solapan con NY)
+function _isNYSession(timestampMs, interval) {
+  if (interval === '1d') return true; // velas diarias siempre válidas
+  const h = new Date(timestampMs).getUTCHours();
+  const m = new Date(timestampMs).getUTCMinutes();
+  const totalMin = h * 60 + m;
+  // NY: 13:30–20:00 UTC
+  const nyOpen = BT.NY_OPEN_UTC * 60 + 30;  // 810 min
+  const nyClose = BT.NY_CLOSE_UTC * 60;       // 1200 min
+  if (interval === '4h') {
+    // Para 4H aceptamos que la vela empiece hasta 2h antes del cierre NY
+    return totalMin >= (nyOpen - 120) && totalMin <= nyClose;
+  }
+  return totalMin >= nyOpen && totalMin < nyClose;
+}
+
 /* ── Descarga Binance con validación ────────────────────────────────────── */
 async function btFetchKlines(symbol, interval, limit) {
   const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}USDT&interval=${interval}&limit=${limit}`;
@@ -96,9 +134,15 @@ async function btFetchKlines(symbol, interval, limit) {
   }));
 }
 
-/* ── Motor O(n) ─────────────────────────────────────────────────────────── */
-async function runBacktest(coin, interval, riskUSD, limit) {
+/* ── Motor principal O(n) — alineado con estrategia real ───────────────── */
+async function runBacktest(coin, interval, riskUSD, limit, useNYFilter, useVolFilter, useCB) {
   if (!limit) limit = 500;
+
+  // Flags de filtros (por defecto activados — coinciden con la estrategia real)
+  if (useNYFilter === undefined) useNYFilter = (interval !== '1d');
+  if (useVolFilter === undefined) useVolFilter = true;
+  if (useCB === undefined) useCB = true;
+
   const candles = await btFetchKlines(coin.toUpperCase(), interval, Math.min(limit + BT.MIN_CANDLES, 1000));
   if (!Array.isArray(candles) || candles.length < BT.MIN_CANDLES + 10) {
     throw new Error(`Datos insuficientes: ${candles?.length ?? 0} velas (mínimo ${BT.MIN_CANDLES + 10})`);
@@ -107,6 +151,7 @@ async function runBacktest(coin, interval, riskUSD, limit) {
   const closes = candles.map(c => c.c);
   const highs = candles.map(c => c.h);
   const lows = candles.map(c => c.l);
+  const volumes = candles.map(c => c.v);
 
   // Precomputar todos los indicadores UNA sola vez — O(n)
   const rsiArr = _btRsiArray(closes, BT.RSI_PERIOD);
@@ -114,62 +159,121 @@ async function runBacktest(coin, interval, riskUSD, limit) {
   const ema50 = _btEmaArray(closes, BT.EMA_SLOW);
   const ema200 = _btEmaArray(closes, BT.EMA_TREND);
   const atrArr = _btAtrArray(highs, lows, closes, BT.ATR_PERIOD);
+  const volMaArr = _btVolMaArray(volumes, BT.VOL_MA_PERIOD);
 
   const trades = [];
   let openTrade = null;
   let equity = 0;
+  let consecLosses = 0; // circuit breaker
+
+  // Contadores de filtros rechazados (para diagnóstico)
+  const rejected = { ny: 0, vol: 0, cb: 0, rr: 0, indicator: 0 };
 
   for (let i = BT.MIN_CANDLES; i < candles.length - 1; i++) {
     const bar = candles[i];
 
+    // ── Gestión de trade abierto ────────────────────────────────────────
     if (openTrade) {
       const { tipo, entrada, tp1, tp2, size } = openTrade;
       if (tipo === 'LONG') {
         if (!openTrade.tp1Hit && bar.h >= tp1) {
           const q = size * BT.PARTIAL_PCT;
           const p = (tp1 - entrada) * q - tp1 * q * BT.FEE_MAKER;
-          openTrade.tp1Hit = true; openTrade.size = size * 0.5;
-          openTrade.stopLoss = entrada; openTrade.tp1PnL = p; equity += p; continue;
+          openTrade.tp1Hit = true;
+          openTrade.size = size * 0.5;
+          openTrade.stopLoss = entrada; // breakeven real
+          openTrade.tp1PnL = p;
+          equity += p;
+          continue;
         }
         if (openTrade.tp1Hit && bar.h >= tp2) {
           const q = openTrade.size;
           const p = (tp2 - entrada) * q - tp2 * q * BT.FEE_MAKER;
-          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: tp2 });
-          equity += p; openTrade = null; continue;
+          const totalPnl = (openTrade.tp1PnL || 0) + p;
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(totalPnl.toFixed(4)), exit: tp2 });
+          equity += p;
+          consecLosses = 0;
+          openTrade = null;
+          continue;
         }
         if (bar.l <= openTrade.stopLoss) {
           const q = openTrade.size;
           const p = (openTrade.stopLoss - entrada) * q - openTrade.stopLoss * q * BT.FEE_TAKER;
-          trades.push({ ...openTrade, result: openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: openTrade.stopLoss });
-          equity += p; openTrade = null; continue;
+          const totalPnl = (openTrade.tp1PnL || 0) + p;
+          const result = openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS';
+          trades.push({ ...openTrade, result, pnl: parseFloat(totalPnl.toFixed(4)), exit: openTrade.stopLoss });
+          equity += p;
+          if (result === 'LOSS') consecLosses++; else consecLosses = 0;
+          openTrade = null;
+          continue;
         }
-      } else {
+      } else { // SHORT
         if (!openTrade.tp1Hit && bar.l <= tp1) {
           const q = size * BT.PARTIAL_PCT;
           const p = (entrada - tp1) * q - tp1 * q * BT.FEE_MAKER;
-          openTrade.tp1Hit = true; openTrade.size = size * 0.5;
-          openTrade.stopLoss = entrada; openTrade.tp1PnL = p; equity += p; continue;
+          openTrade.tp1Hit = true;
+          openTrade.size = size * 0.5;
+          openTrade.stopLoss = entrada;
+          openTrade.tp1PnL = p;
+          equity += p;
+          continue;
         }
         if (openTrade.tp1Hit && bar.l <= tp2) {
           const q = openTrade.size;
           const p = (entrada - tp2) * q - tp2 * q * BT.FEE_MAKER;
-          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: tp2 });
-          equity += p; openTrade = null; continue;
+          const totalPnl = (openTrade.tp1PnL || 0) + p;
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(totalPnl.toFixed(4)), exit: tp2 });
+          equity += p;
+          consecLosses = 0;
+          openTrade = null;
+          continue;
         }
         if (bar.h >= openTrade.stopLoss) {
           const q = openTrade.size;
           const p = (entrada - openTrade.stopLoss) * q - openTrade.stopLoss * q * BT.FEE_TAKER;
-          trades.push({ ...openTrade, result: openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: openTrade.stopLoss });
-          equity += p; openTrade = null; continue;
+          const totalPnl = (openTrade.tp1PnL || 0) + p;
+          const result = openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS';
+          trades.push({ ...openTrade, result, pnl: parseFloat(totalPnl.toFixed(4)), exit: openTrade.stopLoss });
+          equity += p;
+          if (result === 'LOSS') consecLosses++; else consecLosses = 0;
+          openTrade = null;
+          continue;
         }
       }
       continue;
     }
 
-    // Buscar señal usando indicadores precomputados
-    const rsi = rsiArr[i], e200 = ema200[i], e50 = ema50[i], e20 = ema20[i], atr = atrArr[i];
-    if (rsi === null || e200 === null || e50 === null || e20 === null || atr === null || atr <= 0) continue;
+    // ── Indicadores base ────────────────────────────────────────────────
+    const rsi = rsiArr[i];
+    const e200 = ema200[i];
+    const e50 = ema50[i];
+    const e20 = ema20[i];
+    const atr = atrArr[i];
+    const volMa = volMaArr[i];
+    if (rsi === null || e200 === null || e50 === null || e20 === null || atr === null || atr <= 0) {
+      rejected.indicator++;
+      continue;
+    }
 
+    // ── FILTRO 1: Circuit breaker — 2 pérdidas consecutivas ────────────
+    if (useCB && consecLosses >= BT.MAX_CONSEC_LOSSES) {
+      rejected.cb++;
+      continue;
+    }
+
+    // ── FILTRO 2: Sesión NY ─────────────────────────────────────────────
+    if (useNYFilter && !_isNYSession(bar.t, interval)) {
+      rejected.ny++;
+      continue;
+    }
+
+    // ── FILTRO 3: Volumen mínimo ────────────────────────────────────────
+    if (useVolFilter && volMa !== null && volumes[i] < volMa * BT.VOL_MIN_RATIO) {
+      rejected.vol++;
+      continue;
+    }
+
+    // ── Señal de entrada ────────────────────────────────────────────────
     const price = closes[i];
     let tipo = null;
     if (rsi <= BT.RSI_OVERSOLD && price > e200 && e20 > e50) tipo = 'LONG';
@@ -178,24 +282,35 @@ async function runBacktest(coin, interval, riskUSD, limit) {
 
     const slDist = atr * BT.ATR_SL_MULT;
     if (slDist <= 0) continue;
+
     const entrada = price;
     const stopLoss = tipo === 'LONG' ? entrada - slDist : entrada + slDist;
     const tp1 = tipo === 'LONG' ? entrada + slDist * BT.TP1_RATIO : entrada - slDist * BT.TP1_RATIO;
     const tp2 = tipo === 'LONG' ? entrada + slDist * BT.TP2_RATIO : entrada - slDist * BT.TP2_RATIO;
-    if (Math.abs(tp1 - entrada) / slDist < BT.MIN_RR) continue;
+
+    // ── FILTRO 4: R:R mínimo 2.0 ───────────────────────────────────────
+    if (Math.abs(tp1 - entrada) / slDist < BT.MIN_RR) {
+      rejected.rr++;
+      continue;
+    }
 
     const size = riskUSD / slDist;
     equity -= entrada * size * BT.FEE_TAKER;
     openTrade = {
       coin, tipo, entrada, stopLoss, tp1, tp2, size, riskUSD,
       rr: (Math.abs(tp1 - entrada) / slDist).toFixed(2),
-      tp1Hit: false, tp1PnL: 0,
-      rsi: Math.round(rsi), atr: parseFloat(atr.toFixed(4)),
-      entryBar: i, entryDate: new Date(candles[i].t).toLocaleDateString('es-ES'),
+      tp1Hit: false,
+      tp1PnL: 0,
+      rsi: Math.round(rsi),
+      atr: parseFloat(atr.toFixed(4)),
+      volRatio: volMa ? parseFloat((volumes[i] / volMa).toFixed(2)) : null,
+      inNY: _isNYSession(bar.t, interval),
+      entryBar: i,
+      entryDate: new Date(candles[i].t).toLocaleDateString('es-ES'),
     };
   }
 
-  // Estadísticas seguras
+  // ── Estadísticas ────────────────────────────────────────────────────
   const t = Array.isArray(trades) ? trades : [];
   const wins = t.filter(x => x.result === 'WIN').length;
   const losses = t.filter(x => x.result === 'LOSS').length;
@@ -209,20 +324,26 @@ async function runBacktest(coin, interval, riskUSD, limit) {
   const equityCurve = t.map(x => {
     cumPnl += x.pnl || 0;
     if (cumPnl > peak) peak = cumPnl;
-    const dd = peak - cumPnl; if (dd > maxDD) maxDD = dd;
+    const dd = peak - cumPnl;
+    if (dd > maxDD) maxDD = dd;
     return { date: x.entryDate, cumPnl: parseFloat(cumPnl.toFixed(2)), result: x.result };
   });
 
   return {
     coin, interval,
-    totalTrades: t.length, wins, losses, breakevens: bes,
+    totalTrades: t.length,
+    wins, losses,
+    breakevens: bes,
     winRate: parseFloat((t.length > 0 ? wins / t.length * 100 : 0).toFixed(1)),
     totalPnl: parseFloat(totalPnl.toFixed(2)),
     avgWin: parseFloat(avgWin.toFixed(2)),
     avgLoss: parseFloat(avgLoss.toFixed(2)),
     profitFactor: parseFloat(Math.min(pf, 99).toFixed(2)),
     maxDrawdown: parseFloat(maxDD.toFixed(2)),
-    trades: t, equityCurve,
+    trades: t,
+    equityCurve,
+    rejected,       // para diagnóstico en UI
+    filtersUsed: { useNYFilter, useVolFilter, useCB },
   };
 }
 
@@ -236,9 +357,10 @@ function renderBacktester() {
       <div class="sec-hdr">
         <div>
           <div class="stl" style="margin:0 0 6px">📊 Backtester de Estrategia</div>
-          <div style="font-size:11px;color:var(--muted)">Simula la estrategia mecánica (EMA200+RSI+ATR) sobre datos históricos reales de Binance.</div>
+          <div style="font-size:11px;color:var(--muted)">Simula la estrategia real (EMA200 + RSI + ATR + Sesión NY + Volumen + Circuit Breaker) sobre datos históricos de Binance.</div>
         </div>
       </div>
+
       <div class="card" style="margin-bottom:14px">
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end">
           <div><div class="lbl">Par</div>
@@ -247,7 +369,9 @@ function renderBacktester() {
             </select></div>
           <div><div class="lbl">Timeframe</div>
             <select class="inp" id="bt-interval">
-              <option value="1h">1H</option><option value="4h" selected>4H ★</option><option value="1d">1D</option>
+              <option value="1h">1H</option>
+              <option value="4h" selected>4H ★</option>
+              <option value="1d">1D</option>
             </select></div>
           <div><div class="lbl">Periodo</div>
             <select class="inp" id="bt-limit">
@@ -257,11 +381,32 @@ function renderBacktester() {
             </select></div>
           <button class="btn btng" style="padding:9px 18px;font-size:12px;font-weight:600" onclick="startBacktest()">▶ Ejecutar</button>
         </div>
+
+        <!-- Filtros de estrategia -->
+        <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:600;color:var(--text);margin-bottom:10px">⚙️ Filtros de la estrategia real</div>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="bt-ny" checked style="accent-color:var(--accent)">
+              🕐 Sesión NY (14:30–21:00 ES)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="bt-vol" checked style="accent-color:var(--accent)">
+              📊 Filtro volumen (&gt;1× media 20v)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer">
+              <input type="checkbox" id="bt-cb" checked style="accent-color:var(--accent)">
+              🛑 Circuit breaker (2 pérdidas seguidas)
+            </label>
+          </div>
+        </div>
+
         <div style="font-size:10px;color:var(--muted);margin-top:10px">
           💡 Riesgo/op: <b style="color:var(--accent)">$${riskUSD.toFixed(2)}</b>
-          · Señales: RSI extremo + EMA200 + EMA20>EMA50 + R:R≥2 + SL=1.5×ATR
+          · RSI ${BT.RSI_OVERSOLD}/${BT.RSI_OVERBOUGHT} · EMA200 · SL=${BT.ATR_SL_MULT}×ATR · R:R≥${BT.MIN_RR}
         </div>
       </div>
+
       <div id="bt-results"></div>
     </div>`;
 }
@@ -270,6 +415,9 @@ async function startBacktest() {
   const coin = qs('#bt-coin')?.value || 'BTC';
   const interval = qs('#bt-interval')?.value || '4h';
   const limit = parseInt(qs('#bt-limit')?.value || '500', 10);
+  const useNY = qs('#bt-ny')?.checked ?? true;
+  const useVol = qs('#bt-vol')?.checked ?? true;
+  const useCB = qs('#bt-cb')?.checked ?? true;
   const riskUSD = typeof getDynamicRiskUSD === 'function' ? getDynamicRiskUSD() : 10;
   const el = qs('#bt-results');
   if (!el) return;
@@ -280,15 +428,21 @@ async function startBacktest() {
     return;
   }
 
+  const activeFilters = [
+    useNY ? '🕐 NY' : null,
+    useVol ? '📊 Volumen' : null,
+    useCB ? '🛑 CB' : null,
+  ].filter(Boolean).join(' · ') || 'Sin filtros extra';
+
   el.innerHTML = `
     <div class="card" style="text-align:center;padding:30px">
       <div style="margin:0 auto 12px;width:24px;height:24px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></div>
       <div style="font-size:12px;color:var(--muted)">Descargando velas de ${coin}/USDT ${interval.toUpperCase()}…</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:5px">Calculando indicadores y simulando ${limit} velas…</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:5px">Filtros activos: ${activeFilters}</div>
     </div>`;
 
   try {
-    const r = await runBacktest(coin, interval, riskUSD, limit);
+    const r = await runBacktest(coin, interval, riskUSD, limit, useNY, useVol, useCB);
     renderBacktestResults(r, el);
   } catch (e) {
     console.error('[Backtester]', e);
@@ -318,13 +472,25 @@ function renderBacktestResults(r, container) {
     const vals = curve.map(p => p.cumPnl);
     const mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1;
     const W = 400, H = 60;
-    const pts = vals.map((v, i) => `${((i / (vals.length - 1)) * W).toFixed(1)},${(H - ((v - mn) / rng * H)).toFixed(1)}`).join(' ');
+    const pts = vals.map((v, i) =>
+      `${((i / (vals.length - 1)) * W).toFixed(1)},${(H - ((v - mn) / rng * H)).toFixed(1)}`
+    ).join(' ');
     const zy = (H - ((0 - mn) / rng * H)).toFixed(1);
     svgHtml = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:60px;margin:8px 0;display:block">
       <line x1="0" y1="${zy}" x2="${W}" y2="${zy}" stroke="rgba(255,255,255,.12)" stroke-dasharray="4"/>
       <polyline points="${pts}" fill="none" stroke="${r.totalPnl >= 0 ? '#00d17a' : '#ff4455'}" stroke-width="2" stroke-linejoin="round"/>
     </svg>`;
   }
+
+  // Resumen de filtros rechazados
+  const rej = r.rejected || {};
+  const totalRej = (rej.ny || 0) + (rej.vol || 0) + (rej.cb || 0);
+  const rejHtml = totalRej > 0 ? `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+      ${rej.ny ? `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:var(--s2);color:var(--muted)">🕐 NY filtró ${rej.ny} señal${rej.ny > 1 ? 'es' : ''}</span>` : ''}
+      ${rej.vol ? `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:var(--s2);color:var(--muted)">📊 Volumen filtró ${rej.vol} señal${rej.vol > 1 ? 'es' : ''}</span>` : ''}
+      ${rej.cb ? `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:var(--s2);color:var(--muted)">🛑 CB bloqueó ${rej.cb} señal${rej.cb > 1 ? 'es' : ''}</span>` : ''}
+    </div>` : '';
 
   container.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
@@ -348,13 +514,45 @@ function renderBacktestResults(r, container) {
 
     <div class="card" style="margin-bottom:14px">
       <div class="stl" style="margin-bottom:8px">🔍 Diagnóstico</div>
-      ${r.totalTrades === 0 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Sin señales. RSI no alcanzó zona extrema (≤${BT.RSI_OVERSOLD}/≥${BT.RSI_OVERBOUGHT}) con EMA200 alineada. Prueba un periodo más largo o timeframe menor.</div>` : ''}
-      ${r.totalTrades > 0 && r.totalTrades < 8 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Solo ${r.totalTrades} trades — estadísticas poco fiables. Amplía el periodo.</div>` : ''}
-      ${r.profitFactor < 1 && r.totalTrades >= 5 ? `<div style="font-size:11px;color:var(--red);margin-bottom:6px">❌ Profit Factor <1: estrategia pierde dinero en ${r.coin} ${r.interval.toUpperCase()} con estos parámetros.</div>` : ''}
-      ${r.profitFactor >= 1.5 && r.winRate >= 40 ? `<div style="font-size:11px;color:var(--green);margin-bottom:6px">✅ Estrategia rentable. PF ${r.profitFactor} · WR ${r.winRate}%</div>` : ''}
-      <div style="font-size:10px;color:var(--muted);line-height:1.7;margin-top:4px">
-        LONG: RSI≤${BT.RSI_OVERSOLD} + precio>EMA200 + EMA20>EMA50 · SHORT: RSI≥${BT.RSI_OVERBOUGHT} + precio&lt;EMA200 + EMA20&lt;EMA50<br>
-        SL=${BT.ATR_SL_MULT}×ATR · TP1=${BT.TP1_RATIO}:1 (50% cierre) · TP2=${BT.TP2_RATIO}:1 · R:R mín ${BT.MIN_RR}<br>
+
+      ${r.totalTrades === 0 ? `
+        <div style="font-size:11px;color:var(--yellow);margin-bottom:6px">
+          ⚠️ Sin señales con los filtros actuales. Prueba:
+          <ul style="margin:6px 0 0 16px;line-height:2">
+            <li>Desactivar el filtro de Sesión NY</li>
+            <li>Usar timeframe 1H (más señales)</li>
+            <li>Ampliar el periodo a Largo (~125d)</li>
+            <li>Probar BTC o ETH que tienen más liquidez</li>
+          </ul>
+        </div>` : ''}
+
+      ${r.totalTrades > 0 && r.totalTrades < 8 ? `
+        <div style="font-size:11px;color:var(--yellow);margin-bottom:6px">
+          ⚠️ Solo ${r.totalTrades} trades — estadísticas poco fiables. Amplía el periodo o desactiva algún filtro.
+        </div>` : ''}
+
+      ${r.profitFactor < 1 && r.totalTrades >= 5 ? `
+        <div style="font-size:11px;color:var(--red);margin-bottom:6px">
+          ❌ Profit Factor &lt;1: estrategia pierde dinero en ${r.coin} ${r.interval.toUpperCase()} con estos parámetros.
+        </div>` : ''}
+
+      ${r.profitFactor >= 1.5 && r.winRate >= 40 ? `
+        <div style="font-size:11px;color:var(--green);margin-bottom:6px">
+          ✅ Estrategia rentable. PF ${r.profitFactor} · WR ${r.winRate}%
+        </div>` : ''}
+
+      <!-- Filtros activos y señales rechazadas -->
+      <div style="font-size:10px;color:var(--muted);margin-bottom:4px">Filtros activos:</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
+        <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:${r.filtersUsed?.useNYFilter ? 'rgba(0,209,122,.12)' : 'var(--s2)'};color:${r.filtersUsed?.useNYFilter ? 'var(--green)' : 'var(--muted)'}">🕐 NY ${r.filtersUsed?.useNYFilter ? 'ON' : 'OFF'}</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:${r.filtersUsed?.useVolFilter ? 'rgba(0,209,122,.12)' : 'var(--s2)'};color:${r.filtersUsed?.useVolFilter ? 'var(--green)' : 'var(--muted)'}">📊 Volumen ${r.filtersUsed?.useVolFilter ? 'ON' : 'OFF'}</span>
+        <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:${r.filtersUsed?.useCB ? 'rgba(0,209,122,.12)' : 'var(--s2)'};color:${r.filtersUsed?.useCB ? 'var(--green)' : 'var(--muted)'}">🛑 CB ${r.filtersUsed?.useCB ? 'ON' : 'OFF'}</span>
+      </div>
+      ${rejHtml}
+
+      <div style="font-size:10px;color:var(--muted);line-height:1.7;margin-top:8px">
+        LONG: RSI≤${BT.RSI_OVERSOLD} + precio&gt;EMA200 + EMA20&gt;EMA50 · SHORT: RSI≥${BT.RSI_OVERBOUGHT} + precio&lt;EMA200 + EMA20&lt;EMA50<br>
+        SL=${BT.ATR_SL_MULT}×ATR · TP1=${BT.TP1_RATIO}:1 (50% cierre + breakeven) · TP2=${BT.TP2_RATIO}:1 · R:R mín ${BT.MIN_RR}<br>
         Fees: ${(BT.FEE_TAKER * 100).toFixed(2)}% taker apertura + ${(BT.FEE_MAKER * 100).toFixed(2)}% maker cierre
       </div>
     </div>
@@ -365,10 +563,15 @@ function renderBacktestResults(r, container) {
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:11px">
           <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
-            <th style="padding:4px 8px">#</th><th style="padding:4px 8px">Fecha</th>
-            <th style="padding:4px 8px">Tipo</th><th style="padding:4px 8px">Entrada</th>
-            <th style="padding:4px 8px">SL</th><th style="padding:4px 8px">R:R</th>
-            <th style="padding:4px 8px">RSI</th><th style="padding:4px 8px">P&L</th>
+            <th style="padding:4px 8px">#</th>
+            <th style="padding:4px 8px">Fecha</th>
+            <th style="padding:4px 8px">Tipo</th>
+            <th style="padding:4px 8px">Entrada</th>
+            <th style="padding:4px 8px">SL</th>
+            <th style="padding:4px 8px">R:R</th>
+            <th style="padding:4px 8px">RSI</th>
+            <th style="padding:4px 8px">Vol×</th>
+            <th style="padding:4px 8px">P&L</th>
             <th style="padding:4px 8px">Result</th>
           </tr></thead>
           <tbody>
@@ -381,6 +584,7 @@ function renderBacktestResults(r, container) {
                 <td style="padding:5px 8px;color:var(--red);font-family:var(--font-mono)">${fmtP(t.stopLoss, r.coin)}</td>
                 <td style="padding:5px 8px">${t.rr}</td>
                 <td style="padding:5px 8px;color:${t.rsi <= BT.RSI_OVERSOLD ? 'var(--green)' : t.rsi >= BT.RSI_OVERBOUGHT ? 'var(--red)' : 'var(--muted)'}">${t.rsi}</td>
+                <td style="padding:5px 8px;color:${t.volRatio >= 1.5 ? 'var(--green)' : 'var(--muted)'}">${t.volRatio ? t.volRatio + '×' : '—'}</td>
                 <td style="padding:5px 8px;font-weight:700;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">
                   ${(t.pnl >= 0 ? '+' : '') + '$' + (t.pnl || 0).toFixed(2)}</td>
                 <td style="padding:5px 8px">${t.result === 'WIN' ? '✅ WIN' : t.result === 'BREAKEVEN' ? '↔️ BE' : '❌ LOSS'}</td>
