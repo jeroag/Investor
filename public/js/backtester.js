@@ -149,11 +149,23 @@ function _isNYSession(timestampMs, interval) {
 /* ── Descarga Binance ───────────────────────────────────────────────────── */
 async function btFetchKlines(symbol, interval, limit) {
   const isXAU = symbol.toUpperCase() === 'XAU';
-  // XAU no está en Binance spot — usar Binance Futures (fapi) que sí tiene XAUUSDT
-  const url = isXAU
-    ? `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`
-    : `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+  // XAU: fapi.binance.com bloquea CORS en el navegador — usamos proxy del servidor
+  // El resto de monedas van directamente a Binance spot (no tiene restricción CORS)
+  let url, fetchOpts;
+  if (isXAU) {
+    url = `/api/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`;
+    // Incluir el token de sesión para el requireAuth del proxy
+    const token = document.cookie.match(/cp_token=([^;]+)/)?.[1]
+      || localStorage.getItem('cp_token') || '';
+    fetchOpts = {
+      signal: AbortSignal.timeout(15_000),
+      headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+    };
+  } else {
+    url = `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`;
+    fetchOpts = { signal: AbortSignal.timeout(15_000) };
+  }
+  const res = await fetch(url, fetchOpts);
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
     try { const j = await res.json(); msg = j.msg || msg; } catch { }

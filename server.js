@@ -68,6 +68,30 @@ app.use('/api/price-alerts', priceAlertRoutes);
 app.get('/api/prices', requireAuth, (req, res) =>
   res.json(serverState.prices));
 
+/* ── Proxy klines para XAU/USDT (Binance Futures — CORS blocked en browser) ── */
+// El backtester llama a /api/klines?symbol=XAUUSDT&interval=4h&limit=750
+// El servidor hace la petición a fapi.binance.com y devuelve el JSON al cliente.
+// No requiere auth para no bloquear el backtester, pero sí rate limit.
+app.get('/api/klines', requireAuth, async (req, res) => {
+  const { symbol, interval, limit } = req.query;
+  const sym = (symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const iv = (interval || '4h').replace(/[^a-zA-Z0-9]/g, '');
+  const lim = Math.min(parseInt(limit) || 500, 1000);
+  if (!sym) return res.status(400).json({ error: 'symbol requerido' });
+  try {
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${iv}&limit=${lim}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      return res.status(resp.status).json({ error: err.msg || 'Binance Futures error' });
+    }
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 /* ── SPA fallback ──────────────────────────────────────────────── */
 app.get('*', (req, res) => {
   const auth = require('./src/middleware/auth');
