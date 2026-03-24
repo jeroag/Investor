@@ -43,18 +43,17 @@ const BT_RANGE = {
   BB_PERIOD: 20,       // periodo Bollinger Bands
   BB_MULT: 2.0,      // desviaciones estándar
   ATR_SL_MULT: 1.0,      // SL más ajustado en rango
-  MIN_RR: 1.5,      // R:R mínimo (más bajo que momentum)
+  MIN_RR: 1.5,      // R:R mínimo
   FEE_TAKER: 0.0006,
   FEE_MAKER: 0.0002,
-  RSI_LONG_MAX: 45,       // RSI máximo para LONG (sobreventa media)
-  RSI_SHORT_MIN: 55,       // RSI mínimo para SHORT (sobrecompra media)
+  RSI_LONG_MAX: 48,       // subido de 45 → más señales LONG
+  RSI_SHORT_MIN: 52,       // bajado de 55 → más señales SHORT
   RSI_PERIOD: 14,
   ATR_PERIOD: 14,
   MIN_CANDLES: 60,
-  // Detección de rango: EMA200 slope < este % en las últimas N velas
-  RANGE_SLOPE_PCT: 2.0,      // EMA200 con slope < 2% → mercado lateral
-  RANGE_SLOPE_PERIOD: 20,       // periodo para medir el slope
-  MAX_CONSEC_LOSSES: 2,
+  RANGE_SLOPE_PCT: 4.0,      // subido de 2% → detecta rango más amplio
+  RANGE_SLOPE_PERIOD: 20,
+  MAX_CONSEC_LOSSES: 3,        // subido de 2 → CB menos agresivo
 };
 
 /* ════════════════════════════════════════════════════════════════════
@@ -507,16 +506,59 @@ function renderBacktester() {
           </div>
         </div>
 
-        <!-- Info Rango (visible en modo rango) -->
+        <!-- Parámetros Rango ajustables (visible en modo rango) -->
         <div id="bt-range-info" style="display:none;margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-          <div style="font-size:11px;font-weight:600;color:var(--text);margin-bottom:8px">ℹ️ Parámetros estrategia de rango</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:10px;color:var(--muted)">
-            <div>📉 Bollinger Bands (20 velas, 2σ)</div>
-            <div>🎯 TP: banda media (mean-reversion)</div>
-            <div>🛑 SL: 1× ATR desde la banda</div>
-            <div>📐 R:R mínimo: 1.5</div>
-            <div>🔍 Detección rango: EMA200 slope &lt;2%</div>
-            <div>🛑 Circuit breaker: 2 pérdidas seguidas</div>
+          <div style="font-size:11px;font-weight:600;color:var(--text);margin-bottom:12px">⚙️ Parámetros de la estrategia de rango <span style="font-size:10px;font-weight:400;color:var(--muted)">(ajusta y vuelve a ejecutar)</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+                <span style="color:var(--muted)">🔍 Slope EMA200 máximo</span>
+                <b id="lbl-slope" style="color:var(--accent)">4%</b>
+              </div>
+              <input type="range" id="rng-slope" min="1" max="8" step="0.5" value="4"
+                oninput="qs('#lbl-slope').textContent=this.value+'%';BT_RANGE.RANGE_SLOPE_PCT=parseFloat(this.value)"
+                style="width:100%;accent-color:var(--accent)">
+              <div style="font-size:9px;color:var(--muted);margin-top:2px">Bajo = solo rango puro · Alto = incluye tendencias suaves</div>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+                <span style="color:var(--muted)">📉 RSI zona LONG (máximo)</span>
+                <b id="lbl-rsi-long" style="color:var(--green)">48</b>
+              </div>
+              <input type="range" id="rng-rsi-long" min="40" max="55" step="1" value="48"
+                oninput="qs('#lbl-rsi-long').textContent=this.value;BT_RANGE.RSI_LONG_MAX=parseInt(this.value)"
+                style="width:100%;accent-color:var(--accent)">
+              <div style="font-size:9px;color:var(--muted);margin-top:2px">RSI ≤ este valor para entrar LONG</div>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+                <span style="color:var(--muted)">📈 RSI zona SHORT (mínimo)</span>
+                <b id="lbl-rsi-short" style="color:var(--red)">52</b>
+              </div>
+              <input type="range" id="rng-rsi-short" min="45" max="60" step="1" value="52"
+                oninput="qs('#lbl-rsi-short').textContent=this.value;BT_RANGE.RSI_SHORT_MIN=parseInt(this.value)"
+                style="width:100%;accent-color:var(--accent)">
+              <div style="font-size:9px;color:var(--muted);margin-top:2px">RSI ≥ este valor para entrar SHORT</div>
+            </div>
+
+            <div>
+              <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">
+                <span style="color:var(--muted)">🛑 Circuit breaker (pérdidas)</span>
+                <b id="lbl-cb" style="color:var(--yellow)">3</b>
+              </div>
+              <input type="range" id="rng-cb" min="1" max="6" step="1" value="3"
+                oninput="qs('#lbl-cb').textContent=this.value;BT_RANGE.MAX_CONSEC_LOSSES=parseInt(this.value)"
+                style="width:100%;accent-color:var(--accent)">
+              <div style="font-size:9px;color:var(--muted);margin-top:2px">Para tras N pérdidas seguidas</div>
+            </div>
+
+          </div>
+          <div style="margin-top:10px;padding:8px 10px;background:rgba(108,99,255,.08);border-radius:8px;font-size:10px;color:var(--muted);line-height:1.6">
+            💡 <b style="color:var(--text)">Para más trades:</b> sube el Slope EMA200 (4→6%) y los umbrales RSI (48→52 / 52→48)<br>
+            💡 <b style="color:var(--text)">Para más calidad:</b> baja el Slope (2-3%) y ajusta RSI hacia extremos (40/60)
           </div>
         </div>
 
