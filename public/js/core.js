@@ -58,7 +58,7 @@ async function doLogout() {
 const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
 
 // Todas las monedas disponibles
-const ALL_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'ADA', 'MATIC', 'DOT', 'LINK', 'LTC', 'UNI', 'ATOM'];
+const ALL_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'ADA', 'MATIC', 'DOT', 'LINK', 'LTC', 'UNI', 'ATOM', 'XAU'];
 
 const COIN_NAMES = {
   BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana',
@@ -66,6 +66,7 @@ const COIN_NAMES = {
   AVAX: 'Avalanche', ADA: 'Cardano', MATIC: 'Polygon',
   DOT: 'Polkadot', LINK: 'Chainlink', LTC: 'Litecoin',
   UNI: 'Uniswap', ATOM: 'Cosmos',
+  XAU: 'Oro (Gold)',
 };
 
 // Cantidades mínimas de Bitunix Futures por moneda (en unidades base)
@@ -85,6 +86,7 @@ const BITUNIX_MIN_QTY = {
   LTC: 0.01,    // ~$0.9 a $90
   UNI: 0.1,     // ~$0.6 a $6
   ATOM: 0.1,     // ~$0.5 a $5
+  XAU: 0.01,    // ~$32  a $3200/oz (mín. aprox. Bitunix)
 };
 
 /**
@@ -174,7 +176,7 @@ ${infeasibleList}
 }
 
 
-const DEFAULT_WATCHED_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE'];
+const DEFAULT_WATCHED_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'XAU'];
 
 function buildWsUrl(coins) {
   return 'wss://stream.binance.com:9443/stream?streams=' +
@@ -269,6 +271,18 @@ function loadAll() {
   state.profile = { ...DEFAULT_PROFILE, ...(storage.get(STORAGE_KEYS.profile) ?? {}) };
   state.scanInterval = storage.get(STORAGE_KEYS.scanInterval) ?? 5;
   state.watchedCoins = storage.get(STORAGE_KEYS.watchedCoins) ?? [...DEFAULT_WATCHED_COINS];
+
+  // Migración: asegurar que XAU esté en watchedCoins aunque el usuario
+  // tenga datos guardados de antes de añadir el oro
+  const ALWAYS_INCLUDE = ['XAU'];
+  let migrated = false;
+  ALWAYS_INCLUDE.forEach(coin => {
+    if (!state.watchedCoins.includes(coin)) {
+      state.watchedCoins.push(coin);
+      migrated = true;
+    }
+  });
+  if (migrated) storage.set(STORAGE_KEYS.watchedCoins, state.watchedCoins);
   state.priceAlerts = storage.get(STORAGE_KEYS.priceAlerts) ?? [];
   state.scanLog = storage.get(STORAGE_KEYS.scanLog) ?? [];
   state.aiHistory = storage.get(STORAGE_KEYS.aiHistory) ?? [];
