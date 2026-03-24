@@ -116,6 +116,38 @@ async function checkTPSL(coin, price) {
       }
     }
 
+    /* ── Trailing Stop — solo activo si trailingStop: true en el trade ── */
+    // El trailing stop sube el SL automáticamente siguiendo el precio
+    // cuando hay beneficio, protegiendo ganancias sin cerrar antes de tiempo.
+    // Paso del trailing: 0.5× ATR (guardado en trade.atr al abrir).
+    // Solo se activa tras el breakeven (tp1Hit o breakevenSet).
+    if (trade.trailingStop && trade.breakevenSet && trade.atr && !processingTrades.has(trade.id)) {
+      const atrStep = (trade.atr || 0) * 0.5;
+      const newTrailSL = isLong
+        ? price - atrStep
+        : price + atrStep;
+      const shouldUpdate = isLong
+        ? newTrailSL > trade.stopLoss
+        : newTrailSL < trade.stopLoss;
+      if (shouldUpdate && atrStep > 0) {
+        const oldSL = trade.stopLoss;
+        trade.stopLoss = parseFloat(newTrailSL.toFixed(8));
+        // Persistir el nuevo SL sin bloquear el loop
+        db.saveActiveTrade(trade).catch(() => { });
+        // Actualizar en Bitunix si está configurado
+        if (isBitunixConfigured() && trade.bitunixSymbol) {
+          _bitunixUpdateSL(trade, trade.stopLoss).catch(e =>
+            console.warn(`[Trailing] SL update fallido: ${e.message}`)
+          );
+        }
+        // Broadcast al cliente
+        if (broadcastFn) {
+          broadcastFn({ type: 'TRAILING_UPDATE', tradeId: trade.id, newSL: trade.stopLoss, oldSL });
+        }
+        console.log(`[Trailing] ${trade.par} ${trade.tipo} SL: $${oldSL} → $${trade.stopLoss} (precio: $${price})`);
+      }
+    }
+
     /* ── Stop Loss ────────────────────────────────────────────────── */
     const hitSL = isLong ? price <= trade.stopLoss : price >= trade.stopLoss;
     if (hitSL) {

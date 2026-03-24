@@ -87,11 +87,12 @@ function connectServerWS() {
       const msg = JSON.parse(e.data);
       switch (msg.type) {
         case 'PRICES_SNAPSHOT': _handlePricesSnapshot(msg.prices); break;
-        case 'PRICE_UPDATE':    _handlePriceUpdate(msg.coin, msg.price); break;
-        case 'TRADE_CLOSED':    _handleServerTradeClosed(msg.trade); break;
-        case 'PARTIAL_CLOSE':   _handlePartialClose(msg); break;
-        case 'BREAKEVEN':       _handleBreakeven(msg.trade); break;
-        case 'SCANNER_ALERT':   handleServerScannerAlert(msg.alert); break;
+        case 'PRICE_UPDATE': _handlePriceUpdate(msg.coin, msg.price); break;
+        case 'TRADE_CLOSED': _handleServerTradeClosed(msg.trade); break;
+        case 'PARTIAL_CLOSE': _handlePartialClose(msg); break;
+        case 'BREAKEVEN': _handleBreakeven(msg.trade); break;
+        case 'SCANNER_ALERT': handleServerScannerAlert(msg.alert); break;
+        case 'TRAILING_UPDATE': _handleTrailingUpdate(msg); break;
       }
     } catch { }
   };
@@ -214,6 +215,29 @@ function _handleBreakeven(trade) {
   if (state.currentTab === 'ops') renderOps();
 }
 
+/**
+ * TRAILING_UPDATE — el servidor movió el SL automáticamente (trailing stop).
+ * Actualiza el trade en estado local y muestra un toast discreto.
+ */
+function _handleTrailingUpdate(msg) {
+  const { tradeId, newSL, oldSL } = msg;
+  if (!tradeId || !newSL) return;
+  const idx = state.activeTrades.findIndex(t => t.id === tradeId);
+  if (idx !== -1) {
+    state.activeTrades[idx].stopLoss = newSL;
+    saveKey('activeTrades', state.activeTrades);
+  }
+  const trade = state.activeTrades[idx];
+  if (trade) {
+    const coin = coinOf(trade.par || '');
+    showToast(`🎯 Trailing Stop — ${trade.par} SL: $${fmtP(oldSL, coin)} → $${fmtP(newSL, coin)}`);
+  }
+  // Sonido discreto de trailing
+  if (typeof playSound === 'function') playSound('trailing');
+  if (state.currentTab === 'ops') renderOps();
+  if (state.currentTab === 'dash') renderDash();
+}
+
 function handleServerScannerAlert(alert) {
   if (!alert?.id) return;
   if (state.alerts.some(a => a.id === alert.id)) return;
@@ -221,6 +245,7 @@ function handleServerScannerAlert(alert) {
   if (state.alerts.length > 30) state.alerts.pop();
   saveKey('alerts', state.alerts);
   showScreenNotif(alert);
+  if (typeof playSound === 'function') playSound('alert');
   if (state.currentTab === 'alerts') renderAlerts();
   updateScannerBadge();
   updateAlertBadge();
@@ -233,11 +258,13 @@ function _toastTradeClosed(closed) {
       ? `TP2 alcanzado! Neto total: +$${Math.abs(closed.pnl).toFixed(2)}`
       : `TP alcanzado! Neto: +$${Math.abs(closed.pnl).toFixed(2)}`;
     showToast(`✅ ${closed.par} — ${label}`);
+    if (typeof playSound === 'function') playSound('win');
   } else if (closed.result === 'BREAKEVEN') {
     showToast(`↔ ${closed.par} — Breakeven. P&L real: $${closed.pnl.toFixed(2)}`);
   } else {
     const be = closed.breakevenSet ? ' (BE activo, pérdida por fees)' : '';
     showToast(`❌ ${closed.par} — SL: -$${Math.abs(closed.pnl).toFixed(2)}${be}`, true);
+    if (typeof playSound === 'function') playSound('loss');
   }
 }
 

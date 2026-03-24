@@ -82,7 +82,7 @@ function calcSize(riskUSD, entry, stopLoss) {
  */
 function calcStrategyTargets(entry, stopLoss, tipo, tp1R = STRATEGY.TP1_RATIO, tp2R = STRATEGY.TP2_RATIO, coin = null) {
     const slDist = Math.abs(entry - stopLoss);
-    const dir    = tipo === 'LONG' ? 1 : -1;
+    const dir = tipo === 'LONG' ? 1 : -1;
 
     // TP mínimos por ratio como fallback
     const tp1Ratio = parseFloat((entry + dir * slDist * tp1R).toFixed(6));
@@ -95,7 +95,7 @@ function calcStrategyTargets(entry, stopLoss, tipo, tp1R = STRATEGY.TP1_RATIO, t
     const meta = MARKET_META[coin];
 
     if (tipo === 'LONG') {
-        const res4h  = meta.resRaw;  // resistencia real 4H
+        const res4h = meta.resRaw;  // resistencia real 4H
         const resDay = meta.resDay ? parseFloat(meta.resDay.replace(/[$K]/g, d => d === 'K' ? '000' : '')) : null;
 
         // TP1: usar resistencia 4H si está por encima de la entrada y R:R ≥ 1.0
@@ -147,7 +147,7 @@ function calcNetPnL(trade, exitPrice, exitFeeType = 'maker') {
         ? (exitPrice - trade.entrada) * trade.size
         : (trade.entrada - exitPrice) * trade.size;
     // Comisiones sobre nocional real (precio × size), sin × lev
-    const feeOpen  = trade.entrada * trade.size * STRATEGY.FEE_TAKER;
+    const feeOpen = trade.entrada * trade.size * STRATEGY.FEE_TAKER;
     const feeClose = exitPrice * trade.size * (exitFeeType === 'taker' ? STRATEGY.FEE_TAKER : STRATEGY.FEE_MAKER);
     const fees = feeOpen + feeClose;
     return { gross, fees, net: gross - fees };
@@ -164,10 +164,10 @@ function buildTrade(proposal) {
     const realEntry = prices[coin] || proposal.entrada;
     const tipo = proposal.tipo;
 
-    const equity  = getCurrentEquity();
+    const equity = getCurrentEquity();
     const riskPct = profile.risk_pct || STRATEGY.RISK_PCT;
     const riskUSD = equity * riskPct / 100;
-    const size    = calcSize(riskUSD, realEntry, proposal.stopLoss);
+    const size = calcSize(riskUSD, realEntry, proposal.stopLoss);
 
     // Targets: pasar coin para usar niveles reales S/R si están disponibles
     const stratTargets = calcStrategyTargets(realEntry, proposal.stopLoss, tipo, STRATEGY.TP1_RATIO, STRATEGY.TP2_RATIO, coin);
@@ -205,6 +205,9 @@ function buildTrade(proposal) {
         partialClosed: false,
         partialClosePnl: 0,
         partialCloseQty: 0,
+        // Trailing stop — activado por el usuario en el modal de confirmación
+        // El servidor lo lee en checkTPSL y mueve el SL automáticamente
+        trailingStop: false,
     };
 }
 
@@ -365,15 +368,15 @@ function validateStrategyEntry(proposal) {
 
 function calcProposalMoney(proposal) {
     const leverage = state.profile.leverage || 1;
-    const coin     = coinOf(proposal.par);
-    const entry    = state.prices[coin] || proposal.entrada;
-    const equity   = getCurrentEquity();
-    const riskPct  = state.profile.risk_pct || STRATEGY.RISK_PCT;
-    const riskUSD  = equity * riskPct / 100;
+    const coin = coinOf(proposal.par);
+    const entry = state.prices[coin] || proposal.entrada;
+    const equity = getCurrentEquity();
+    const riskPct = state.profile.risk_pct || STRATEGY.RISK_PCT;
+    const riskUSD = equity * riskPct / 100;
 
-    const size     = calcSize(riskUSD, entry, proposal.stopLoss);
+    const size = calcSize(riskUSD, entry, proposal.stopLoss);
     const notional = size * entry;
-    const margin   = notional / leverage;
+    const margin = notional / leverage;
 
     const targets = calcStrategyTargets(entry, proposal.stopLoss, proposal.tipo, STRATEGY.TP1_RATIO, STRATEGY.TP2_RATIO, coin);
     const tp1 = proposal.tp1 || targets.tp1;

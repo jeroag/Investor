@@ -173,6 +173,34 @@ function renderDash() {
         </div>
       </div>
 
+      <!-- Widget correlación de posiciones -->
+      ${(function () {
+      const CORR_COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'AVAX', 'LINK'];
+      const longs = activeTrades.filter(t => t.tipo === 'LONG' && CORR_COINS.includes(coinOf(t.par)));
+      const shorts = activeTrades.filter(t => t.tipo === 'SHORT' && CORR_COINS.includes(coinOf(t.par)));
+      const totalRiskLong = longs.reduce((a, t) => a + (t.riskUSD || 0), 0);
+      const totalRiskShort = shorts.reduce((a, t) => a + (t.riskUSD || 0), 0);
+      if (!activeTrades.length) return '';
+      const riskPct = profile.capital > 0 ? ((totalRiskLong + totalRiskShort) / profile.capital * 100).toFixed(1) : 0;
+      const danger = longs.length >= 3 || shorts.length >= 3;
+      const warn = longs.length >= 2 || shorts.length >= 2;
+      const color = danger ? 'var(--red)' : warn ? 'var(--yellow)' : 'var(--green)';
+      const border = danger ? 'rgba(255,68,85,.3)' : warn ? 'rgba(245,197,66,.3)' : 'var(--border)';
+      return `
+        <div class="card" style="margin-bottom:12px;border-color:${border}">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+            <div style="font-size:12px;font-weight:600;color:var(--text)">🔗 Riesgo por correlación</div>
+            <span style="font-size:11px;font-weight:700;color:${color}">$${(totalRiskLong + totalRiskShort).toFixed(2)} (${riskPct}%)</span>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            ${longs.map(t => `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(0,209,122,.1);border:1px solid rgba(0,209,122,.3);color:var(--green)">▲ ${coinOf(t.par)} $${(t.riskUSD || 0).toFixed(2)}</span>`).join('')}
+            ${shorts.map(t => `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(255,68,85,.1);border:1px solid rgba(255,68,85,.3);color:var(--red)">▼ ${coinOf(t.par)} $${(t.riskUSD || 0).toFixed(2)}</span>`).join('')}
+          </div>
+          ${danger ? `<div style="font-size:10px;color:var(--red);margin-top:6px">⚠️ Máximo de correlación alcanzado — no abrir más posiciones del mismo lado</div>` : ''}
+          ${longs.length >= 1 && longs[0]?.trailingStop ? `<div style="font-size:10px;color:var(--accent);margin-top:4px">🎯 Trailing stop activo en ${longs.filter(t => t.trailingStop).length} posición(es)</div>` : ''}
+        </div>`;
+    })()}
+
       <!-- Accesos rápidos -->
       <div class="card">
         <div class="stl" style="margin-bottom:10px">⚡ Accesos rápidos</div>
@@ -527,6 +555,29 @@ function showTradeConfirmModal(trade) {
               El deslizamiento final puede diferir ligeramente.
             </div>
 
+            <!-- Trailing Stop toggle -->
+            <div style="padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--s2);margin-bottom:12px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div>
+                  <div style="font-size:12px;font-weight:600;color:var(--text)">🎯 Trailing Stop automático</div>
+                  <div style="font-size:10px;color:var(--muted);margin-top:2px">
+                    Mueve el SL automáticamente siguiendo el precio (paso: 0.5×ATR). Solo activo tras breakeven.
+                  </div>
+                </div>
+                <label style="position:relative;width:36px;height:20px;flex-shrink:0;margin-left:12px">
+                  <input type="checkbox" id="trailing-toggle" style="opacity:0;width:0;height:0;position:absolute">
+                  <span id="trailing-track" onclick="
+                    const cb=document.getElementById('trailing-toggle');
+                    cb.checked=!cb.checked;
+                    document.getElementById('trailing-track').style.background=cb.checked?'var(--accent)':'var(--border)';
+                    document.getElementById('trailing-thumb').style.transform=cb.checked?'translateX(16px)':'translateX(0)';
+                  " style="position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:background .2s">
+                    <span id="trailing-thumb" style="position:absolute;top:3px;left:3px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .2s"></span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
             <!-- Botones -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
               <button id="confirm-cancel-btn" class="btn" style="padding:10px;font-size:12px;font-weight:600">✕ Cancelar</button>
@@ -556,15 +607,18 @@ function showTradeConfirmModal(trade) {
       resolve(result);
     };
 
-    document.getElementById('confirm-cancel-btn').onclick = () => close(false);
+    document.getElementById('confirm-cancel-btn').onclick = () => close({ confirmed: false });
     if (!corrBlocked) {
-      document.getElementById('confirm-execute-btn').onclick = () => close(true);
+      document.getElementById('confirm-execute-btn').onclick = () => {
+        const trailingEnabled = document.getElementById('trailing-toggle')?.checked || false;
+        close({ confirmed: true, trailingStop: trailingEnabled });
+      };
     }
     div.querySelector('div[style*="inset:0"]').addEventListener('click', e => {
-      if (e.target === e.currentTarget) close(false);
+      if (e.target === e.currentTarget) close({ confirmed: false });
     });
     document.addEventListener('keydown', function onKey(e) {
-      if (e.key === 'Escape') { close(false); document.removeEventListener('keydown', onKey); }
+      if (e.key === 'Escape') { close({ confirmed: false }); document.removeEventListener('keydown', onKey); }
     });
   });
 }
@@ -629,8 +683,12 @@ async function onAcceptProposal(i) {
   const trade = buildTrade(p);
 
   if (bitunix.configured) {
-    const confirmed = await showTradeConfirmModal(trade);
-    if (!confirmed) return;
+    const modalResult = await showTradeConfirmModal(trade);
+    if (!modalResult || !modalResult.confirmed) return;
+    // Aplicar trailing stop si el usuario lo activó
+    if (modalResult.trailingStop) {
+      trade.trailingStop = true;
+    }
 
     const result = await placeBitunixOrder(trade);
     if (!result || !result.ok) {
@@ -1300,7 +1358,7 @@ const BT_FILTERS = {
   par: 'ALL',
 };
 
-function runBtFilter(trades, filters = BT_FILTERS) {
+function runBacktest(trades, filters = BT_FILTERS) {
   let filtered = trades.filter(t => {
     if (filters.tipo !== 'ALL' && t.tipo !== filters.tipo) return false;
     if (filters.par !== 'ALL' && t.par !== filters.par) return false;
@@ -1328,7 +1386,7 @@ function renderBacktest() {
 
   const { closedTrades } = state;
   const allPairs = [...new Set(closedTrades.map(t => t.par))];
-  const result = runBtFilter(closedTrades, BT_FILTERS);
+  const result = runBacktest(closedTrades, BT_FILTERS);
 
   // Equity curve del backtest
   let cap = state.profile.capital;
@@ -1421,7 +1479,7 @@ function applyBtFilter() {
   BT_FILTERS.minRR = parseFloat(qs('#bt-rr')?.value) || 0;
   BT_FILTERS.setup = qs('#bt-setup')?.value || '';
 
-  const result = runBtFilter(state.closedTrades, BT_FILTERS);
+  const result = runBacktest(state.closedTrades, BT_FILTERS);
 
   // Update stats
   const set = (id, val, color) => {
@@ -1642,6 +1700,51 @@ async function refreshBitunixData() {
   showToast('✓ Datos de Bitunix actualizados');
 }
 
+/* ════════════════════════════════════════════════════════════════════
+   SISTEMA DE ALERTAS SONORAS
+   Usa la Web Audio API — no requiere archivos externos.
+   Genera tonos sintéticos para cada tipo de evento.
+   ════════════════════════════════════════════════════════════════════ */
+let _audioCtx = null;
+function _getAudioCtx() {
+  if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  return _audioCtx;
+}
+
+function playSound(type) {
+  if (storage.get('cp:soundOff')) return; // silenciado por el usuario
+  try {
+    const ctx = _getAudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    const sounds = {
+      alert: { freq: 880, type: 'sine', dur: 0.3, vol: 0.3 },  // nueva alerta del escáner
+      win: { freq: 660, type: 'triangle', dur: 0.5, vol: 0.4 },  // trade ganado
+      loss: { freq: 220, type: 'sawtooth', dur: 0.4, vol: 0.3 },  // trade perdido
+      trailing: { freq: 440, type: 'sine', dur: 0.15, vol: 0.2 }, // trailing stop actualizado
+      open: { freq: 550, type: 'sine', dur: 0.25, vol: 0.3 }, // trade abierto
+    };
+    const s = sounds[type] || sounds.alert;
+    osc.type = s.type;
+    osc.frequency.setValueAtTime(s.freq, ctx.currentTime);
+    gain.gain.setValueAtTime(s.vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + s.dur);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + s.dur);
+  } catch (e) { /* Web Audio no disponible */ }
+}
+
+function toggleSound() {
+  const off = storage.get('cp:soundOff');
+  storage.set('cp:soundOff', !off);
+  const btn = qs('#sound-toggle-btn');
+  if (btn) btn.textContent = off ? '🔔' : '🔕';
+  if (!off) playSound('alert'); // demo del sonido al activar
+}
+
 /* ── Init ────────────────────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', () => {
   loadAll();
@@ -1771,6 +1874,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (state.currentTab === 'diary') renderDiary();
   }).catch(() => { });
   updateReadOnlyBadge();
+
+  // Inicializar estado del botón de sonido
+  const soundBtn = qs('#sound-toggle-btn');
+  if (soundBtn) soundBtn.textContent = storage.get('cp:soundOff') ? '🔕' : '🔔';
+
   connectServerWS();   // WS push: reemplaza polling para TRADE_CLOSED
   setInterval(pollServerClosedTrades, 30000); // fallback por si WS se desconecta
 
@@ -1801,6 +1909,7 @@ Object.assign(window, {
   refreshCalendar,
   showBitunixSetup, refreshBitunixData,
   doLogout,
+  toggleSound,
   resetAll, renderAll, syncProfileToServer,
   exportTradesCSV,
   showEquityCurve,

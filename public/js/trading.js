@@ -158,7 +158,8 @@ function commitTrade(trade) {
     `${trade.leverage > 1 ? ' · ' + trade.leverage + 'x' : ''}` +
     ` · Riesgo $${trade.riskUSD?.toFixed(2) || '?'} (1% equity)`
   );
-  showToast(`✓ ${trade.par} — entrada ${fmtP(trade.entrada, coinOf(trade.par))}`);
+  showToast(`✓ ${trade.par} — entrada ${fmtP(trade.entrada, coinOf(trade.par))}${trade.trailingStop ? ' 🎯 Trailing ON' : ''}`);
+  if (typeof playSound === 'function') playSound('open');
 }
 
 function acceptProposal(proposal) {

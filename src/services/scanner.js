@@ -10,8 +10,7 @@ let broadcastFn = null;
 function setBroadcast(fn) { broadcastFn = fn; }
 
 /* ── Monedas para el escáner (subset más líquido) ──────────────── */
-// XAU añadido — datos OHLCV via Binance Futures (fapi)
-const SCANNER_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'LINK', 'LTC', 'XAU'];
+const SCANNER_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'LINK', 'LTC'];
 
 /* ══════════════════════════════════════════════════════════════════
    CONSTRUCCIÓN DEL CONTEXTO — OHLCV + precios spot
@@ -34,6 +33,26 @@ async function buildOHLCVContext(coins = SCANNER_COINS) {
 }
 
 /**
+ * Descarga velas 4H para confirmación de tendencia mayor.
+ * Se usa como contexto adicional al prompt de Claude para evitar
+ * operar contra la tendencia de timeframe superior.
+ */
+async function build4HContext(coins = SCANNER_COINS) {
+  try {
+    const bars = await fetchOHLCV(coins, '4h', 30);
+    const lines = coins.map(coin => {
+      const coinBars = bars[coin];
+      if (!coinBars || coinBars.length < 20) return `${coin}: sin datos 4H`;
+      return buildTechSummary(coin, coinBars);
+    });
+    return lines.join('\n');
+  } catch (e) {
+    console.warn('[Scanner] Error 4H context:', e.message);
+    return 'Contexto 4H no disponible.';
+  }
+}
+
+/**
  * Contexto de spot prices para monedas sin barras (fallback).
  */
 function buildSpotContext() {
@@ -52,8 +71,11 @@ async function runServerScan(profile) {
   const apiKey = config.anthropicKey;
   if (!apiKey) return null;
 
-  console.log('[Scanner] Descargando OHLCV…');
-  const ohlcvCtx = await buildOHLCVContext(SCANNER_COINS);
+  console.log('[Scanner] Descargando OHLCV 1H + 4H…');
+  const [ohlcvCtx, ctx4h] = await Promise.all([
+    buildOHLCVContext(SCANNER_COINS),
+    build4HContext(SCANNER_COINS),
+  ]);
   const spotCtx = buildSpotContext();
 
   const recent = scannerState.pendingAlerts.slice(-3)
@@ -67,8 +89,13 @@ async function runServerScan(profile) {
 
   const prompt = `Eres un escáner de mercado automático 24/7. Analiza datos técnicos reales y detecta oportunidades de trading con alta probabilidad.
 
-━━━ ANÁLISIS TÉCNICO REAL (OHLCV 1h, 52 velas) ━━━
+━━━ ANÁLISIS TÉCNICO 1H (52 velas) — TIMING DE ENTRADA ━━━
 ${ohlcvCtx}
+
+━━━ ANÁLISIS TÉCNICO 4H (30 velas) — TENDENCIA MAYOR ━━━
+${ctx4h}
+INSTRUCCIÓN MULTI-TIMEFRAME: La dirección del trade DEBE estar alineada con la tendencia 4H.
+Si 1H da señal LONG pero 4H está bajista (precio < EMA200 en 4H), NO generar alerta LONG.
 
 ━━━ PRECIOS SPOT ADICIONALES ━━━
 ${spotCtx}
