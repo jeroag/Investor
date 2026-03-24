@@ -1,16 +1,17 @@
 'use strict';
 
-const { config }          = require('../config');
+const { config } = require('../config');
 const { serverState, scannerState } = require('../state');
 const { fetchOHLCV, buildTechSummary, ALL_COINS } = require('./binance');
 const { notifyScannerAlert } = require('./telegram');
-const db                  = require('../db/supabase');
+const db = require('../db/supabase');
 
 let broadcastFn = null;
 function setBroadcast(fn) { broadcastFn = fn; }
 
 /* ── Monedas para el escáner (subset más líquido) ──────────────── */
-const SCANNER_COINS = ['BTC','ETH','SOL','XRP','BNB','DOGE','AVAX','LINK','LTC'];
+// XAU añadido — datos OHLCV via Binance Futures (fapi)
+const SCANNER_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'LINK', 'LTC', 'XAU'];
 
 /* ══════════════════════════════════════════════════════════════════
    CONSTRUCCIÓN DEL CONTEXTO — OHLCV + precios spot
@@ -37,7 +38,7 @@ async function buildOHLCVContext(coins = SCANNER_COINS) {
  */
 function buildSpotContext() {
   const prices = serverState.prices;
-  const coins  = Object.keys(prices);
+  const coins = Object.keys(prices);
   if (!coins.length) return 'Sin datos de precio disponibles.';
   return coins
     .map(coin => `${coin}/USDT: $${(prices[coin]?.toFixed ? prices[coin].toFixed(4) : prices[coin])}`)
@@ -53,16 +54,16 @@ async function runServerScan(profile) {
 
   console.log('[Scanner] Descargando OHLCV…');
   const ohlcvCtx = await buildOHLCVContext(SCANNER_COINS);
-  const spotCtx  = buildSpotContext();
+  const spotCtx = buildSpotContext();
 
-  const recent  = scannerState.pendingAlerts.slice(-3)
+  const recent = scannerState.pendingAlerts.slice(-3)
     .map(a => `${a.par} ${a.tipo} @${a.entrada}`).join(' | ') || 'ninguna';
 
-  const capital  = profile?.capital   || 100;
-  const leverage = profile?.leverage  || 1;
-  const riskPct  = profile?.risk_pct  || 2;
-  const style    = profile?.style     || 'swing';
-  const riskUSD  = (capital * riskPct / 100).toFixed(2);
+  const capital = profile?.capital || 100;
+  const leverage = profile?.leverage || 1;
+  const riskPct = profile?.risk_pct || 2;
+  const style = profile?.style || 'swing';
+  const riskUSD = (capital * riskPct / 100).toFixed(2);
 
   const prompt = `Eres un escáner de mercado automático 24/7. Analiza datos técnicos reales y detecta oportunidades de trading con alta probabilidad.
 
@@ -93,21 +94,21 @@ Si no hay oportunidad clara: {"hay_oportunidad":false,"razon":"motivo concreto"}
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method:  'POST',
+      method: 'POST',
       headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':         apiKey,
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model:      'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-4-20250514',
         max_tokens: 800,
-        system:     'Eres escáner técnico de criptomonedas. Responde SOLO JSON válido sin markdown ni texto adicional.',
-        messages:   [{ role: 'user', content: prompt }],
+        system: 'Eres escáner técnico de criptomonedas. Responde SOLO JSON válido sin markdown ni texto adicional.',
+        messages: [{ role: 'user', content: prompt }],
       }),
     });
-    const data  = await response.json();
-    const text  = data?.content?.[0]?.text || '';
+    const data = await response.json();
+    const text = data?.content?.[0]?.text || '';
     const clean = text.replace(/```json|```/g, '').trim();
     return JSON.parse(clean);
   } catch (e) {
@@ -121,7 +122,7 @@ Si no hay oportunidad clara: {"hay_oportunidad":false,"razon":"motivo concreto"}
    ══════════════════════════════════════════════════════════════════ */
 function startServerScanner(profile) {
   if (scannerState.timer) clearInterval(scannerState.timer);
-  scannerState.enabled     = true;
+  scannerState.enabled = true;
   scannerState.intervalMin = profile?.scan_interval || 15;
 
   const doScan = async () => {
@@ -135,10 +136,10 @@ function startServerScanner(profile) {
     if (result.hay_oportunidad) {
       const alert = {
         ...result,
-        id:        `srv_${Date.now()}`,
+        id: `srv_${Date.now()}`,
         timestamp: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
-        source:    'server',
-        status:    'pending',
+        source: 'server',
+        status: 'pending',
       };
       scannerState.lastAlert = alert;
       scannerState.pendingAlerts.unshift(alert);
@@ -146,7 +147,7 @@ function startServerScanner(profile) {
 
       if (broadcastFn) broadcastFn({ type: 'SCANNER_ALERT', alert });
       notifyScannerAlert(alert);
-      db.saveAlert(alert).catch(() => {});
+      db.saveAlert(alert).catch(() => { });
       console.log(`[Scanner] 🚨 ${alert.par} ${alert.tipo} @ ${alert.entrada}`);
     } else {
       console.log(`[Scanner] Sin oportunidad: ${result.razon}`);
@@ -160,7 +161,7 @@ function startServerScanner(profile) {
 
 function stopServerScanner() {
   if (scannerState.timer) clearInterval(scannerState.timer);
-  scannerState.timer   = null;
+  scannerState.timer = null;
   scannerState.enabled = false;
   console.log('[Scanner] ✗ Detenido');
 }
@@ -168,9 +169,9 @@ function stopServerScanner() {
 /* ── Health ping: avisa por Telegram si el escáner se atasca ─────── */
 setInterval(() => {
   if (!scannerState.enabled) return;
-  if (!scannerState.lastScan)  return;
+  if (!scannerState.lastScan) return;
 
-  const elapsed   = Date.now() - scannerState.lastScan;
+  const elapsed = Date.now() - scannerState.lastScan;
   const threshold = scannerState.intervalMin * 60_000 * 2.5; // 2.5× el intervalo
 
   if (elapsed > threshold) {
@@ -182,7 +183,7 @@ setInterval(() => {
       `Intervalo configurado: ${scannerState.intervalMin} min\n\n` +
       `Puede ser un error de red o de API. Comprueba los logs en Railway.\n` +
       `/scanner off → /scanner on para reiniciar`
-    ).catch(() => {});
+    ).catch(() => { });
     console.warn(`[Scanner] ⚠️ Health warning — sin escaneo en ${mins} min`);
   }
 }, 30 * 60_000); // comprueba cada 30 min

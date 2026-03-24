@@ -148,7 +148,11 @@ function _isNYSession(timestampMs, interval) {
 
 /* ── Descarga Binance ───────────────────────────────────────────────────── */
 async function btFetchKlines(symbol, interval, limit) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}USDT&interval=${interval}&limit=${limit}`;
+  const isXAU = symbol.toUpperCase() === 'XAU';
+  // XAU no está en Binance spot — usar Binance Futures (fapi) que sí tiene XAUUSDT
+  const url = isXAU
+    ? `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`
+    : `https://api.binance.com/api/v3/klines?symbol=${symbol.toUpperCase()}USDT&interval=${interval}&limit=${limit}`;
   const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;

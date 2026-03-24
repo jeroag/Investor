@@ -5,34 +5,35 @@
    Punto de entrada limpio. Toda la lógica está en src/
    ══════════════════════════════════════════════════════════════════ */
 
-const express  = require('express');
-const path     = require('path');
+const express = require('express');
+const path = require('path');
 
 // 1. Validar entorno antes de cualquier otra cosa
 const { validateEnv, config } = require('./src/config');
 validateEnv();
 
 // 2. Módulos de la app
-const { securityMiddleware }   = require('./src/middleware/security');
+const { securityMiddleware } = require('./src/middleware/security');
 const { requireAuth, restoreSessions, scheduleSessionCleanup } = require('./src/middleware/auth');
 
-const db           = require('./src/db/supabase');
+const db = require('./src/db/supabase');
 const { serverState, scannerState } = require('./src/state');
-const ws           = require('./src/websocket');
+const ws = require('./src/websocket');
 
-const binance  = require('./src/services/binance');
-const tpsl     = require('./src/services/tpsl');
-const scanner  = require('./src/services/scanner');
+const binance = require('./src/services/binance');
+const { startXAUPolling } = require('./src/services/binance');
+const tpsl = require('./src/services/tpsl');
+const scanner = require('./src/services/scanner');
 const tvModule = require('./src/routes/tradingview');
 
 // 3. Rutas
-const authRoutes       = require('./src/routes/auth');
-const tradesRoutes     = require('./src/routes/trades');
-const scannerRoutes    = require('./src/routes/scanner');
-const claudeRoutes     = require('./src/routes/claude');
-const telegramRoutes   = require('./src/routes/telegram');
+const authRoutes = require('./src/routes/auth');
+const tradesRoutes = require('./src/routes/trades');
+const scannerRoutes = require('./src/routes/scanner');
+const claudeRoutes = require('./src/routes/claude');
+const telegramRoutes = require('./src/routes/telegram');
 const { router: bitunixRoutes } = require('./src/routes/bitunix');
-const diaryRoutes      = require('./src/routes/diary');
+const diaryRoutes = require('./src/routes/diary');
 const priceAlertRoutes = require('./src/routes/pricealerts');
 
 /* ══════════════════════════════════════════════════════════════════
@@ -53,15 +54,15 @@ app.use(express.static(path.join(__dirname, 'public'), { index: false }));
 app.use('/auth', authRoutes);
 
 /* ── API (requieren auth por defecto — cada router aplica requireAuth) ── */
-app.use('/api/trades',      tradesRoutes);
-app.use('/api/scanner',     scannerRoutes);
-app.use('/api/claude',      claudeRoutes);
-app.use('/api/telegram',    telegramRoutes);
-app.use('/api/bitunix',     bitunixRoutes);
+app.use('/api/trades', tradesRoutes);
+app.use('/api/scanner', scannerRoutes);
+app.use('/api/claude', claudeRoutes);
+app.use('/api/telegram', telegramRoutes);
+app.use('/api/bitunix', bitunixRoutes);
 app.use('/api/tradingview', tvModule.router);
-app.use('/api/diary',         diaryRoutes);
-app.use('/api/profile',        require('./src/routes/profile'));
-app.use('/api/price-alerts',  priceAlertRoutes);
+app.use('/api/diary', diaryRoutes);
+app.use('/api/profile', require('./src/routes/profile'));
+app.use('/api/price-alerts', priceAlertRoutes);
 
 /* ── Precios (alias rápido) ────────────────────────────────────── */
 app.get('/api/prices', requireAuth, (req, res) =>
@@ -120,6 +121,9 @@ async function bootstrap() {
 
   // Conectar Binance WS
   binance.connectBinanceWS();
+
+  // XAU: precio via Bitunix REST (Binance spot no tiene XAUUSDT)
+  startXAUPolling(binance.onPriceCallbacks);
 }
 
 bootstrap().catch(err => {

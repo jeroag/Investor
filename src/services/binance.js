@@ -36,6 +36,35 @@ const ALL_COINS = [
   'uniusdt', 'atomusdt',
 ];
 
+// XAU no está en Binance spot — precio obtenido de Bitunix REST cada 10s
+// Se inyecta en serverState.prices['XAU'] igual que el resto de monedas
+const XAU_POLL_MS = 10_000;
+let xauPollTimer = null;
+
+async function _pollXAUPrice(onPriceCbs) {
+  try {
+    const res = await fetch(
+      'https://api.bitunix.com/api/v1/futures/market/tickers?symbol=XAUUSDT',
+      { signal: AbortSignal.timeout(5_000) }
+    );
+    const data = await res.json();
+    const ticker = Array.isArray(data?.data) ? data.data[0] : data?.data;
+    const price = ticker ? parseFloat(ticker.lastPrice || ticker.last || ticker.close || 0) : 0;
+    if (price > 0) {
+      serverState.prices['XAU'] = price;
+      onPriceCbs.forEach(fn => fn('XAU', price));
+    }
+  } catch (e) {
+    // silencioso — no interrumpe el flujo principal
+  }
+  xauPollTimer = setTimeout(() => _pollXAUPrice(onPriceCbs), XAU_POLL_MS);
+}
+
+function startXAUPolling(onPriceCbs) {
+  if (xauPollTimer) return; // ya arrancado
+  _pollXAUPrice(onPriceCbs);
+}
+
 const WS_URL = 'wss://stream.binance.com:9443/stream?streams=' +
   ALL_COINS.map(s => s + '@miniTicker').join('/');
 
@@ -151,8 +180,12 @@ function _clearTimers() {
 async function fetchOHLCV(coins, interval = '1h', limit = 50) {
   const results = {};
   const fetches = coins.map(async (coin) => {
+    const isXAU = coin.toUpperCase() === 'XAU';
     const symbol = coin.toUpperCase() + 'USDT';
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    // XAU no existe en Binance spot — usar Binance Futures (fapi)
+    const url = isXAU
+      ? `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+      : `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     try {
       const res = await fetch(url, { signal: AbortSignal.timeout(8_000) });
       const data = await res.json();
@@ -176,7 +209,9 @@ async function fetchOHLCV(coins, interval = '1h', limit = 50) {
 module.exports = {
   ALL_COINS,
   connectBinanceWS,
+  startXAUPolling,
   onPrice,
+  onPriceCallbacks: onPriceCallbacks, // expuesto para XAU polling
   fetchOHLCV,
   // Re-export para compatibilidad
   calcRSI,
