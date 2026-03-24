@@ -846,7 +846,7 @@ function renderHistorial() {
   // Inyectar sub-divs con IDs originales — renderPerf y renderBacktest los encontrarán
   root.innerHTML = `
     <div id="sec-perf"     style="display:block"></div>
-    <div id="sec-backtest" style="display:block;margin-top:8px"></div>
+    <div id="sec-bt-filter" style="display:block;margin-top:8px"></div>
     ${state.bitunix?.configured !== false ? '<div id="sec-bitunix-history" style="display:block;margin-top:8px"></div>' : ''}`;
   renderPerf();
   renderBacktest();
@@ -1405,7 +1405,7 @@ function runBacktest(trades, filters = BT_FILTERS) {
 }
 
 function renderBacktest() {
-  const root = qs('#sec-backtest');
+  const root = qs('#sec-bt-filter') || qs('#sec-backtest');
   if (!root) return;
 
   const { closedTrades } = state;
