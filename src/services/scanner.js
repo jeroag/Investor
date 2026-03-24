@@ -94,8 +94,11 @@ ${ohlcvCtx}
 
 ━━━ ANÁLISIS TÉCNICO 4H (30 velas) — TENDENCIA MAYOR ━━━
 ${ctx4h}
-INSTRUCCIÓN MULTI-TIMEFRAME: La dirección del trade DEBE estar alineada con la tendencia 4H.
-Si 1H da señal LONG pero 4H está bajista (precio < EMA200 en 4H), NO generar alerta LONG.
+INSTRUCCIÓN MULTI-TIMEFRAME: Usa el 4H como contexto de confianza, NO como filtro absoluto.
+- Si 1H y 4H están alineados (misma dirección) → confianza ALTA, prioriza esta señal
+- Si 1H da señal pero 4H es neutral/lateral → confianza MEDIA, puedes generar alerta
+- Si 1H y 4H van en dirección OPUESTA → confianza BAJA, omite la señal solo si hay alternativa mejor
+El objetivo es mantener frecuencia de señales mientras priorizas las de mayor confluencia.
 
 ━━━ PRECIOS SPOT ADICIONALES ━━━
 ${spotCtx}
