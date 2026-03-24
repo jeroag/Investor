@@ -11,21 +11,21 @@
 'use strict';
 
 const BT = {
-  TP1_RATIO:      1.2,
-  TP2_RATIO:      2.5,
-  PARTIAL_PCT:    0.5,
-  ATR_SL_MULT:    1.5,
-  MIN_RR:         2.0,
-  FEE_TAKER:      0.0006,
-  FEE_MAKER:      0.0002,
-  RSI_OVERSOLD:   35,
-  RSI_OVERBOUGHT: 65,
-  EMA_FAST:       20,
-  EMA_SLOW:       50,
-  EMA_TREND:      200,
-  RSI_PERIOD:     14,
-  ATR_PERIOD:     14,
-  MIN_CANDLES:    220,
+  TP1_RATIO: 1.2,
+  TP2_RATIO: 2.5,
+  PARTIAL_PCT: 0.5,
+  ATR_SL_MULT: 1.5,
+  MIN_RR: 2.0,
+  FEE_TAKER: 0.0006,
+  FEE_MAKER: 0.0002,
+  RSI_OVERSOLD: 40,
+  RSI_OVERBOUGHT: 60,
+  EMA_FAST: 20,
+  EMA_SLOW: 50,
+  EMA_TREND: 200,
+  RSI_PERIOD: 14,
+  ATR_PERIOD: 14,
+  MIN_CANDLES: 220,
 };
 
 /* ── Indicadores — arrays completos en O(n) ─────────────────────────────── */
@@ -67,12 +67,12 @@ function _btAtrArray(highs, lows, closes, period) {
   if (closes.length < period + 1) return out;
   let sum = 0;
   for (let i = 1; i <= period; i++) {
-    sum += Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
+    sum += Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
   }
   out[period] = sum / period;
   for (let i = period + 1; i < closes.length; i++) {
-    const tr = Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1]));
-    out[i] = (out[i-1] * (period - 1) + tr) / period;
+    const tr = Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1]));
+    out[i] = (out[i - 1] * (period - 1) + tr) / period;
   }
   return out;
 }
@@ -83,7 +83,7 @@ async function btFetchKlines(symbol, interval, limit) {
   const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
-    try { const j = await res.json(); msg = j.msg || msg; } catch {}
+    try { const j = await res.json(); msg = j.msg || msg; } catch { }
     throw new Error(`Binance error para ${symbol}: ${msg}`);
   }
   const raw = await res.json();
@@ -105,19 +105,19 @@ async function runBacktest(coin, interval, riskUSD, limit) {
   }
 
   const closes = candles.map(c => c.c);
-  const highs  = candles.map(c => c.h);
-  const lows   = candles.map(c => c.l);
+  const highs = candles.map(c => c.h);
+  const lows = candles.map(c => c.l);
 
   // Precomputar todos los indicadores UNA sola vez — O(n)
   const rsiArr = _btRsiArray(closes, BT.RSI_PERIOD);
-  const ema20  = _btEmaArray(closes, BT.EMA_FAST);
-  const ema50  = _btEmaArray(closes, BT.EMA_SLOW);
+  const ema20 = _btEmaArray(closes, BT.EMA_FAST);
+  const ema50 = _btEmaArray(closes, BT.EMA_SLOW);
   const ema200 = _btEmaArray(closes, BT.EMA_TREND);
   const atrArr = _btAtrArray(highs, lows, closes, BT.ATR_PERIOD);
 
-  const trades  = [];
+  const trades = [];
   let openTrade = null;
-  let equity    = 0;
+  let equity = 0;
 
   for (let i = BT.MIN_CANDLES; i < candles.length - 1; i++) {
     const bar = candles[i];
@@ -134,13 +134,13 @@ async function runBacktest(coin, interval, riskUSD, limit) {
         if (openTrade.tp1Hit && bar.h >= tp2) {
           const q = openTrade.size;
           const p = (tp2 - entrada) * q - tp2 * q * BT.FEE_MAKER;
-          trades.push({...openTrade, result:'WIN', pnl:parseFloat(((openTrade.tp1PnL||0)+p).toFixed(4)), exit:tp2});
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: tp2 });
           equity += p; openTrade = null; continue;
         }
         if (bar.l <= openTrade.stopLoss) {
           const q = openTrade.size;
           const p = (openTrade.stopLoss - entrada) * q - openTrade.stopLoss * q * BT.FEE_TAKER;
-          trades.push({...openTrade, result:openTrade.tp1Hit?'BREAKEVEN':'LOSS', pnl:parseFloat(((openTrade.tp1PnL||0)+p).toFixed(4)), exit:openTrade.stopLoss});
+          trades.push({ ...openTrade, result: openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: openTrade.stopLoss });
           equity += p; openTrade = null; continue;
         }
       } else {
@@ -153,13 +153,13 @@ async function runBacktest(coin, interval, riskUSD, limit) {
         if (openTrade.tp1Hit && bar.l <= tp2) {
           const q = openTrade.size;
           const p = (entrada - tp2) * q - tp2 * q * BT.FEE_MAKER;
-          trades.push({...openTrade, result:'WIN', pnl:parseFloat(((openTrade.tp1PnL||0)+p).toFixed(4)), exit:tp2});
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: tp2 });
           equity += p; openTrade = null; continue;
         }
         if (bar.h >= openTrade.stopLoss) {
           const q = openTrade.size;
           const p = (entrada - openTrade.stopLoss) * q - openTrade.stopLoss * q * BT.FEE_TAKER;
-          trades.push({...openTrade, result:openTrade.tp1Hit?'BREAKEVEN':'LOSS', pnl:parseFloat(((openTrade.tp1PnL||0)+p).toFixed(4)), exit:openTrade.stopLoss});
+          trades.push({ ...openTrade, result: openTrade.tp1Hit ? 'BREAKEVEN' : 'LOSS', pnl: parseFloat(((openTrade.tp1PnL || 0) + p).toFixed(4)), exit: openTrade.stopLoss });
           equity += p; openTrade = null; continue;
         }
       }
@@ -168,60 +168,60 @@ async function runBacktest(coin, interval, riskUSD, limit) {
 
     // Buscar señal usando indicadores precomputados
     const rsi = rsiArr[i], e200 = ema200[i], e50 = ema50[i], e20 = ema20[i], atr = atrArr[i];
-    if (rsi===null || e200===null || e50===null || e20===null || atr===null || atr<=0) continue;
+    if (rsi === null || e200 === null || e50 === null || e20 === null || atr === null || atr <= 0) continue;
 
     const price = closes[i];
     let tipo = null;
-    if (rsi <= BT.RSI_OVERSOLD  && price > e200 && e20 > e50) tipo = 'LONG';
+    if (rsi <= BT.RSI_OVERSOLD && price > e200 && e20 > e50) tipo = 'LONG';
     if (rsi >= BT.RSI_OVERBOUGHT && price < e200 && e20 < e50) tipo = 'SHORT';
     if (!tipo) continue;
 
     const slDist = atr * BT.ATR_SL_MULT;
     if (slDist <= 0) continue;
-    const entrada  = price;
-    const stopLoss = tipo==='LONG' ? entrada - slDist : entrada + slDist;
-    const tp1 = tipo==='LONG' ? entrada + slDist*BT.TP1_RATIO : entrada - slDist*BT.TP1_RATIO;
-    const tp2 = tipo==='LONG' ? entrada + slDist*BT.TP2_RATIO : entrada - slDist*BT.TP2_RATIO;
-    if (Math.abs(tp1-entrada)/slDist < BT.MIN_RR) continue;
+    const entrada = price;
+    const stopLoss = tipo === 'LONG' ? entrada - slDist : entrada + slDist;
+    const tp1 = tipo === 'LONG' ? entrada + slDist * BT.TP1_RATIO : entrada - slDist * BT.TP1_RATIO;
+    const tp2 = tipo === 'LONG' ? entrada + slDist * BT.TP2_RATIO : entrada - slDist * BT.TP2_RATIO;
+    if (Math.abs(tp1 - entrada) / slDist < BT.MIN_RR) continue;
 
     const size = riskUSD / slDist;
     equity -= entrada * size * BT.FEE_TAKER;
     openTrade = {
       coin, tipo, entrada, stopLoss, tp1, tp2, size, riskUSD,
-      rr: (Math.abs(tp1-entrada)/slDist).toFixed(2),
-      tp1Hit:false, tp1PnL:0,
+      rr: (Math.abs(tp1 - entrada) / slDist).toFixed(2),
+      tp1Hit: false, tp1PnL: 0,
       rsi: Math.round(rsi), atr: parseFloat(atr.toFixed(4)),
-      entryBar:i, entryDate: new Date(candles[i].t).toLocaleDateString('es-ES'),
+      entryBar: i, entryDate: new Date(candles[i].t).toLocaleDateString('es-ES'),
     };
   }
 
   // Estadísticas seguras
   const t = Array.isArray(trades) ? trades : [];
-  const wins = t.filter(x => x.result==='WIN').length;
-  const losses = t.filter(x => x.result==='LOSS').length;
-  const bes = t.filter(x => x.result==='BREAKEVEN').length;
-  const totalPnl = t.reduce((a,x) => a+(x.pnl||0), 0);
-  const avgWin  = wins>0 ? t.filter(x=>x.result==='WIN').reduce((a,x)=>a+x.pnl,0)/wins : 0;
-  const avgLoss = losses>0 ? Math.abs(t.filter(x=>x.result==='LOSS').reduce((a,x)=>a+x.pnl,0)/losses) : 0;
-  const pf = avgLoss>0&&losses>0 ? (avgWin*wins)/(avgLoss*losses) : wins>0 ? 99 : 0;
+  const wins = t.filter(x => x.result === 'WIN').length;
+  const losses = t.filter(x => x.result === 'LOSS').length;
+  const bes = t.filter(x => x.result === 'BREAKEVEN').length;
+  const totalPnl = t.reduce((a, x) => a + (x.pnl || 0), 0);
+  const avgWin = wins > 0 ? t.filter(x => x.result === 'WIN').reduce((a, x) => a + x.pnl, 0) / wins : 0;
+  const avgLoss = losses > 0 ? Math.abs(t.filter(x => x.result === 'LOSS').reduce((a, x) => a + x.pnl, 0) / losses) : 0;
+  const pf = avgLoss > 0 && losses > 0 ? (avgWin * wins) / (avgLoss * losses) : wins > 0 ? 99 : 0;
 
-  let cumPnl=0, peak=0, maxDD=0;
+  let cumPnl = 0, peak = 0, maxDD = 0;
   const equityCurve = t.map(x => {
-    cumPnl += x.pnl||0;
-    if (cumPnl>peak) peak=cumPnl;
-    const dd=peak-cumPnl; if(dd>maxDD) maxDD=dd;
-    return {date:x.entryDate, cumPnl:parseFloat(cumPnl.toFixed(2)), result:x.result};
+    cumPnl += x.pnl || 0;
+    if (cumPnl > peak) peak = cumPnl;
+    const dd = peak - cumPnl; if (dd > maxDD) maxDD = dd;
+    return { date: x.entryDate, cumPnl: parseFloat(cumPnl.toFixed(2)), result: x.result };
   });
 
   return {
     coin, interval,
     totalTrades: t.length, wins, losses, breakevens: bes,
-    winRate:      parseFloat((t.length>0 ? wins/t.length*100 : 0).toFixed(1)),
-    totalPnl:     parseFloat(totalPnl.toFixed(2)),
-    avgWin:       parseFloat(avgWin.toFixed(2)),
-    avgLoss:      parseFloat(avgLoss.toFixed(2)),
-    profitFactor: parseFloat(Math.min(pf,99).toFixed(2)),
-    maxDrawdown:  parseFloat(maxDD.toFixed(2)),
+    winRate: parseFloat((t.length > 0 ? wins / t.length * 100 : 0).toFixed(1)),
+    totalPnl: parseFloat(totalPnl.toFixed(2)),
+    avgWin: parseFloat(avgWin.toFixed(2)),
+    avgLoss: parseFloat(avgLoss.toFixed(2)),
+    profitFactor: parseFloat(Math.min(pf, 99).toFixed(2)),
+    maxDrawdown: parseFloat(maxDD.toFixed(2)),
     trades: t, equityCurve,
   };
 }
@@ -230,7 +230,7 @@ async function runBacktest(coin, interval, riskUSD, limit) {
 function renderBacktester() {
   const root = qs('#sec-backtest');
   if (!root) return;
-  const riskUSD = typeof getDynamicRiskUSD==='function' ? getDynamicRiskUSD() : 0;
+  const riskUSD = typeof getDynamicRiskUSD === 'function' ? getDynamicRiskUSD() : 0;
   root.innerHTML = `
     <div style="padding:0 0 24px">
       <div class="sec-hdr">
@@ -243,7 +243,7 @@ function renderBacktester() {
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px;align-items:end">
           <div><div class="lbl">Par</div>
             <select class="inp" id="bt-coin">
-              ${(state.watchedCoins||['BTC','ETH','SOL']).map(c=>`<option value="${c}">${c}/USDT</option>`).join('')}
+              ${(state.watchedCoins || ['BTC', 'ETH', 'SOL']).map(c => `<option value="${c}">${c}/USDT</option>`).join('')}
             </select></div>
           <div><div class="lbl">Timeframe</div>
             <select class="inp" id="bt-interval">
@@ -267,11 +267,11 @@ function renderBacktester() {
 }
 
 async function startBacktest() {
-  const coin     = qs('#bt-coin')?.value || 'BTC';
+  const coin = qs('#bt-coin')?.value || 'BTC';
   const interval = qs('#bt-interval')?.value || '4h';
-  const limit    = parseInt(qs('#bt-limit')?.value || '500', 10);
-  const riskUSD  = typeof getDynamicRiskUSD==='function' ? getDynamicRiskUSD() : 10;
-  const el       = qs('#bt-results');
+  const limit = parseInt(qs('#bt-limit')?.value || '500', 10);
+  const riskUSD = typeof getDynamicRiskUSD === 'function' ? getDynamicRiskUSD() : 10;
+  const el = qs('#bt-results');
   if (!el) return;
 
   if (!riskUSD || riskUSD <= 0) {
@@ -306,7 +306,7 @@ function renderBacktestResults(r, container) {
     container.innerHTML = `<div class="card" style="padding:20px;color:var(--red)">Error: resultado inválido.</div>`;
     return;
   }
-  const trades  = Array.isArray(r.trades) ? r.trades : [];
+  const trades = Array.isArray(r.trades) ? r.trades : [];
   const pc = v => v >= 0 ? 'var(--green)' : 'var(--red)';
   const pfc = r.profitFactor >= 1.5 ? 'var(--green)' : r.profitFactor >= 1 ? 'var(--yellow)' : 'var(--red)';
   const wrc = r.winRate >= 50 ? 'var(--green)' : r.winRate >= 40 ? 'var(--yellow)' : 'var(--red)';
@@ -316,52 +316,52 @@ function renderBacktestResults(r, container) {
   const curve = Array.isArray(r.equityCurve) ? r.equityCurve : [];
   if (curve.length > 1) {
     const vals = curve.map(p => p.cumPnl);
-    const mn = Math.min(...vals), mx = Math.max(...vals), rng = mx-mn||1;
-    const W=400, H=60;
-    const pts = vals.map((v,i)=>`${((i/(vals.length-1))*W).toFixed(1)},${(H-((v-mn)/rng*H)).toFixed(1)}`).join(' ');
-    const zy = (H - ((0-mn)/rng*H)).toFixed(1);
+    const mn = Math.min(...vals), mx = Math.max(...vals), rng = mx - mn || 1;
+    const W = 400, H = 60;
+    const pts = vals.map((v, i) => `${((i / (vals.length - 1)) * W).toFixed(1)},${(H - ((v - mn) / rng * H)).toFixed(1)}`).join(' ');
+    const zy = (H - ((0 - mn) / rng * H)).toFixed(1);
     svgHtml = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:60px;margin:8px 0;display:block">
       <line x1="0" y1="${zy}" x2="${W}" y2="${zy}" stroke="rgba(255,255,255,.12)" stroke-dasharray="4"/>
-      <polyline points="${pts}" fill="none" stroke="${r.totalPnl>=0?'#00d17a':'#ff4455'}" stroke-width="2" stroke-linejoin="round"/>
+      <polyline points="${pts}" fill="none" stroke="${r.totalPnl >= 0 ? '#00d17a' : '#ff4455'}" stroke-width="2" stroke-linejoin="round"/>
     </svg>`;
   }
 
   container.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px">
       ${_btKpi('Trades', r.totalTrades, 'var(--text)', '')}
-      ${_btKpi('Win Rate', r.winRate+'%', wrc, `${r.wins}W / ${r.losses}L / ${r.breakevens}BE`)}
-      ${_btKpi('P&L Total', (r.totalPnl>=0?'+':'')+'$'+r.totalPnl.toFixed(2), pc(r.totalPnl), 'neto con fees')}
-      ${_btKpi('Profit Factor', r.profitFactor>=99?'∞':r.profitFactor, pfc, '≥1.5 = rentable')}
-      ${_btKpi('Max Drawdown', '-$'+r.maxDrawdown.toFixed(2), 'var(--red)', 'pérdida máx acumulada')}
-      ${_btKpi('Avg Win', '+$'+r.avgWin.toFixed(2), 'var(--green)', 'por trade ganador')}
-      ${_btKpi('Avg Loss', '-$'+r.avgLoss.toFixed(2), 'var(--red)', 'por trade perdedor')}
+      ${_btKpi('Win Rate', r.winRate + '%', wrc, `${r.wins}W / ${r.losses}L / ${r.breakevens}BE`)}
+      ${_btKpi('P&L Total', (r.totalPnl >= 0 ? '+' : '') + '$' + r.totalPnl.toFixed(2), pc(r.totalPnl), 'neto con fees')}
+      ${_btKpi('Profit Factor', r.profitFactor >= 99 ? '∞' : r.profitFactor, pfc, '≥1.5 = rentable')}
+      ${_btKpi('Max Drawdown', '-$' + r.maxDrawdown.toFixed(2), 'var(--red)', 'pérdida máx acumulada')}
+      ${_btKpi('Avg Win', '+$' + r.avgWin.toFixed(2), 'var(--green)', 'por trade ganador')}
+      ${_btKpi('Avg Loss', '-$' + r.avgLoss.toFixed(2), 'var(--red)', 'por trade perdedor')}
     </div>
 
     <div class="card" style="margin-bottom:14px">
       <div class="stl" style="margin-bottom:4px">📈 Curva de Equity</div>
       <div style="font-size:10px;color:var(--muted);margin-bottom:2px">
         ${r.coin}/USDT ${r.interval.toUpperCase()} · ${r.totalTrades} ops
-        ${trades.length>0 ? `· $${(trades[0].riskUSD||0).toFixed(2)}/op` : ''}
+        ${trades.length > 0 ? `· $${(trades[0].riskUSD || 0).toFixed(2)}/op` : ''}
       </div>
       ${svgHtml || '<div style="font-size:11px;color:var(--muted);padding:12px 0">Sin suficientes trades.</div>'}
     </div>
 
     <div class="card" style="margin-bottom:14px">
       <div class="stl" style="margin-bottom:8px">🔍 Diagnóstico</div>
-      ${r.totalTrades===0 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Sin señales. RSI no alcanzó zona extrema (≤${BT.RSI_OVERSOLD}/≥${BT.RSI_OVERBOUGHT}) con EMA200 alineada. Prueba un periodo más largo o timeframe menor.</div>` : ''}
-      ${r.totalTrades>0&&r.totalTrades<8 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Solo ${r.totalTrades} trades — estadísticas poco fiables. Amplía el periodo.</div>` : ''}
-      ${r.profitFactor<1&&r.totalTrades>=5 ? `<div style="font-size:11px;color:var(--red);margin-bottom:6px">❌ Profit Factor <1: estrategia pierde dinero en ${r.coin} ${r.interval.toUpperCase()} con estos parámetros.</div>` : ''}
-      ${r.profitFactor>=1.5&&r.winRate>=40 ? `<div style="font-size:11px;color:var(--green);margin-bottom:6px">✅ Estrategia rentable. PF ${r.profitFactor} · WR ${r.winRate}%</div>` : ''}
+      ${r.totalTrades === 0 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Sin señales. RSI no alcanzó zona extrema (≤${BT.RSI_OVERSOLD}/≥${BT.RSI_OVERBOUGHT}) con EMA200 alineada. Prueba un periodo más largo o timeframe menor.</div>` : ''}
+      ${r.totalTrades > 0 && r.totalTrades < 8 ? `<div style="font-size:11px;color:var(--yellow);margin-bottom:6px">⚠️ Solo ${r.totalTrades} trades — estadísticas poco fiables. Amplía el periodo.</div>` : ''}
+      ${r.profitFactor < 1 && r.totalTrades >= 5 ? `<div style="font-size:11px;color:var(--red);margin-bottom:6px">❌ Profit Factor <1: estrategia pierde dinero en ${r.coin} ${r.interval.toUpperCase()} con estos parámetros.</div>` : ''}
+      ${r.profitFactor >= 1.5 && r.winRate >= 40 ? `<div style="font-size:11px;color:var(--green);margin-bottom:6px">✅ Estrategia rentable. PF ${r.profitFactor} · WR ${r.winRate}%</div>` : ''}
       <div style="font-size:10px;color:var(--muted);line-height:1.7;margin-top:4px">
         LONG: RSI≤${BT.RSI_OVERSOLD} + precio>EMA200 + EMA20>EMA50 · SHORT: RSI≥${BT.RSI_OVERBOUGHT} + precio&lt;EMA200 + EMA20&lt;EMA50<br>
         SL=${BT.ATR_SL_MULT}×ATR · TP1=${BT.TP1_RATIO}:1 (50% cierre) · TP2=${BT.TP2_RATIO}:1 · R:R mín ${BT.MIN_RR}<br>
-        Fees: ${(BT.FEE_TAKER*100).toFixed(2)}% taker apertura + ${(BT.FEE_MAKER*100).toFixed(2)}% maker cierre
+        Fees: ${(BT.FEE_TAKER * 100).toFixed(2)}% taker apertura + ${(BT.FEE_MAKER * 100).toFixed(2)}% maker cierre
       </div>
     </div>
 
-    ${trades.length>0 ? `
+    ${trades.length > 0 ? `
     <div class="card">
-      <div class="stl" style="margin-bottom:10px">📋 Últimos ${Math.min(trades.length,20)} trades simulados</div>
+      <div class="stl" style="margin-bottom:10px">📋 Últimos ${Math.min(trades.length, 20)} trades simulados</div>
       <div style="overflow-x:auto">
         <table style="width:100%;border-collapse:collapse;font-size:11px">
           <thead><tr style="color:var(--muted);text-align:left;border-bottom:1px solid var(--border)">
@@ -372,18 +372,18 @@ function renderBacktestResults(r, container) {
             <th style="padding:4px 8px">Result</th>
           </tr></thead>
           <tbody>
-            ${trades.slice(-20).reverse().map((t,i)=>`
+            ${trades.slice(-20).reverse().map((t, i) => `
               <tr style="border-top:1px solid var(--border)">
-                <td style="padding:5px 8px;color:var(--muted)">${trades.length-i}</td>
-                <td style="padding:5px 8px;font-size:10px;font-family:var(--font-mono)">${t.entryDate||'—'}</td>
-                <td style="padding:5px 8px;color:${t.tipo==='LONG'?'var(--green)':'var(--red)'};font-weight:600">${t.tipo}</td>
-                <td style="padding:5px 8px;font-family:var(--font-mono)">${fmtP(t.entrada,r.coin)}</td>
-                <td style="padding:5px 8px;color:var(--red);font-family:var(--font-mono)">${fmtP(t.stopLoss,r.coin)}</td>
+                <td style="padding:5px 8px;color:var(--muted)">${trades.length - i}</td>
+                <td style="padding:5px 8px;font-size:10px;font-family:var(--font-mono)">${t.entryDate || '—'}</td>
+                <td style="padding:5px 8px;color:${t.tipo === 'LONG' ? 'var(--green)' : 'var(--red)'};font-weight:600">${t.tipo}</td>
+                <td style="padding:5px 8px;font-family:var(--font-mono)">${fmtP(t.entrada, r.coin)}</td>
+                <td style="padding:5px 8px;color:var(--red);font-family:var(--font-mono)">${fmtP(t.stopLoss, r.coin)}</td>
                 <td style="padding:5px 8px">${t.rr}</td>
-                <td style="padding:5px 8px;color:${t.rsi<=BT.RSI_OVERSOLD?'var(--green)':t.rsi>=BT.RSI_OVERBOUGHT?'var(--red)':'var(--muted)'}">${t.rsi}</td>
-                <td style="padding:5px 8px;font-weight:700;color:${(t.pnl||0)>=0?'var(--green)':'var(--red)'}">
-                  ${(t.pnl>=0?'+':'')+'$'+(t.pnl||0).toFixed(2)}</td>
-                <td style="padding:5px 8px">${t.result==='WIN'?'✅ WIN':t.result==='BREAKEVEN'?'↔️ BE':'❌ LOSS'}</td>
+                <td style="padding:5px 8px;color:${t.rsi <= BT.RSI_OVERSOLD ? 'var(--green)' : t.rsi >= BT.RSI_OVERBOUGHT ? 'var(--red)' : 'var(--muted)'}">${t.rsi}</td>
+                <td style="padding:5px 8px;font-weight:700;color:${(t.pnl || 0) >= 0 ? 'var(--green)' : 'var(--red)'}">
+                  ${(t.pnl >= 0 ? '+' : '') + '$' + (t.pnl || 0).toFixed(2)}</td>
+                <td style="padding:5px 8px">${t.result === 'WIN' ? '✅ WIN' : t.result === 'BREAKEVEN' ? '↔️ BE' : '❌ LOSS'}</td>
               </tr>`).join('')}
           </tbody>
         </table>
@@ -395,6 +395,6 @@ function _btKpi(label, value, color, sub) {
   return `<div class="card" style="padding:12px 14px">
     <div style="font-size:10px;color:var(--muted);margin-bottom:4px">${label}</div>
     <div style="font-family:var(--font-mono);font-size:16px;font-weight:700;color:${color}">${value}</div>
-    ${sub?`<div style="font-size:9px;color:var(--muted);margin-top:2px">${sub}</div>`:''}
+    ${sub ? `<div style="font-size:9px;color:var(--muted);margin-top:2px">${sub}</div>` : ''}
   </div>`;
 }
