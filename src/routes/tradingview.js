@@ -43,7 +43,12 @@ router.post('/webhook', rateLimitTradingView, (req, res) => {
   // 1. Autenticación por secret
   const { secret, action, symbol, price, interval, message } = req.body || {};
 
-  if (config.tradingviewSecret && secret !== config.tradingviewSecret) {
+  // SEGURIDAD: si no hay secret configurado, el webhook queda CERRADO.
+  // Antes se aceptaba todo, permitiendo inyectar alertas falsas.
+  if (!config.tradingviewSecret) {
+    return res.status(503).json({ ok: false, error: 'Webhook deshabilitado: configura TRADINGVIEW_SECRET en Railway.' });
+  }
+  if (secret !== config.tradingviewSecret) {
     console.warn(`[TradingView] Secret inválido — IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
     return res.status(401).json({ ok: false, error: 'Unauthorized' });
   }
@@ -58,6 +63,12 @@ router.post('/webhook', rateLimitTradingView, (req, res) => {
   const parsedPrice      = price ? parseFloat(price) : (serverState.prices[coin] || null);
 
   console.log(`[TradingView] ${normalizedAction} ${symbol} @ ${parsedPrice} (${interval || '?'})`);
+
+  // FIX: sin precio válido, los SL/TP saldrían NaN — rechazar la alerta
+  if ((normalizedAction === 'LONG' || normalizedAction === 'SHORT')
+      && (!parsedPrice || !isFinite(parsedPrice))) {
+    return res.status(400).json({ ok: false, error: `Sin precio válido para ${symbol}. Añade "price": {{close}} a la alerta.` });
+  }
 
   // 3. Procesar según acción
   if (normalizedAction === 'LONG' || normalizedAction === 'SHORT') {

@@ -3,10 +3,12 @@
 const express        = require('express');
 const { requireAuth } = require('../middleware/auth');
 const { config }     = require('../config');
+const crypto = require('crypto');
 const {
   sendTelegram,
   handleTelegramUpdate,
   setTelegramWebhook,
+  getWebhookSecret,
 } = require('../services/telegram');
 
 const router = express.Router();
@@ -51,6 +53,20 @@ router.get('/status', requireAuth, (req, res) => {
    Para activar: POST /api/telegram/setup (desde la app, una sola vez)
    ──────────────────────────────────────────────────────────────────── */
 router.post('/webhook', async (req, res) => {
+  // SEGURIDAD: validar que la petición viene realmente de Telegram.
+  // Telegram reenvía el secret_token (registrado en setWebhook) en esta
+  // cabecera. Sin esta validación, cualquiera podría falsificar updates
+  // con tu chat_id y ejecutar comandos como /cerrar (posiciones reales).
+  const received = req.headers['x-telegram-bot-api-secret-token'] || '';
+  const expected = getWebhookSecret();
+  const valid = expected
+    && received.length === expected.length
+    && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+  if (!valid) {
+    console.warn(`[Telegram webhook] Petición rechazada (secret inválido) — IP: ${req.headers['x-forwarded-for'] || req.socket.remoteAddress}`);
+    return res.sendStatus(401);
+  }
+
   // Responder 200 inmediatamente (Telegram requiere respuesta rápida)
   res.sendStatus(200);
 

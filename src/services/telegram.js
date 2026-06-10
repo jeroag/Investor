@@ -647,13 +647,33 @@ function cmdNotaDiaria(texto) {
 }
 
 /* ── Webhook setup ─────────────────────────────────────────────── */
+
+/**
+ * Secret para validar que los updates vienen de Telegram.
+ * Prioridad: TELEGRAM_WEBHOOK_SECRET (env) > derivado del bot token.
+ * El derivado es determinista y tan secreto como el propio token,
+ * así no hace falta configurar nada nuevo en Railway.
+ * Telegram lo reenvía en la cabecera X-Telegram-Bot-Api-Secret-Token.
+ */
+function getWebhookSecret() {
+  if (process.env.TELEGRAM_WEBHOOK_SECRET) return process.env.TELEGRAM_WEBHOOK_SECRET;
+  const token = config.telegramToken;
+  if (!token) return null;
+  const crypto = require('crypto');
+  return crypto.createHash('sha256').update(`cp-webhook:${token}`).digest('hex').slice(0, 48);
+}
+
 async function setTelegramWebhook(appUrl) {
   const token = config.telegramToken;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN no configurado');
   const res = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: `${appUrl}/api/telegram/webhook`, allowed_updates: ['message'] }),
+    body: JSON.stringify({
+      url: `${appUrl}/api/telegram/webhook`,
+      allowed_updates: ['message'],
+      secret_token: getWebhookSecret(), // Telegram lo devuelve en cada update
+    }),
   });
   return res.json();
 }
@@ -666,4 +686,5 @@ module.exports = {
   notifyBreakeven,
   handleTelegramUpdate,
   setTelegramWebhook,
+  getWebhookSecret,
 };
