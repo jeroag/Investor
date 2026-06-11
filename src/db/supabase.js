@@ -139,6 +139,8 @@ module.exports = {
   loadPriceAlerts, savePriceAlert, deletePriceAlert,
   // User profile (sync between devices)
   loadProfile, saveProfile,
+  // Scanner state (reanudar tras reinicio)
+  loadScannerState, saveScannerState,
 };
 
 /* ════════════════════════════════════════════════════════════════════
@@ -162,6 +164,30 @@ async function saveProfile(profile) {
     .from('user_profile')
     .upsert({ id: 'main', data: profile, updated_at: Date.now() });
   if (error) console.error('[DB] saveProfile:', error.message);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   HELPERS — Scanner State (persistir para reanudar tras redeploy)
+   Reutiliza la tabla user_profile con id fijo 'scanner_state'.
+   ════════════════════════════════════════════════════════════════════ */
+async function loadScannerState() {
+  const { data, error } = await supabase
+    .from('user_profile')
+    .select('data')
+    .eq('id', 'scanner_state')
+    .single();
+  if (error) {
+    if (error.code !== 'PGRST116') console.error('[DB] loadScannerState:', error.message);
+    return null;
+  }
+  return data?.data || null;
+}
+
+async function saveScannerState(state) {
+  const { error } = await supabase
+    .from('user_profile')
+    .upsert({ id: 'scanner_state', data: state, updated_at: Date.now() });
+  if (error) console.error('[DB] saveScannerState:', error.message);
 }
 
 /* ════════════════════════════════════════════════════════════════════

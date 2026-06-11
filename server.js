@@ -24,6 +24,8 @@ const binance = require('./src/services/binance');
 const { startXAUPolling } = require('./src/services/binance');
 const tpsl = require('./src/services/tpsl');
 const scanner = require('./src/services/scanner');
+const priceAlertsSvc = require('./src/services/pricealerts');
+const watchdog = require('./src/services/watchdog');
 const tvModule = require('./src/routes/tradingview');
 
 // 3. Rutas
@@ -40,6 +42,9 @@ const priceAlertRoutes = require('./src/routes/pricealerts');
    APP EXPRESS
    ══════════════════════════════════════════════════════════════════ */
 const app = express();
+
+// Detrás del proxy de Railway: req.secure y req.ip correctos
+app.set('trust proxy', 1);
 
 // Seguridad (helmet + CSP)
 app.use(securityMiddleware);
@@ -128,9 +133,11 @@ async function bootstrap() {
   tpsl.setBroadcast(ws.broadcast);
   scanner.setBroadcast(ws.broadcast);
   tvModule.setBroadcast(ws.broadcast);
+  priceAlertsSvc.setBroadcast(ws.broadcast);
 
   // Registrar callback de precio → TP/SL + broadcast
   binance.onPrice((coin, price) => {
+    serverState.lastPriceAt = Date.now(); // para el watchdog
     tpsl.checkTPSL(coin, price);
     ws.broadcastPrice(coin, price);
   });
@@ -148,6 +155,27 @@ async function bootstrap() {
 
   // XAU: precio via Bitunix REST (Binance spot no tiene XAUUSDT)
   startXAUPolling(binance.onPriceCallbacks);
+
+  // Alertas de precio unificadas (Supabase) — un solo checker server-side
+  await priceAlertsSvc.loadAlerts().catch(e =>
+    console.warn('No se pudieron cargar las alertas de precio:', e.message));
+  priceAlertsSvc.startChecker();
+
+  // Watchdog: precios congelados + reconciliación con Bitunix
+  watchdog.startWatchdog();
+
+  // Reanudar el escáner si estaba activo antes del reinicio/redeploy
+  try {
+    const savedScanner = await db.loadScannerState();
+    if (savedScanner?.enabled) {
+      const prof = savedScanner.profile || {};
+      if (savedScanner.intervalMin) prof.scan_interval = savedScanner.intervalMin;
+      console.log('🔄  Reanudando escáner tras reinicio…');
+      scanner.startServerScanner(Object.keys(prof).length ? prof : undefined);
+    }
+  } catch (e) {
+    console.warn('No se pudo reanudar el escáner:', e.message);
+  }
 }
 
 bootstrap().catch(err => {

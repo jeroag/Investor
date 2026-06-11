@@ -3,18 +3,13 @@
 const express          = require('express');
 const { requireAuth }  = require('../middleware/auth');
 const { rateLimitGeneral } = require('../middleware/rateLimit');
-const db               = require('../db/supabase');
+const alertsSvc        = require('../services/pricealerts');
 
 const router = express.Router();
 
 /* ── GET /api/price-alerts ──────────────────────────────────────── */
-router.get('/', requireAuth, async (req, res) => {
-  try {
-    const alerts = await db.loadPriceAlerts();
-    res.json({ ok: true, alerts });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
+router.get('/', requireAuth, (req, res) => {
+  res.json({ ok: true, alerts: alertsSvc.getAlerts() });
 });
 
 /* ── POST /api/price-alerts ─────────────────────────────────────── */
@@ -23,7 +18,7 @@ router.post('/', requireAuth, rateLimitGeneral, async (req, res) => {
   if (!alert || !alert.id || !alert.coin || alert.targetPrice == null)
     return res.status(400).json({ ok: false, error: 'alert inválida' });
   try {
-    await db.savePriceAlert(alert);
+    await alertsSvc.addAlert(alert);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -33,7 +28,7 @@ router.post('/', requireAuth, rateLimitGeneral, async (req, res) => {
 /* ── DELETE /api/price-alerts/:id ───────────────────────────────── */
 router.delete('/:id', requireAuth, async (req, res) => {
   try {
-    await db.deletePriceAlert(req.params.id);
+    await alertsSvc.removeAlert(req.params.id);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });

@@ -31,7 +31,7 @@ const {
   calcPnL, coinOf, nowFull,
   calcBreakevenPrice, calcNetPnL,
 } = require('./calculations');
-const { bitunixRequest, isBitunixConfigured } = require('./bitunix');
+const { bitunixRequest, isBitunixConfigured, setPositionSL } = require('./bitunix');
 
 let broadcastFn = null;
 function setBroadcast(fn) { broadcastFn = fn; }
@@ -269,6 +269,7 @@ async function _closeTrade(trade, exitPrice, result, netPnl, fees) {
 
   // 2. Persistir
   serverState.closedTrades.unshift(closed);
+  if (serverState.closedTrades.length > 500) serverState.closedTrades.length = 500; // cap memoria
   await db.saveClosedTrade(closed).catch(() => { });
   await db.deleteActiveTrade(trade.id).catch(() => { });
 
@@ -320,10 +321,7 @@ async function _bitunixUpdateSL(trade, newSL) {
     p => p.symbol === symbol && (p.side === side || p.positionSide === side)
   );
   if (!pos) throw new Error(`Sin posición ${symbol} en Bitunix`);
-  await bitunixRequest('POST', '/api/v1/futures/trade/set_risk_limit', {}, {
-    positionId: pos.positionId,
-    stopLoss: String(newSL),
-  });
+  await setPositionSL(symbol, pos.positionId, newSL);
   console.log(`[Bitunix SL] ${symbol} → $${newSL}`);
 }
 

@@ -36,9 +36,11 @@ describe('calcPnL — cálculo de PnL', () => {
     assert.equal(calcPnL(trade, 90), -10);
   });
 
-  it('LONG con leverage 5x: ganancia amplificada', () => {
+  it('LONG con leverage 5x: PnL NO se amplifica (size ya es qty real)', () => {
+    // El leverage solo reduce el margen requerido, no multiplica el PnL:
+    // size es la cantidad real de activo (ver cabecera de calculations.js).
     const trade = { tipo: 'LONG', entrada: 100, size: 1, leverage: 5 };
-    assert.equal(calcPnL(trade, 110), 50);
+    assert.equal(calcPnL(trade, 110), 10);
   });
 
   it('SHORT sin leverage: precio baja → ganancia', () => {
@@ -51,9 +53,9 @@ describe('calcPnL — cálculo de PnL', () => {
     assert.equal(calcPnL(trade, 110), -10);
   });
 
-  it('SHORT con leverage 10x: pérdida amplificada', () => {
+  it('SHORT con leverage 10x: PnL NO se amplifica (size ya es qty real)', () => {
     const trade = { tipo: 'SHORT', entrada: 100, size: 1, leverage: 10 };
-    assert.equal(calcPnL(trade, 105), -50);
+    assert.equal(calcPnL(trade, 105), -5);
   });
 
   it('PnL con size fraccionario (BTC)', () => {

@@ -101,4 +101,26 @@ function isBitunixConfigured() {
   return !!(config.bitunixApiKey && config.bitunixSecret);
 }
 
-module.exports = { bitunixRequest, isBitunixConfigured, bitunixSign, generateNonce };
+/**
+ * Mueve el SL de una posición usando el endpoint CORRECTO de Bitunix.
+ * FIX: el código anterior usaba /futures/trade/set_risk_limit, que NO existe
+ * en la API — el breakeven nunca se aplicaba en el exchange.
+ * Doc: /api/v1/futures/tpsl/position/modify_order (fallback: place_order
+ * si la posición aún no tiene orden TP/SL asociada).
+ */
+async function setPositionSL(symbol, positionId, slPrice) {
+  const body = {
+    symbol,
+    positionId: String(positionId),
+    slPrice: String(slPrice),
+    slStopType: 'LAST_PRICE',
+  };
+  try {
+    return await bitunixRequest('POST', '/api/v1/futures/tpsl/position/modify_order', {}, body);
+  } catch (e) {
+    console.warn(`[Bitunix SL] modify_order falló (${e.message}) — probando place_order`);
+    return await bitunixRequest('POST', '/api/v1/futures/tpsl/position/place_order', {}, body);
+  }
+}
+
+module.exports = { bitunixRequest, isBitunixConfigured, bitunixSign, generateNonce, setPositionSL };

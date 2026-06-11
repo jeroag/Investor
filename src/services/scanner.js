@@ -153,7 +153,10 @@ Si no hay oportunidad clara: {"hay_oportunidad":false,"razon":"motivo concreto"}
 function startServerScanner(profile) {
   if (scannerState.timer) clearInterval(scannerState.timer);
   scannerState.enabled = true;
-  scannerState.intervalMin = profile?.scan_interval || 15;
+  // FIX: respetar intervalo ya configurado (antes /intervalo se reseteaba a 15)
+  scannerState.intervalMin = profile?.scan_interval || scannerState.intervalMin || 15;
+  // Persistir para reanudar tras reinicio/redeploy de Railway
+  db.saveScannerState({ enabled: true, intervalMin: scannerState.intervalMin, profile: profile || null }).catch(() => { });
 
   const doScan = async () => {
     if (!scannerState.enabled) return;
@@ -193,6 +196,7 @@ function stopServerScanner() {
   if (scannerState.timer) clearInterval(scannerState.timer);
   scannerState.timer = null;
   scannerState.enabled = false;
+  db.saveScannerState({ enabled: false, intervalMin: scannerState.intervalMin }).catch(() => { });
   console.log('[Scanner] ✗ Detenido');
 }
 

@@ -28,7 +28,7 @@ const { config } = require('../config');
 const { notifyTradeOpened } = require('../services/telegram');
 const { rateLimitGeneral } = require('../middleware/rateLimit');
 // CORRECCIÓN: importar bitunixSign y generateNonce que antes faltaban en este archivo
-const { bitunixRequest, bitunixSign, generateNonce } = require('../services/bitunix');
+const { bitunixRequest, bitunixSign, generateNonce, setPositionSL } = require('../services/bitunix');
 
 const router = express.Router();
 
@@ -220,10 +220,8 @@ router.post('/update-sl', requireAuth, async (req, res) => {
     );
     if (!pos) return res.status(404).json({ ok: false, error: `Sin posición abierta para ${symbol}` });
 
-    const data = await bitunixRequest('POST', '/api/v1/futures/trade/set_risk_limit', {}, {
-      positionId: pos.positionId,
-      stopLoss: String(slPrice),
-    });
+    // FIX: set_risk_limit no existe — endpoint correcto de TP/SL de posición
+    const data = await setPositionSL(symbol, pos.positionId, slPrice);
     res.json({ ok: true, data: data.data });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });

@@ -75,6 +75,7 @@ router.post('/close', requireAuth, async (req, res) => {
     const exists = serverState.closedTrades.some(t => t.id === trade.id);
     if (!exists) {
       serverState.closedTrades.unshift(trade);
+      if (serverState.closedTrades.length > 500) serverState.closedTrades.length = 500;
     }
     await db.saveClosedTrade(trade);
 
@@ -98,7 +99,13 @@ router.get('/export-csv', requireAuth, (req, res) => {
 
   const header = 'ID,Par,Tipo,Entrada,StopLoss,TP1,TP2,Size,Leverage,Resultado,PnL_USD,Cerrado_En,Notas\n';
   const rows   = trades.map(t => {
-    const v = x => (x == null ? '' : String(x).replace(/,/g, ';'));
+    const v = x => {
+      if (x == null) return '';
+      let s = String(x).replace(/,/g, ';');
+      // Anti CSV-injection: neutralizar fórmulas de Excel (=, +, -, @)
+      if (/^[=+\-@]/.test(s)) s = `'${s}`;
+      return s;
+    };
     return [
       v(t.id), v(t.par), v(t.tipo), v(t.entrada), v(t.stopLoss),
       v(t.tp1), v(t.tp2 || ''), v(t.size), v(t.leverage || 1),

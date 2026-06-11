@@ -2,8 +2,9 @@
 
 const { config }      = require('../config');
 const { serverState, scannerState } = require('../state');
+const db              = require('../db/supabase');
 const { fetchOHLCV, buildTechSummary } = require('./binance');
-const { bitunixRequest, isBitunixConfigured } = require('./bitunix');
+const { bitunixRequest, isBitunixConfigured, setPositionSL } = require('./bitunix');
 
 /* helpers */
 const fmtPnl = n => n >= 0 ? `+$${n.toFixed(2)}` : `-$${Math.abs(n).toFixed(2)}`;
@@ -105,29 +106,10 @@ function notifyBreakeven(trade) {
   );
 }
 
-/* ═══ ALERTAS DE PRECIO ════════════════════════════════════════════════ */
-const priceAlerts = [];
-
-function checkPriceAlerts() {
-  if (!priceAlerts.length) return;
-  for (let i = priceAlerts.length - 1; i >= 0; i--) {
-    const a = priceAlerts[i];
-    const current = serverState.prices[a.coin];
-    if (!current) continue;
-    const triggered = a.direction === 'up' ? current >= a.targetPrice : current <= a.targetPrice;
-    if (triggered) {
-      const dir = a.direction === 'up' ? '⬆️' : '⬇️';
-      sendTelegram(
-        `🔔 <b>ALERTA DE PRECIO</b>\n${dir} <b>${a.coin}</b> ha ` +
-        `${a.direction === 'up' ? 'superado' : 'bajado de'} <code>$${a.targetPrice}</code>\n` +
-        `Precio actual: <code>$${current.toFixed(4)}</code>`,
-        a.chatId
-      );
-      priceAlerts.splice(i, 1);
-    }
-  }
-}
-setInterval(checkPriceAlerts, 30_000);
+/* ═══ ALERTAS DE PRECIO ════════════════════════════════════════════════
+   Unificadas en services/pricealerts.js — persistidas en Supabase y
+   vigiladas por un único checker server-side. Ver ese módulo.
+   ═══════════════════════════════════════════════════════════════════════ */
 
 /* ═══ WEBHOOK HANDLER ════════════════════════════════════════════════════ */
 async function handleTelegramUpdate(update) {
@@ -264,7 +246,7 @@ function buildEstadoMsg() {
   const latente  = serverState.activeTrades.reduce((sum, t) => {
     const price = serverState.prices[t.par?.split('/')[0]];
     if (!price) return sum;
-    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1);
+    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0);
   }, 0);
   return (
     `📊 <b>ESTADO DE CUENTA</b>\n\n` +
@@ -297,7 +279,7 @@ function buildTradesMsg() {
     const dir    = t.tipo === 'LONG' ? '🟢' : '🔴';
     const lev    = t.leverage > 1 ? ` ${t.leverage}x` : '';
     const pnl    = price != null
-      ? (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1)
+      ? (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0)
       : null;
     const pnlStr = pnl != null ? ` → <b>${fmtPnl(pnl)}</b>` : '';
     const slDist = t.stopLoss && price ? `${((Math.abs(price - t.stopLoss) / price) * 100).toFixed(1)}%` : '?';
@@ -337,7 +319,7 @@ function buildResumenMsg() {
   const latente   = serverState.activeTrades.reduce((sum, t) => {
     const price = serverState.prices[t.par?.split('/')[0]];
     if (!price) return sum;
-    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0) * (t.leverage || 1);
+    return sum + (t.tipo === 'LONG' ? price - t.entrada : t.entrada - price) * (t.size || 0);
   }, 0);
   return (
     `📅 <b>RESUMEN</b>\n\n` +
@@ -388,19 +370,22 @@ function buildRendimientoMsg(days) {
 async function buildCapitalMsg() {
   if (!isBitunixConfigured()) return '⚠️ Bitunix no configurado. Añade BITUNIX_API_KEY y BITUNIX_SECRET en Railway.';
   try {
-    const data = await bitunixRequest('GET', '/api/v1/futures/account', {});
-    const acc  = data?.data;
+    // FIX: la API exige marginCoin y devuelve un ARRAY — antes salía $0.00 siempre
+    const data = await bitunixRequest('GET', '/api/v1/futures/account', { marginCoin: 'USDT' });
+    const raw  = data?.data;
+    const acc  = Array.isArray(raw) ? raw[0] : raw;
     if (!acc) return '⚠️ No se pudo obtener la cuenta de Bitunix.';
-    const equity     = parseFloat(acc.equity       || acc.totalEquity   || 0);
-    const balance    = parseFloat(acc.balance       || acc.walletBalance || 0);
-    const unrealized = parseFloat(acc.unrealizedPnl || 0);
-    const margin     = parseFloat(acc.usedMargin    || acc.positionMargin || 0);
+    const available  = parseFloat(acc.available || 0);
+    const frozen     = parseFloat(acc.frozen    || 0);
+    const margin     = parseFloat(acc.margin    || 0);
+    const unrealized = parseFloat(acc.crossUnrealizedPNL || 0) + parseFloat(acc.isolationUnrealizedPNL || 0);
+    const equity     = available + frozen + margin + unrealized;
     return (
       `💰 <b>CAPITAL BITUNIX</b>\n\n` +
       `Equity: <b>$${equity.toFixed(2)}</b>\n` +
-      `Balance: $${balance.toFixed(2)}\n` +
-      `Disponible: <b>$${(balance - margin).toFixed(2)}</b>\n` +
+      `Disponible: <b>$${available.toFixed(2)}</b>\n` +
       `Margen en uso: $${margin.toFixed(2)}\n` +
+      `Congelado: $${frozen.toFixed(2)}\n` +
       `P&L no realizado: <b>${fmtPnl(unrealized)}</b>`
     );
   } catch (e) {
@@ -495,9 +480,7 @@ async function cmdMoveSL(symbol, slPrice) {
     const sym       = symbol.includes('USDT') ? symbol : symbol + 'USDT';
     const pos       = positions.find(p => p.symbol === sym || p.symbol === symbol);
     if (!pos) return `📭 No hay posición abierta para <b>${symbol}</b>.`;
-    await bitunixRequest('POST', '/api/v1/futures/trade/set_risk_limit', {}, {
-      positionId: pos.positionId, stopLoss: String(slPrice),
-    });
+    await setPositionSL(sym, pos.positionId, slPrice);
     const trade = serverState.activeTrades.find(t => (t.par?.split('/')[0] + 'USDT') === sym);
     if (trade) {
       const oldSL  = trade.stopLoss;
@@ -544,46 +527,51 @@ function cmdIntervalo(min) {
   return `✅ Intervalo actualizado a <b>${min} min</b>. Se aplica al activar el escáner.`;
 }
 
-function cmdAlerta(coin, targetPrice, chatId) {
+async function cmdAlerta(coin, targetPrice, chatId) {
+  const alertsSvc = require('./pricealerts');
   const currentPrice = serverState.prices[coin];
   if (!currentPrice) {
     const avail = Object.keys(serverState.prices).join(', ') || 'ninguna';
     return `⚠️ No tengo precio de <b>${coin}</b>.\nDisponibles: ${avail}`;
   }
-  const direction = targetPrice > currentPrice ? 'up' : 'down';
-  const label     = direction === 'up' ? 'supere' : 'baje de';
-  const emoji     = direction === 'up' ? '⬆️' : '⬇️';
+  const direction = targetPrice > currentPrice ? 'above' : 'below';
+  const label     = direction === 'above' ? 'supere' : 'baje de';
+  const emoji     = direction === 'above' ? '⬆️' : '⬇️';
   const dist      = Math.abs(((targetPrice - currentPrice) / currentPrice) * 100).toFixed(2);
-  const idx       = priceAlerts.findIndex(a => a.coin === coin && a.chatId === chatId);
-  if (idx > -1) priceAlerts.splice(idx, 1);
-  priceAlerts.push({ coin, targetPrice, direction, chatId, createdAt: Date.now() });
+  await alertsSvc.addAlert({
+    id: `tg_${Date.now()}`,
+    coin, targetPrice, direction, chatId,
+    createdAt: new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+    triggered: false,
+  });
   return (
-    `🔔 <b>Alerta configurada</b>\n\n${emoji} Aviso cuando <b>${coin}</b> ${label} <code>$${targetPrice}</code>\n` +
+    `🔔 <b>Alerta configurada</b> (persistente)\n\n${emoji} Aviso cuando <b>${coin}</b> ${label} <code>$${targetPrice}</code>\n` +
     `Precio actual: <code>$${currentPrice.toFixed(4)}</code> · Distancia: <b>${dist}%</b>`
   );
 }
 
 function buildAlertasMsg(chatId) {
-  const myAlerts = priceAlerts.filter(a => a.chatId === chatId);
-  if (!myAlerts.length) {
+  const all = require('./pricealerts').getAlerts();
+  if (!all.length) {
     return '🔔 <b>Sin alertas configuradas.</b>\n\nUsa /alerta BTC 70000 para crear una.';
   }
-  const lines = myAlerts.map(a => {
-    const emoji   = a.direction === 'up' ? '⬆️' : '⬇️';
+  const lines = all.map(a => {
+    const up      = a.direction === 'up' || a.direction === 'above';
+    const emoji   = up ? '⬆️' : '⬇️';
     const current = serverState.prices[a.coin];
     const dist    = current
       ? ` · ${Math.abs(((a.targetPrice - current) / current) * 100).toFixed(1)}% restante`
       : '';
-    return `${emoji} <b>${a.coin}</b> → <code>$${a.targetPrice}</code>${dist}`;
+    const origen  = a.chatId ? '' : ' · <i>(app)</i>';
+    return `${emoji} <b>${a.coin}</b> → <code>$${a.targetPrice}</code>${dist}${origen}`;
   });
-  return `🔔 <b>TUS ALERTAS (${myAlerts.length})</b>\n\n` + lines.join('\n') + '\n\n/borraralerta BTC — eliminar una alerta';
+  return `🔔 <b>TUS ALERTAS (${all.length})</b>\n\n` + lines.join('\n') + '\n\n/borraralerta BTC — eliminar una alerta';
 }
 
-function cmdBorrarAlerta(coin, chatId) {
-  const idx = priceAlerts.findIndex(a => a.coin === coin && a.chatId === chatId);
-  if (idx === -1) return `📭 No tienes alerta configurada para <b>${coin}</b>.`;
-  priceAlerts.splice(idx, 1);
-  return `✅ Alerta de <b>${coin}</b> eliminada.`;
+async function cmdBorrarAlerta(coin, chatId) {
+  const removed = await require('./pricealerts').removeAlertByCoin(coin);
+  if (!removed) return `📭 No hay alerta configurada para <b>${coin}</b>.`;
+  return `✅ Alerta(s) de <b>${coin}</b> eliminada(s).`;
 }
 
 function buildAyudaMsg() {
@@ -619,29 +607,43 @@ function buildAyudaMsg() {
   );
 }
 
-/* ═══ DIARIO SERVER-SIDE (notas rápidas vía Telegram) ════════════════ */
-// En memoria — las notas rápidas del día se guardan aquí
-const telegramNotes = [];
+/* ═══ DIARIO — notas rápidas vía Telegram (persistidas en Supabase) ═══
+   FIX: antes vivían en memoria y se perdían en cada redeploy de Railway.
+   Se guardan como entrada de diario con id `tg_YYYY-MM-DD`, visibles
+   también desde la app. ════════════════════════════════════════════════ */
+async function _loadTgNotes(todayKey) {
+  try {
+    const entries = await db.loadDiaryEntries(40);
+    const entry   = entries.find(e => e?.id === `tg_${todayKey}`);
+    return entry?.tgNotes || [];
+  } catch { return []; }
+}
 
-function buildDiarioMsg() {
-  const todayKey   = new Date().toISOString().slice(0, 10);
-  const todayNotes = telegramNotes.filter(n => n.date === todayKey);
-  const dateStr    = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+async function buildDiarioMsg() {
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const dateStr  = new Date().toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+  const notes    = await _loadTgNotes(todayKey);
 
-  if (!todayNotes.length) {
+  if (!notes.length) {
     return `📓 <b>DIARIO — ${dateStr}</b>\n\nSin notas hoy.\n\nUsa /notadiaria tu texto aquí para añadir una nota.`;
   }
 
-  const lines = todayNotes.map((n, i) => `${i + 1}. ${n.time} — ${n.text}`);
+  const lines = notes.map((n, i) => `${i + 1}. ${n.time} — ${n.text}`);
   return `📓 <b>DIARIO — ${dateStr}</b>\n\n` + lines.join('\n') + '\n\n/notadiaria texto — añadir nota';
 }
 
-function cmdNotaDiaria(texto) {
+async function cmdNotaDiaria(texto) {
   const todayKey = new Date().toISOString().slice(0, 10);
   const time     = new Date().toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-  telegramNotes.push({ date: todayKey, time, text: texto });
-  // Limitar a 100 notas en memoria
-  if (telegramNotes.length > 100) telegramNotes.splice(0, telegramNotes.length - 100);
+  const notes    = await _loadTgNotes(todayKey);
+  notes.push({ time, text: texto });
+  if (notes.length > 100) notes.splice(0, notes.length - 100);
+  await db.saveDiaryEntry({
+    id:      `tg_${todayKey}`,
+    date:    todayKey,
+    notes:   notes.map(n => `${n.time} — ${n.text}`).join('\n'),
+    tgNotes: notes,
+  });
   return `📓 Nota añadida (${time}):
 <i>${texto}</i>`;
 }
