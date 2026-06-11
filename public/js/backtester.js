@@ -56,6 +56,29 @@ const BT_RANGE = {
   MAX_CONSEC_LOSSES: 3,        // subido de 2 → CB menos agresivo
 };
 
+/* ── Parámetros estrategia BREAKOUT (momentum de rotura) ───────────────
+   Reglas: cierre 4H rompe el máx/mín de las últimas 20 velas + filtro
+   EMA200. SL por ATR y TP por múltiplo de riesgo, adaptados por moneda
+   según su volatilidad medida (ver ESTRATEGIAS.md). ─────────────────── */
+const BT_BREAKOUT = {
+  DONCHIAN_PERIOD: 20,
+  EMA_TREND: 200,
+  ATR_SL_MULT: 2.0,      // por defecto (BTC)
+  TP_R: 2.5,      // por defecto (BTC)
+  FEE_TAKER: 0.0006,
+  FEE_MAKER: 0.0002,
+  RSI_PERIOD: 14,
+  ATR_PERIOD: 14,
+  MIN_CANDLES: 220,
+  MAX_CONSEC_LOSSES: 2,
+  // Presets por carácter de cada moneda (volatilidad medida en 4H)
+  PRESETS: {
+    BTC: { ATR_SL_MULT: 2.0, TP_R: 2.5 },   // la menos volátil
+    ETH: { ATR_SL_MULT: 1.5, TP_R: 2.0 },   // intermedia, más trades
+    SOL: { ATR_SL_MULT: 2.5, TP_R: 3.0 },   // ATR ~45% mayor que BTC
+  },
+};
+
 /* ════════════════════════════════════════════════════════════════════
    INDICADORES COMPARTIDOS
    ════════════════════════════════════════════════════════════════════ */
@@ -422,6 +445,104 @@ async function runBacktestRange(coin, interval, riskUSD, limit) {
 }
 
 /* ── Cálculo de estadísticas compartido ────────────────────────────────── */
+/* ════════════════════════════════════════════════════════════════════
+   MOTOR C — BREAKOUT (momentum de rotura Donchian + EMA200)
+   ════════════════════════════════════════════════════════════════════ */
+async function runBacktestBreakout(coin, interval, riskUSD, limit, useCB) {
+  if (!limit) limit = 500;
+  if (useCB === undefined) useCB = true;
+
+  // Aplicar preset por moneda si existe
+  const preset = BT_BREAKOUT.PRESETS[coin.toUpperCase()] || {};
+  const slMult = preset.ATR_SL_MULT ?? BT_BREAKOUT.ATR_SL_MULT;
+  const tpR    = preset.TP_R        ?? BT_BREAKOUT.TP_R;
+
+  const candles = await btFetchKlines(coin.toUpperCase(), interval, Math.min(limit + BT_BREAKOUT.MIN_CANDLES, 1000));
+  if (!Array.isArray(candles) || candles.length < BT_BREAKOUT.MIN_CANDLES + 10)
+    throw new Error(`Datos insuficientes: ${candles?.length ?? 0} velas (mínimo ${BT_BREAKOUT.MIN_CANDLES + 10})`);
+
+  const closes = candles.map(c => c.c);
+  const highs  = candles.map(c => c.h);
+  const lows   = candles.map(c => c.l);
+
+  const ema200 = _btEmaArray(closes, BT_BREAKOUT.EMA_TREND);
+  const atrArr = _btAtrArray(highs, lows, closes, BT_BREAKOUT.ATR_PERIOD);
+  const rsiArr = _btRsiArray(closes, BT_BREAKOUT.RSI_PERIOD);
+
+  const trades = [];
+  let openTrade = null, consecLosses = 0;
+  const rejected = { cb: 0, trend: 0 };
+  const P = BT_BREAKOUT.DONCHIAN_PERIOD;
+
+  for (let i = BT_BREAKOUT.MIN_CANDLES; i < candles.length - 1; i++) {
+    const bar = candles[i];
+
+    /* ── Gestión del trade abierto (SL primero = criterio pesimista) ── */
+    if (openTrade) {
+      const { tipo, entrada, tp1, size } = openTrade;
+      if (tipo === 'LONG') {
+        if (bar.l <= openTrade.stopLoss) {
+          const p = (openTrade.stopLoss - entrada) * size - openTrade.stopLoss * size * BT_BREAKOUT.FEE_TAKER;
+          trades.push({ ...openTrade, result: 'LOSS', pnl: parseFloat(p.toFixed(4)), exit: openTrade.stopLoss });
+          consecLosses++; openTrade = null; continue;
+        }
+        if (bar.h >= tp1) {
+          const p = (tp1 - entrada) * size - tp1 * size * BT_BREAKOUT.FEE_MAKER;
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(p.toFixed(4)), exit: tp1 });
+          consecLosses = 0; openTrade = null; continue;
+        }
+      } else {
+        if (bar.h >= openTrade.stopLoss) {
+          const p = (entrada - openTrade.stopLoss) * size - openTrade.stopLoss * size * BT_BREAKOUT.FEE_TAKER;
+          trades.push({ ...openTrade, result: 'LOSS', pnl: parseFloat(p.toFixed(4)), exit: openTrade.stopLoss });
+          consecLosses++; openTrade = null; continue;
+        }
+        if (bar.l <= tp1) {
+          const p = (entrada - tp1) * size - tp1 * size * BT_BREAKOUT.FEE_MAKER;
+          trades.push({ ...openTrade, result: 'WIN', pnl: parseFloat(p.toFixed(4)), exit: tp1 });
+          consecLosses = 0; openTrade = null; continue;
+        }
+      }
+      continue;
+    }
+
+    /* ── Señal de entrada ── */
+    const e200 = ema200[i], atr = atrArr[i];
+    if (e200 === null || atr === null || atr <= 0) continue;
+    if (useCB && consecLosses >= BT_BREAKOUT.MAX_CONSEC_LOSSES) { rejected.cb++; continue; }
+
+    const price = closes[i];
+    const hh = Math.max(...closes.slice(i - P, i));   // máximo de cierres de las P velas previas
+    const ll = Math.min(...closes.slice(i - P, i));
+
+    let tipo = null;
+    if (price > hh && price > e200) tipo = 'LONG';
+    else if (price < ll && price < e200) tipo = 'SHORT';
+    else { if (price > hh || price < ll) rejected.trend++; continue; }
+
+    const slDist = atr * slMult;
+    const entrada = price;
+    const stopLoss = tipo === 'LONG' ? entrada - slDist : entrada + slDist;
+    const tp1 = tipo === 'LONG' ? entrada + slDist * tpR : entrada - slDist * tpR;
+    const size = riskUSD / slDist;
+
+    openTrade = {
+      coin, tipo, entrada, stopLoss, tp1, tp2: null, size, riskUSD,
+      rr: tpR.toFixed(1),
+      tp1Hit: false, tp1PnL: 0,
+      rsi: rsiArr[i] !== null ? Math.round(rsiArr[i]) : null,
+      atr: parseFloat(atr.toFixed(4)), volRatio: null,
+      entryBar: i, entryDate: new Date(candles[i].t).toLocaleDateString('es-ES'),
+      strategy: 'BREAKOUT',
+    };
+    // fee de apertura se refleja en el pnl de cierre (mismo criterio que el resto)
+  }
+
+  const stats = _buildStats(trades, coin, interval, rejected, { useCB, preset: `SL ${slMult}×ATR · TP 1:${tpR}` }, 'BREAKOUT');
+  stats.breakoutParams = { slMult, tpR, donchian: P };
+  return stats;
+}
+
 function _buildStats(trades, coin, interval, rejected, filtersUsed, strategy) {
   const t = Array.isArray(trades) ? trades : [];
   const wins = t.filter(x => x.result === 'WIN').length;
@@ -466,7 +587,7 @@ function renderBacktester() {
       <div class="sec-hdr">
         <div>
           <div class="stl" style="margin:0 0 6px">📊 Backtester de Estrategia</div>
-          <div style="font-size:11px;color:var(--muted)">Dos estrategias según el régimen de mercado: Momentum (tendencia) y Rango (lateral).</div>
+          <div style="font-size:11px;color:var(--muted)">Tres estrategias: Momentum (tendencia), Rango (lateral) y Breakout (rotura con presets por moneda — ver ESTRATEGIAS.md).</div>
         </div>
       </div>
 
@@ -479,6 +600,10 @@ function renderBacktester() {
         <button id="bt-mode-range" onclick="setBtMode('range')"
           style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--border);background:var(--s2);color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s">
           〰️ Rango<br><span style="font-size:10px;font-weight:400">Laterales · Bollinger Bands + mean-reversion</span>
+        </button>
+        <button id="bt-mode-breakout" onclick="setBtMode('breakout')"
+          style="flex:1;padding:10px;border-radius:10px;border:2px solid var(--border);background:var(--s2);color:var(--muted);font-size:12px;font-weight:600;cursor:pointer;transition:all .2s">
+          🚀 Breakout<br><span style="font-size:10px;font-weight:400">Rotura 20 velas + EMA200 · presets por moneda</span>
         </button>
       </div>
 
@@ -593,29 +718,26 @@ function renderBacktester() {
 
 function setBtMode(mode) {
   window._btMode = mode;
-  const isMomentum = mode === 'momentum';
 
-  const btnM = qs('#bt-mode-momentum');
-  const btnR = qs('#bt-mode-range');
-  if (btnM) {
-    btnM.style.borderColor = isMomentum ? 'var(--accent)' : 'var(--border)';
-    btnM.style.background = isMomentum ? 'var(--accent)' : 'var(--s2)';
-    btnM.style.color = isMomentum ? '#fff' : 'var(--muted)';
-  }
-  if (btnR) {
-    btnR.style.borderColor = !isMomentum ? 'var(--accent)' : 'var(--border)';
-    btnR.style.background = !isMomentum ? 'var(--accent)' : 'var(--s2)';
-    btnR.style.color = !isMomentum ? '#fff' : 'var(--muted)';
+  const buttons = { momentum: qs('#bt-mode-momentum'), range: qs('#bt-mode-range'), breakout: qs('#bt-mode-breakout') };
+  for (const [m, btn] of Object.entries(buttons)) {
+    if (!btn) continue;
+    const active = m === mode;
+    btn.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+    btn.style.background = active ? 'var(--accent)' : 'var(--s2)';
+    btn.style.color = active ? '#fff' : 'var(--muted)';
   }
 
   const mf = qs('#bt-momentum-filters');
   const ri = qs('#bt-range-info');
   const hint = qs('#bt-strategy-hint');
-  if (mf) mf.style.display = isMomentum ? 'block' : 'none';
-  if (ri) ri.style.display = isMomentum ? 'none' : 'block';
-  if (hint) hint.textContent = isMomentum
-    ? ` · Momentum: RSI ${BT.RSI_OVERSOLD}/${BT.RSI_OVERBOUGHT} + EMA200 · SL=${BT.ATR_SL_MULT}×ATR`
-    : ` · Rango: BB(20,2σ) + RSI medio · SL=1×ATR · TP=banda media`;
+  if (mf) mf.style.display = mode === 'momentum' ? 'block' : 'none';
+  if (ri) ri.style.display = mode === 'range' ? 'block' : 'none';
+  if (hint) {
+    if (mode === 'momentum') hint.textContent = ` · Momentum: RSI ${BT.RSI_OVERSOLD}/${BT.RSI_OVERBOUGHT} + EMA200 · SL=${BT.ATR_SL_MULT}×ATR`;
+    else if (mode === 'range') hint.textContent = ` · Rango: BB(20,2σ) + RSI medio · SL=1×ATR · TP=banda media`;
+    else hint.textContent = ` · Breakout: rotura 20 velas + EMA200 · BTC SL2.0×/TP2.5R · ETH SL1.5×/TP2R · SOL SL2.5×/TP3R`;
+  }
 }
 
 async function startBacktest() {
@@ -637,13 +759,16 @@ async function startBacktest() {
     <div class="card" style="text-align:center;padding:30px">
       <div style="margin:0 auto 12px;width:24px;height:24px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite"></div>
       <div style="font-size:12px;color:var(--muted)">Descargando ${coin}/USDT ${interval.toUpperCase()}…</div>
-      <div style="font-size:10px;color:var(--muted);margin-top:5px">Estrategia: ${mode === 'momentum' ? '⚡ Momentum' : '〰️ Rango'}</div>
+      <div style="font-size:10px;color:var(--muted);margin-top:5px">Estrategia: ${mode === 'momentum' ? '⚡ Momentum' : mode === 'range' ? '〰️ Rango' : '🚀 Breakout'}</div>
     </div>`;
 
   try {
     let r;
     if (mode === 'range') {
       r = await runBacktestRange(coin, interval, riskUSD, limit);
+    } else if (mode === 'breakout') {
+      const useCB = qs('#bt-cb')?.checked ?? true;
+      r = await runBacktestBreakout(coin, interval, riskUSD, limit, useCB);
     } else {
       const useNY = qs('#bt-ny')?.checked ?? false;
       const useVol = qs('#bt-vol')?.checked ?? true;
@@ -693,7 +818,9 @@ function renderBacktestResults(r, container) {
   // Badge estrategia
   const stratBadge = isRange
     ? `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(108,99,255,.15);color:var(--accent);border:1px solid rgba(108,99,255,.3)">〰️ RANGO</span>`
-    : `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(0,209,122,.12);color:var(--green);border:1px solid rgba(0,209,122,.3)">⚡ MOMENTUM</span>`;
+    : r.strategy === 'BREAKOUT'
+      ? `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(255,170,0,.12);color:var(--yellow);border:1px solid rgba(255,170,0,.3)">🚀 BREAKOUT${r.breakoutParams ? ` · SL ${r.breakoutParams.slMult}×ATR · TP 1:${r.breakoutParams.tpR}` : ''}</span>`
+      : `<span style="font-size:10px;padding:2px 8px;border-radius:12px;background:rgba(0,209,122,.12);color:var(--green);border:1px solid rgba(0,209,122,.3)">⚡ MOMENTUM</span>`;
 
   // Diagnóstico específico de rango
   let rangeDiag = '';
