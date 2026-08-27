@@ -36,9 +36,10 @@ function makeRateLimiter({ maxRequests, windowMs, message }) {
   }, windowMs * 2).unref();
 
   return function rateLimiter(req, res, next) {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0].trim()
-      || req.socket.remoteAddress
-      || 'unknown';
+    // Con app.set('trust proxy', 1), req.ip ya es la IP real del cliente.
+    // Leer el header X-Forwarded-For a mano era spoofable → permitía saltarse
+    // el rate limit / brute-force enviando un XFF falso en cada petición.
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
     const rec = store.get(ip) || { count: 0, start: now };
 

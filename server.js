@@ -15,6 +15,7 @@ validateEnv();
 // 2. Módulos de la app
 const { securityMiddleware } = require('./src/middleware/security');
 const { requireAuth, restoreSessions, scheduleSessionCleanup } = require('./src/middleware/auth');
+const { rateLimitGeneral } = require('./src/middleware/rateLimit');
 
 const db = require('./src/db/supabase');
 const { serverState, scannerState } = require('./src/state');
@@ -77,7 +78,7 @@ app.get('/api/prices', requireAuth, (req, res) =>
 // El backtester llama a /api/klines?symbol=XAUUSDT&interval=4h&limit=750
 // El servidor hace la petición a fapi.binance.com y devuelve el JSON al cliente.
 // No requiere auth para no bloquear el backtester, pero sí rate limit.
-app.get('/api/klines', requireAuth, async (req, res) => {
+app.get('/api/klines', requireAuth, rateLimitGeneral, async (req, res) => {
   const { symbol, interval, limit } = req.query;
   const sym = (symbol || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   const iv = (interval || '4h').replace(/[^a-zA-Z0-9]/g, '');
