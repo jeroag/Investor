@@ -55,7 +55,7 @@ async function doLogout() {
 }
 
 /* ── Constants ───────────────────────────────────────────────────────────── */
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
+const CLAUDE_MODEL = 'claude-sonnet-5';
 
 // Todas las monedas disponibles
 const ALL_COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'ADA', 'MATIC', 'DOT', 'LINK', 'LTC', 'UNI', 'ATOM', 'XAU'];

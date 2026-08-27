@@ -131,7 +131,7 @@ Si no hay oportunidad clara: {"hay_oportunidad":false,"razon":"motivo concreto"}
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-sonnet-5',
         max_tokens: 800,
         system: 'Eres escáner técnico de criptomonedas. Responde SOLO JSON válido sin markdown ni texto adicional.',
         messages: [{ role: 'user', content: prompt }],
