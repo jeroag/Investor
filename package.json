@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test tests/calculations.test.js"
+    "test": "node --test tests/calculations.test.js tests/tpsl.test.js tests/tradingview.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.43.4",
